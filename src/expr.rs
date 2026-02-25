@@ -357,4 +357,74 @@ mod tests {
         let expr = Expr::col("a") + Expr::col("b") * Expr::lit_int(2);
         println!("Expression: {}", expr);
     }
+
+    #[test]
+    fn test_literal_creation() {
+        let bool_lit = Expr::lit_bool(true);
+        let int_lit = Expr::lit_int(42);
+        let float_lit = Expr::lit_float(3.14);
+        let string_lit = Expr::lit_string("hello");
+        
+        assert!(matches!(bool_lit, Expr::Literal(Literal::Boolean(true))));
+        assert!(matches!(int_lit, Expr::Literal(Literal::Integer(42))));
+        assert!(matches!(float_lit, Expr::Literal(Literal::Float(x)) if (x - 3.14).abs() < 1e-10));
+        assert!(matches!(string_lit, Expr::Literal(Literal::String(ref s)) if s == "hello"));
+    }
+
+    #[test]
+    fn test_column_reference() {
+        let col_expr = Expr::col("price");
+        assert!(matches!(col_expr, Expr::Column(ref name) if name == "price"));
+    }
+
+    #[test]
+    fn test_unary_operators() {
+        let expr = Expr::lit_int(5).neg();
+        assert!(matches!(expr, Expr::UnaryExpr { op: UnaryOp::Negate, .. }));
+        
+        let expr2 = Expr::lit_bool(false).not();
+        assert!(matches!(expr2, Expr::UnaryExpr { op: UnaryOp::Not, .. }));
+        
+        let expr3 = Expr::lit_float(4.0).sqrt();
+        assert!(matches!(expr3, Expr::UnaryExpr { op: UnaryOp::Sqrt, .. }));
+    }
+
+    #[test]
+    fn test_function_call() {
+        let expr = Expr::function("pow", vec![Expr::lit_float(2.0), Expr::lit_float(3.0)]);
+        assert!(matches!(expr, Expr::FunctionCall { name, .. } if name == "pow"));
+    }
+
+    #[test]
+    fn test_aggregate_expression() {
+        let expr = Expr::col("value").sum();
+        assert!(matches!(expr, Expr::Aggregate { op: AggregateOp::Sum, .. }));
+        
+        let expr2 = Expr::col("value").mean();
+        assert!(matches!(expr2, Expr::Aggregate { op: AggregateOp::Mean, .. }));
+    }
+
+    #[test]
+    fn test_conditional_expression() {
+        let expr = Expr::conditional(
+            Expr::lit_bool(true),
+            Expr::lit_int(1),
+            Expr::lit_int(0),
+        );
+        assert!(matches!(expr, Expr::Conditional { .. }));
+    }
+
+    #[test]
+    fn test_cast_expression() {
+        let expr = Expr::lit_int(5).cast(DataType::Float);
+        assert!(matches!(expr, Expr::Cast { data_type: DataType::Float, .. }));
+    }
+
+    #[test]
+    fn test_debug_format() {
+        let expr = Expr::col("x") + Expr::lit_int(5);
+        let debug_str = format!("{:?}", expr);
+        // Just ensure it doesn't panic and produces some output
+        assert!(!debug_str.is_empty());
+    }
 }

@@ -304,4 +304,102 @@ mod tests {
         let expr = Expr::lit_bool(false).not();
         assert_eq!(ctx.evaluate(&expr).unwrap(), Literal::Boolean(true));
     }
+
+    #[test]
+    fn test_division_by_zero() {
+        let ctx = EvaluationContext::new();
+        let expr = Expr::lit_int(5).div(Expr::lit_int(0));
+        match ctx.evaluate(&expr) {
+            Err(EvaluationError::DivisionByZero) => (),
+            other => panic!("Expected DivisionByZero error, got {:?}", other),
+        }
+        
+        let expr = Expr::lit_float(5.0).div(Expr::lit_float(0.0));
+        match ctx.evaluate(&expr) {
+            Err(EvaluationError::DivisionByZero) => (),
+            other => panic!("Expected DivisionByZero error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_type_mismatch() {
+        let ctx = EvaluationContext::new();
+        // Adding integer and boolean should fail
+        let expr = Expr::lit_int(5).add(Expr::lit_bool(true));
+        match ctx.evaluate(&expr) {
+            Err(EvaluationError::TypeMismatch { .. }) => (),
+            other => panic!("Expected TypeMismatch error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_unknown_column() {
+        let ctx = EvaluationContext::new();
+        let expr = Expr::col("nonexistent");
+        match ctx.evaluate(&expr) {
+            Err(EvaluationError::ColumnNotFound(name)) if name == "nonexistent" => (),
+            other => panic!("Expected ColumnNotFound error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_function_evaluation() {
+        let ctx = EvaluationContext::new();
+        // Test pow function
+        let expr = Expr::function("pow", vec![Expr::lit_float(2.0), Expr::lit_float(3.0)]);
+        match ctx.evaluate(&expr) {
+            Ok(Literal::Float(x)) if (x - 8.0).abs() < 1e-10 => (),
+            other => panic!("Expected pow(2.0, 3.0) = 8.0, got {:?}", other),
+        }
+        
+        // Test sin function
+        let expr = Expr::function("sin", vec![Expr::lit_float(0.0)]);
+        match ctx.evaluate(&expr) {
+            Ok(Literal::Float(x)) if x.abs() < 1e-10 => (),
+            other => panic!("Expected sin(0.0) = 0.0, got {:?}", other),
+        }
+        
+        // Test unknown function
+        let expr = Expr::function("unknown_func", vec![Expr::lit_int(1)]);
+        match ctx.evaluate(&expr) {
+            Err(EvaluationError::UnknownFunction(name)) if name == "unknown_func" => (),
+            other => panic!("Expected UnknownFunction error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_conditional_evaluation() {
+        let mut ctx = EvaluationContext::new();
+        ctx.set_column("cond".to_string(), Literal::Boolean(true));
+        ctx.set_column("a".to_string(), Literal::Integer(10));
+        ctx.set_column("b".to_string(), Literal::Integer(20));
+        
+        let expr = Expr::conditional(
+            Expr::col("cond"),
+            Expr::col("a"),
+            Expr::col("b"),
+        );
+        assert_eq!(ctx.evaluate(&expr).unwrap(), Literal::Integer(10));
+        
+        // Test false condition
+        ctx.set_column("cond".to_string(), Literal::Boolean(false));
+        assert_eq!(ctx.evaluate(&expr).unwrap(), Literal::Integer(20));
+    }
+
+    #[test]
+    fn test_cast_evaluation() {
+        let ctx = EvaluationContext::new();
+        let expr = Expr::lit_int(42).cast(DataType::Float);
+        match ctx.evaluate(&expr) {
+            Ok(Literal::Float(x)) if (x - 42.0).abs() < 1e-10 => (),
+            other => panic!("Expected cast to float 42.0, got {:?}", other),
+        }
+        
+        // Invalid cast should fail
+        let expr = Expr::lit_string("hello").cast(DataType::Integer);
+        match ctx.evaluate(&expr) {
+            Err(EvaluationError::InvalidCast { .. }) => (),
+            other => panic!("Expected InvalidCast error, got {:?}", other),
+        }
+    }
 }

@@ -292,3 +292,75 @@ impl std::fmt::Debug for LogicalPlan {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::expr::{Expr, DataType};
+
+    #[test]
+    fn test_scan_creation() {
+        let scan = LogicalPlan::scan("table1");
+        assert!(matches!(scan, LogicalPlan::Scan { source_name, .. } if source_name == "table1"));
+    }
+
+    #[test]
+    fn test_filter_creation() {
+        let scan = LogicalPlan::scan("table1");
+        let filter = LogicalPlan::filter(scan, Expr::col("x").gt(Expr::lit_int(0)));
+        assert!(matches!(filter, LogicalPlan::Filter { .. }));
+    }
+
+    #[test]
+    fn test_projection_creation() {
+        let scan = LogicalPlan::scan("table1");
+        let projection = LogicalPlan::projection(
+            scan,
+            vec![Expr::col("x"), Expr::col("y")],
+            vec![
+                ("x".to_string(), DataType::Integer),
+                ("y".to_string(), DataType::Integer),
+            ],
+        );
+        assert!(matches!(projection, LogicalPlan::Projection { .. }));
+    }
+
+    #[test]
+    fn test_aggregate_creation() {
+        let scan = LogicalPlan::scan("table1");
+        let aggregate = LogicalPlan::aggregate(
+            scan,
+            vec![Expr::col("group")],
+            vec![Expr::col("value").sum()],
+        );
+        assert!(matches!(aggregate, LogicalPlan::Aggregate { .. }));
+    }
+
+    #[test]
+    fn test_children_method() {
+        let scan = LogicalPlan::scan("table1");
+        assert_eq!(scan.children().len(), 0);
+        
+        let filter = LogicalPlan::filter(scan, Expr::lit_bool(true));
+        assert_eq!(filter.children().len(), 1);
+        
+        let join = LogicalPlan::join(
+            LogicalPlan::scan("left"),
+            LogicalPlan::scan("right"),
+            JoinType::Inner,
+            Some(Expr::lit_bool(true)),
+        );
+        assert_eq!(join.children().len(), 2);
+    }
+
+    #[test]
+    fn test_transform_method() {
+        let scan = LogicalPlan::scan("table1");
+        let filter = LogicalPlan::filter(scan, Expr::col("x").gt(Expr::lit_int(0)));
+        
+        // Transform that does nothing
+        let mut transform_fn = |plan: LogicalPlan| plan;
+        let transformed = filter.transform(&mut transform_fn);
+        assert!(matches!(transformed, LogicalPlan::Filter { .. }));
+    }
+}

@@ -4,7 +4,8 @@
 //! and expressions to more efficient forms.
 
 use crate::logical_plan::LogicalPlan;
-use crate::expr::Expr;
+use crate::expr::{Expr, Literal, BinaryOp, UnaryOp};
+use std::sync::Arc;
 
 /// An optimization rule that can transform a logical plan
 pub trait OptimizerRule {
@@ -67,9 +68,90 @@ impl ConstantFolding {
     }
     
     fn fold_expr(&self, expr: Expr) -> Expr {
-        // TODO: Implement constant folding for expressions
-        // This would evaluate expressions like 1 + 2 to 3
-        expr
+        match expr {
+            // Literals stay as they are
+            Expr::Literal(_) | Expr::Column(_) => expr,
+            
+            // Binary expressions: fold left and right, then try to evaluate if both are literals
+            Expr::BinaryExpr { left, op, right } => {
+                let left_folded = self.fold_expr(left.as_ref().clone());
+                let right_folded = self.fold_expr(right.as_ref().clone());
+                
+                // If both sides are literals, try to evaluate
+                if let (Expr::Literal(left_lit), Expr::Literal(right_lit)) = (&left_folded, &right_folded) {
+                    // For now, only handle integer arithmetic
+                    match (left_lit, op, right_lit) {
+                        (Literal::Integer(l), BinaryOp::Add, Literal::Integer(r)) => {
+                            return Expr::Literal(Literal::Integer(l + r));
+                        }
+                        (Literal::Integer(l), BinaryOp::Subtract, Literal::Integer(r)) => {
+                            return Expr::Literal(Literal::Integer(l - r));
+                        }
+                        (Literal::Integer(l), BinaryOp::Multiply, Literal::Integer(r)) => {
+                            return Expr::Literal(Literal::Integer(l * r));
+                        }
+                        (Literal::Integer(l), BinaryOp::Divide, Literal::Integer(r)) if *r != 0 => {
+                            return Expr::Literal(Literal::Integer(l / r));
+                        }
+                        _ => {} // Fall through to return the folded binary expression
+                    }
+                }
+                
+                Expr::BinaryExpr {
+                    left: Arc::new(left_folded),
+                    op,
+                    right: Arc::new(right_folded),
+                }
+            }
+            
+            // Unary expressions: fold the inner expression, then try to evaluate
+            Expr::UnaryExpr { op, expr } => {
+                let folded_expr = self.fold_expr(expr.as_ref().clone());
+                if let Expr::Literal(lit) = &folded_expr {
+                    match (lit, op) {
+                        (Literal::Integer(v), UnaryOp::Negate) => {
+                            return Expr::Literal(Literal::Integer(-v));
+                        }
+                        (Literal::Float(v), UnaryOp::Negate) => {
+                            return Expr::Literal(Literal::Float(-v));
+                        }
+                        (Literal::Boolean(v), UnaryOp::Not) => {
+                            return Expr::Literal(Literal::Boolean(!v));
+                        }
+                        _ => {} // Fall through
+                    }
+                }
+                
+                Expr::UnaryExpr {
+                    op,
+                    expr: Arc::new(folded_expr),
+                }
+            }
+            
+            // For other expression types, recursively fold subexpressions
+            Expr::FunctionCall { name, args } => {
+                let folded_args = args.into_iter().map(|arg| self.fold_expr(arg)).collect();
+                Expr::FunctionCall { name, args: folded_args }
+            }
+            Expr::Aggregate { op, expr, distinct } => {
+                let folded_expr = self.fold_expr(expr.as_ref().clone());
+                Expr::Aggregate { op, expr: Arc::new(folded_expr), distinct }
+            }
+            Expr::Conditional { condition, then_expr, else_expr } => {
+                let folded_cond = self.fold_expr(condition.as_ref().clone());
+                let folded_then = self.fold_expr(then_expr.as_ref().clone());
+                let folded_else = self.fold_expr(else_expr.as_ref().clone());
+                Expr::Conditional {
+                    condition: Arc::new(folded_cond),
+                    then_expr: Arc::new(folded_then),
+                    else_expr: Arc::new(folded_else),
+                }
+            }
+            Expr::Cast { expr, data_type } => {
+                let folded_expr = self.fold_expr(expr.as_ref().clone());
+                Expr::Cast { expr: Arc::new(folded_expr), data_type }
+            }
+        }
     }
 }
 
@@ -202,5 +284,41 @@ mod tests {
         let plan = LogicalPlan::expression(Expr::lit_int(5));
         let optimized = optimizer.optimize(plan);
         assert!(matches!(optimized, LogicalPlan::Expression(_)));
+    }
+
+    #[test]
+    fn test_constant_folding() {
+        let optimizer = Optimizer::default();
+        
+        // Test that 1 + 2 gets folded to 3
+        let expr = Expr::lit_int(1).add(Expr::lit_int(2));
+        let plan = LogicalPlan::expression(expr);
+        let optimized = optimizer.optimize(plan);
+        
+        // The optimized plan should be a literal 3
+        if let LogicalPlan::Expression(Expr::Literal(Literal::Integer(3))) = optimized {
+            // Success
+        } else {
+            panic!("Expected folded literal 3, got {:?}", optimized);
+        }
+        
+        // Test that (5 * 2) - 3 gets folded to 7
+        let expr = Expr::lit_int(5).mul(Expr::lit_int(2)).sub(Expr::lit_int(3));
+        let plan = LogicalPlan::expression(expr);
+        let optimized = optimizer.optimize(plan);
+        
+        if let LogicalPlan::Expression(Expr::Literal(Literal::Integer(7))) = optimized {
+            // Success
+        } else {
+            panic!("Expected folded literal 7, got {:?}", optimized);
+        }
+        
+        // Test that expressions with columns are not folded
+        let expr = Expr::col("x").add(Expr::lit_int(1));
+        let plan = LogicalPlan::expression(expr);
+        let optimized = optimizer.optimize(plan);
+        
+        // Should still be a binary expression
+        assert!(matches!(optimized, LogicalPlan::Expression(Expr::BinaryExpr { .. })));
     }
 }
