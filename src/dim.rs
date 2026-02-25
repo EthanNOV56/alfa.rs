@@ -112,15 +112,9 @@ pub fn infer_dimension(
                 BinaryOp::Equal | BinaryOp::NotEqual |
                 BinaryOp::GreaterThan | BinaryOp::GreaterThanOrEqual |
                 BinaryOp::LessThan | BinaryOp::LessThanOrEqual => {
-                    // Both sides should have same dimension
-                    if left_dim.kind == right_dim.kind {
-                        Ok(Dimension::new_scalar())
-                    } else {
-                        Err(DimensionError(format!(
-                            "Comparison dimension mismatch: {:?} vs {:?}",
-                            left_dim.kind, right_dim.kind
-                        )))
-                    }
+                    // Allow TimeSeries vs Scalar comparisons (e.g., price > 100.0)
+                    // Both produce scalar boolean results
+                    Ok(Dimension::new_scalar())
                 }
                 // Logical operators require scalar booleans
                 BinaryOp::And | BinaryOp::Or => {
@@ -166,17 +160,16 @@ pub fn infer_dimension(
                 return Err(DimensionError("Condition must be scalar".to_string()));
             }
             
-            // Both branches must have same dimension
+            // Branches can have mixed dimensions (TimeSeries vs Scalar)
+            // Similar to multiplication: TimeSeries wins over Scalar
             let then_dim = infer_dimension(then_expr, ctx)?;
             let else_dim = infer_dimension(else_expr, ctx)?;
             
-            if then_dim.kind == else_dim.kind {
-                Ok(then_dim)
-            } else {
-                Err(DimensionError(format!(
-                    "Conditional branches have different dimensions: {:?} vs {:?}",
-                    then_dim.kind, else_dim.kind
-                )))
+            match (&then_dim.kind, &else_dim.kind) {
+                (DimKind::TimeSeries, DimKind::Scalar) => Ok(then_dim),
+                (DimKind::Scalar, DimKind::TimeSeries) => Ok(else_dim),
+                (DimKind::TimeSeries, DimKind::TimeSeries) => Ok(then_dim),
+                (DimKind::Scalar, DimKind::Scalar) => Ok(then_dim),
             }
         }
         Expr::Cast { expr: inner, data_type: _ } => {
