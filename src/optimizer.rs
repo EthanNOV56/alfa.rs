@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 /// An optimization rule that can transform a logical plan
-pub trait OptimizerRule {
+pub trait OptimizerRule: Send + Sync {
     /// Apply the rule to a logical plan, returning a new optimized plan
     fn optimize(&self, plan: LogicalPlan) -> LogicalPlan;
     

@@ -248,60 +248,6 @@ impl TimeSeries {
     }
 }
 
-/// Alpha factor computations for quantitative finance
-pub mod alpha_factors {
-    use super::TimeSeries;
-    use ndarray;
-    
-    /// Compute R-squared (coefficient of determination)
-    pub fn r_squared(series: &TimeSeries, market: &TimeSeries, window: usize) -> TimeSeries {
-        let correlation_series = series.correlation(market, window);
-        // R² = correlation²
-        let r_sq_data = correlation_series.data().mapv(|x| x * x);
-        TimeSeries::from_array(r_sq_data)
-    }
-    
-    /// Compute value at risk (VaR) using historical simulation
-    pub fn var(series: &TimeSeries, confidence_level: f64, window: usize) -> TimeSeries {
-        let returns = series.pct_change(1);
-        let n = returns.len();
-        let mut result = ndarray::Array1::zeros(n);
-        
-        for i in 0..n {
-            let start = if i + 1 >= window { i + 1 - window } else { 0 };
-            let slice = returns.data().slice(ndarray::s![start..=i]);
-            
-            if slice.len() == 0 {
-                result[i] = f64::NAN;
-                continue;
-            }
-            
-            // Sort returns and find VaR
-            let mut sorted: Vec<f64> = slice.to_vec();
-            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-            let index = ((1.0 - confidence_level) * sorted.len() as f64).floor() as usize;
-            result[i] = sorted.get(index).copied().unwrap_or(f64::NAN);
-        }
-        
-        TimeSeries::from_array(result)
-    }
-    
-    /// Compute low volatility factor (inverse volatility)
-    pub fn low_volatility(series: &TimeSeries, window: usize) -> TimeSeries {
-        let vol = series.rolling_std(window);
-        let inv_vol_data = vol.data().mapv(|x| 1.0 / x);
-        TimeSeries::from_array(inv_vol_data)
-    }
-    
-    /// Compute Z-score normalization
-    pub fn z_score(series: &TimeSeries, window: usize) -> TimeSeries {
-        let mean = series.moving_average(window);
-        let std = series.rolling_std(window);
-        let z_data = (series.data() - mean.data()) / std.data();
-        TimeSeries::from_array(z_data)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

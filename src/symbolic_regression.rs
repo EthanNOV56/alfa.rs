@@ -1,11 +1,12 @@
-//! Symbolic regression using genetic programming
+//! Symbolic regression using genetic programming (rebuilt on top of GA module)
 //!
-//! This module provides functionality to discover mathematical expressions
-//! that fit given data using evolutionary algorithms.
+//! This module provides a high-level interface for symbolic regression,
+//! leveraging the advanced genetic algorithm infrastructure in the `ga` module.
 
-use rand::Rng;
+use crate::expr::{Expr, Literal, BinaryOp, UnaryOp};
+use crate::ga::{self, GenotypeDecoder, FitnessEvaluator, GAConfig};
+use rand::prelude::*;
 use std::collections::HashMap;
-use crate::expr::{Expr, Literal};
 
 /// Configuration for symbolic regression
 #[derive(Clone)]
@@ -26,8 +27,6 @@ pub struct SymbolicRegressionConfig {
     pub terminals: Vec<Terminal>,
     /// Function set
     pub functions: Vec<Function>,
-    /// Fitness function
-    pub fitness_fn: FitnessFunction,
 }
 
 /// Terminal symbol (leaf node in expression tree)
@@ -52,19 +51,6 @@ pub struct Function {
     pub builder: fn(Vec<Expr>) -> Expr,
 }
 
-/// Fitness function type
-#[derive(Clone)]
-pub enum FitnessFunction {
-    /// Mean squared error
-    MSE,
-    /// Mean absolute error
-    MAE,
-    /// R-squared
-    RSquared,
-    /// Custom fitness function
-    Custom(fn(&Expr, &[DataPoint]) -> f64),
-}
-
 /// Data point for symbolic regression
 #[derive(Clone)]
 pub struct DataPoint {
@@ -74,231 +60,258 @@ pub struct DataPoint {
     pub target: f64,
 }
 
-/// An individual in the population
-#[derive(Clone)]
-pub struct Individual {
-    /// Expression tree
-    pub expr: Expr,
-    /// Fitness score (lower is better)
-    pub fitness: f64,
-    /// Depth of the expression tree
-    pub depth: usize,
+/// Fitness function for symbolic regression (mean squared error)
+struct SymbolicRegressionFitnessEvaluator {
+    data_points: Vec<DataPoint>,
 }
 
-/// Symbolic regression engine
-pub struct SymbolicRegression {
-    config: SymbolicRegressionConfig,
-    population: Vec<Individual>,
-    rng: rand::rngs::ThreadRng,
-    best_individual: Option<Individual>,
-    generation: usize,
+impl FitnessEvaluator for SymbolicRegressionFitnessEvaluator {
+    fn fitness(&self, expr: &Expr) -> f64 {
+        // Higher fitness is better, so we use negative MSE
+        -self.mean_squared_error(expr)
+    }
 }
 
-impl SymbolicRegression {
-    /// Create a new symbolic regression engine
-    pub fn new(config: SymbolicRegressionConfig) -> Self {
-        Self {
-            config,
-            population: vec![],
-            rng: rand::thread_rng(),
-            best_individual: None,
-            generation: 0,
-        }
-    }
-    
-    /// Initialize the population with random expressions
-    pub fn initialize_population(&mut self) {
-        self.population.clear();
+impl SymbolicRegressionFitnessEvaluator {
+    fn mean_squared_error(&self, expr: &Expr) -> f64 {
+        let mut total_error = 0.0;
+        let mut count = 0;
         
-        for _ in 0..self.config.population_size {
-            let expr = self.generate_random_expr(self.config.max_depth, true);
-            let fitness = self.evaluate_fitness(&expr);
-            let depth = self.calculate_depth(&expr);
-            
-            self.population.push(Individual {
-                expr,
-                fitness,
-                depth,
-            });
-        }
-        
-        self.update_best_individual();
-    }
-    
-    /// Run the evolutionary algorithm
-    pub fn run(&mut self, _data: &[DataPoint]) -> Option<&Individual> {
-        self.initialize_population();
-        
-        for generation in 0..self.config.max_generations {
-            self.generation = generation;
-            
-            // Create new population
-            let mut new_population = Vec::with_capacity(self.config.population_size);
-            
-            // Elitism: keep the best individual
-            if let Some(best) = self.best_individual.clone() {
-                new_population.push(best);
-            }
-            
-            // Fill the rest of the population
-            while new_population.len() < self.config.population_size {
-                let parent1 = self.tournament_selection();
-                let parent2 = self.tournament_selection();
-                
-                let (child1, child2) = if self.rng.gen_range(0.0..1.0) < self.config.crossover_prob {
-                    self.crossover(&parent1.expr, &parent2.expr)
-                } else {
-                    (parent1.expr.clone(), parent2.expr.clone())
-                };
-                
-                let child1 = if self.rng.gen_range(0.0..1.0) < self.config.mutation_prob {
-                    self.mutate(&child1)
-                } else {
-                    child1.clone()
-                };
-                
-                let child2 = if self.rng.gen_range(0.0..1.0) < self.config.mutation_prob {
-                    self.mutate(&child2)
-                } else {
-                    child2.clone()
-                };
-                
-                let fitness1 = self.evaluate_fitness(&child1);
-                let fitness2 = self.evaluate_fitness(&child2);
-                let depth1 = self.calculate_depth(&child1);
-                let depth2 = self.calculate_depth(&child2);
-                
-                new_population.push(Individual {
-                    expr: child1,
-                    fitness: fitness1,
-                    depth: depth1,
-                });
-                
-                if new_population.len() < self.config.population_size {
-                    new_population.push(Individual {
-                        expr: child2,
-                        fitness: fitness2,
-                        depth: depth2,
-                    });
+        for point in &self.data_points {
+            // Evaluate expression with current input values
+            // For simplicity, we'll create a simple evaluation context
+            // In a real implementation, this would use the full evaluation engine
+            match self.evaluate_expr_with_inputs(expr, &point.inputs) {
+                Ok(predicted) => {
+                    let error = predicted - point.target;
+                    total_error += error * error;
+                    count += 1;
+                }
+                Err(_) => {
+                    // Invalid expression, penalize heavily
+                    return 1e12;
                 }
             }
-            
-            self.population = new_population;
-            self.update_best_individual();
-            
-            // Log progress
-            if generation % 10 == 0 {
-                println!("Generation {}: best fitness = {:.6}", 
-                    generation, 
-                    self.best_individual.as_ref().unwrap().fitness
-                );
-            }
         }
         
-        self.best_individual.as_ref()
+        if count == 0 {
+            return 1e12;
+        }
+        
+        total_error / count as f64
     }
     
-    /// Generate a random expression
-    fn generate_random_expr(&mut self, max_depth: usize, allow_functions: bool) -> Expr {
-        if max_depth == 0 || (!allow_functions && self.rng.gen_range(0.0..1.0) < 0.7) {
-            // Generate terminal
+    fn evaluate_expr_with_inputs(&self, expr: &Expr, inputs: &HashMap<String, f64>) -> Result<f64, String> {
+        // Simple recursive evaluation for demonstration
+        // In production, use the actual evaluation engine
+        match expr {
+            Expr::Literal(Literal::Float(f)) => Ok(*f),
+            Expr::Literal(Literal::Integer(i)) => Ok(*i as f64),
+            Expr::Column(name) => {
+                inputs.get(name)
+                    .copied()
+                    .ok_or_else(|| format!("Variable {} not found in inputs", name))
+            }
+            Expr::BinaryExpr { left, op, right } => {
+                let left_val = self.evaluate_expr_with_inputs(left, inputs)?;
+                let right_val = self.evaluate_expr_with_inputs(right, inputs)?;
+                match op {
+                    BinaryOp::Add => Ok(left_val + right_val),
+                    BinaryOp::Subtract => Ok(left_val - right_val),
+                    BinaryOp::Multiply => Ok(left_val * right_val),
+                    BinaryOp::Divide => {
+                        if right_val == 0.0 {
+                            Err("Division by zero".to_string())
+                        } else {
+                            Ok(left_val / right_val)
+                        }
+                    }
+                    BinaryOp::Modulo => Ok(left_val % right_val),
+                    BinaryOp::Equal => Ok((left_val == right_val) as i64 as f64),
+                    BinaryOp::NotEqual => Ok((left_val != right_val) as i64 as f64),
+                    BinaryOp::GreaterThan => Ok((left_val > right_val) as i64 as f64),
+                    BinaryOp::GreaterThanOrEqual => Ok((left_val >= right_val) as i64 as f64),
+                    BinaryOp::LessThan => Ok((left_val < right_val) as i64 as f64),
+                    BinaryOp::LessThanOrEqual => Ok((left_val <= right_val) as i64 as f64),
+                    BinaryOp::And => Ok(((left_val != 0.0) && (right_val != 0.0)) as i64 as f64),
+                    BinaryOp::Or => Ok(((left_val != 0.0) || (right_val != 0.0)) as i64 as f64),
+                }
+            }
+            Expr::UnaryExpr { op, expr: inner } => {
+                let inner_val = self.evaluate_expr_with_inputs(inner, inputs)?;
+                match op {
+                    UnaryOp::Negate => Ok(-inner_val),
+                    UnaryOp::Not => Ok((inner_val == 0.0) as i64 as f64),
+                    UnaryOp::Abs => Ok(inner_val.abs()),
+                    UnaryOp::Sqrt => {
+                        if inner_val < 0.0 {
+                            Err("Square root of negative number".to_string())
+                        } else {
+                            Ok(inner_val.sqrt())
+                        }
+                    }
+                    UnaryOp::Log => {
+                        if inner_val <= 0.0 {
+                            Err("Log of non-positive number".to_string())
+                        } else {
+                            Ok(inner_val.ln())
+                        }
+                    }
+                    UnaryOp::Exp => Ok(inner_val.exp()),
+                }
+            }
+            Expr::FunctionCall { name, args } => {
+                let arg_vals: Result<Vec<f64>, String> = args.iter()
+                    .map(|arg| self.evaluate_expr_with_inputs(arg, inputs))
+                    .collect();
+                let arg_vals = arg_vals?;
+                
+                // Handle common functions
+                match name.as_str() {
+                    "sqrt" if arg_vals.len() == 1 => {
+                        if arg_vals[0] < 0.0 {
+                            Err("Square root of negative number".to_string())
+                        } else {
+                            Ok(arg_vals[0].sqrt())
+                        }
+                    }
+                    "log" if arg_vals.len() == 1 => {
+                        if arg_vals[0] <= 0.0 {
+                            Err("Log of non-positive number".to_string())
+                        } else {
+                            Ok(arg_vals[0].ln())
+                        }
+                    }
+                    "exp" if arg_vals.len() == 1 => Ok(arg_vals[0].exp()),
+                    "abs" if arg_vals.len() == 1 => Ok(arg_vals[0].abs()),
+                    "sin" if arg_vals.len() == 1 => Ok(arg_vals[0].sin()),
+                    "cos" if arg_vals.len() == 1 => Ok(arg_vals[0].cos()),
+                    "tan" if arg_vals.len() == 1 => Ok(arg_vals[0].tan()),
+                    _ => Err(format!("Unknown function or arity mismatch: {}", name)),
+                }
+            }
+            _ => Err("Unsupported expression type for simple evaluation".to_string()),
+        }
+    }
+}
+
+/// Expression generator for symbolic regression
+struct SymbolicRegressionGenerator<'a> {
+    config: SymbolicRegressionConfig,
+    rng: &'a mut (dyn RngCore + Send + Sync),
+}
+
+impl<'a> SymbolicRegressionGenerator<'a> {
+    fn new(config: SymbolicRegressionConfig, rng: &'a mut (dyn RngCore + Send + Sync)) -> Self {
+        Self { config, rng }
+    }
+    
+    fn generate_random_expr(&mut self, max_depth: usize) -> Expr {
+        if max_depth == 0 || (!self.config.functions.is_empty() && self.rng.gen_bool(0.3)) {
             self.generate_random_terminal()
         } else {
-            // Generate function
-            let function_idx = self.rng.gen_range(0..self.config.functions.len());
-            let function = self.config.functions[function_idx].clone();
-            let mut args = Vec::with_capacity(function.arity);
-            
-            for _ in 0..function.arity {
-                args.push(self.generate_random_expr(max_depth - 1, true));
-            }
-            
-            (function.builder)(args)
+            self.generate_random_function(max_depth - 1)
         }
     }
     
-    /// Generate a random terminal
     fn generate_random_terminal(&mut self) -> Expr {
         let terminal = &self.config.terminals[self.rng.gen_range(0..self.config.terminals.len())];
         
         match terminal {
-            Terminal::Variable(name) => Expr::col(name.clone()),
-            Terminal::Constant(value) => Expr::lit_float(*value),
-            Terminal::Ephemeral => Expr::lit_float(self.rng.gen_range(-10.0..10.0)),
+            Terminal::Variable(name) => Expr::Column(name.clone()),
+            Terminal::Constant(value) => Expr::Literal(Literal::Float(*value)),
+            Terminal::Ephemeral => Expr::Literal(Literal::Float(self.rng.gen_range(-10.0..10.0))),
         }
     }
     
-    /// Evaluate fitness of an expression
-    fn evaluate_fitness(&self, _expr: &Expr) -> f64 {
-        // TODO: Use actual data points
-        // For now, return a placeholder
-        0.0
-    }
-    
-    /// Calculate depth of an expression
-    fn calculate_depth(&self, expr: &Expr) -> usize {
-        match expr {
-            Expr::Literal(_) | Expr::Column(_) => 1,
-            Expr::BinaryExpr { left, right, .. } => {
-                1 + self.calculate_depth(left).max(self.calculate_depth(right))
-            }
-            Expr::UnaryExpr { expr, .. } => 1 + self.calculate_depth(expr),
-            Expr::FunctionCall { args, .. } => {
-                1 + args.iter().map(|arg| self.calculate_depth(arg)).max().unwrap_or(0)
-            }
-            Expr::Aggregate { expr, .. } => 1 + self.calculate_depth(expr),
-            Expr::Conditional { condition, then_expr, else_expr } => {
-                1 + self.calculate_depth(condition)
-                    .max(self.calculate_depth(then_expr))
-                    .max(self.calculate_depth(else_expr))
-            }
-            Expr::Cast { expr, .. } => 1 + self.calculate_depth(expr),
-        }
-    }
-    
-    /// Tournament selection
-    fn tournament_selection(&mut self) -> Individual {
-        let mut best_idx = self.rng.gen_range(0..self.population.len());
+    fn generate_random_function(&mut self, max_depth: usize) -> Expr {
+        let function_idx = self.rng.gen_range(0..self.config.functions.len());
+        let arity = self.config.functions[function_idx].arity;
+        let mut args = Vec::with_capacity(arity);
         
-        for _ in 1..self.config.tournament_size {
-            let candidate_idx = self.rng.gen_range(0..self.population.len());
-            if self.population[candidate_idx].fitness < self.population[best_idx].fitness {
-                best_idx = candidate_idx;
-            }
+        for _ in 0..arity {
+            args.push(self.generate_random_expr(max_depth));
         }
         
-        self.population[best_idx].clone()
+        let function = &self.config.functions[function_idx];
+        (function.builder)(args)
     }
     
-    /// Crossover two expressions
-    fn crossover(&mut self, expr1: &Expr, expr2: &Expr) -> (Expr, Expr) {
-        // TODO: Implement subtree crossover
-        (expr1.clone(), expr2.clone())
-    }
-    
-    /// Mutate an expression
-    fn mutate(&mut self, expr: &Expr) -> Expr {
-        // TODO: Implement mutation operators
-        expr.clone()
-    }
-    
-    /// Update the best individual found so far
-    fn update_best_individual(&mut self) {
-        let best = self.population.iter()
-            .min_by(|a, b| a.fitness.partial_cmp(&b.fitness).unwrap())
-            .unwrap();
-        
-        if self.best_individual.as_ref().map_or(true, |current| best.fitness < current.fitness) {
-            self.best_individual = Some(best.clone());
+    fn generate_initial_population(&mut self, size: usize) -> Vec<Expr> {
+        let mut population = Vec::with_capacity(size);
+        for _ in 0..size {
+            population.push(self.generate_random_expr(self.config.max_depth));
         }
+        population
+    }
+}
+
+/// High-level symbolic regression engine
+pub struct SymbolicRegressionEngine {
+    config: SymbolicRegressionConfig,
+    rng: Box<dyn RngCore + Send + Sync>,
+}
+
+impl SymbolicRegressionEngine {
+    /// Create a new symbolic regression engine with default configuration
+    pub fn new() -> Self {
+        Self::with_config(SymbolicRegressionConfig::default())
+    }
+    
+    /// Create a new symbolic regression engine with custom configuration
+    pub fn with_config(config: SymbolicRegressionConfig) -> Self {
+        use rand::SeedableRng;
+        let rng: Box<dyn RngCore + Send + Sync> = Box::new(rand::rngs::StdRng::from_entropy());
+        Self {
+            config,
+            rng,
+        }
+    }
+    
+    /// Run symbolic regression on the given data points
+    pub fn run(&mut self, data_points: &[DataPoint]) -> Option<(Expr, f64)> {
+        // Convert to GA configuration
+        let ga_config = GAConfig {
+            generations: self.config.max_generations,
+            tournament_size: self.config.tournament_size,
+            crossover_rate: self.config.crossover_prob,
+            mutation_rate: self.config.mutation_prob,
+            gene_max: 255, // Not used for expression-based GA
+        };
+        
+        // Create fitness evaluator
+        let evaluator = SymbolicRegressionFitnessEvaluator {
+            data_points: data_points.to_vec(),
+        };
+        
+        // Generate initial population
+        let mut generator = SymbolicRegressionGenerator::new(
+            self.config.clone(),
+            &mut *self.rng,
+        );
+        let initial_population = generator.generate_initial_population(self.config.population_size);
+        
+        // Run GA
+        let (best_expr, best_fitness) = ga::run_ga_exprs(
+            &ga_config,
+            initial_population,
+            &evaluator,
+            &mut *self.rng,
+        );
+        
+        Some((best_expr, -best_fitness)) // Convert back to MSE (positive, lower is better)
+    }
+    
+    /// Find an expression that fits the given data (simplified interface)
+    pub fn find_expression(data_points: &[DataPoint]) -> Option<Expr> {
+        let mut engine = Self::new();
+        engine.run(data_points).map(|(expr, _)| expr)
     }
 }
 
 /// Default configuration for symbolic regression
 impl Default for SymbolicRegressionConfig {
     fn default() -> Self {
-        use crate::expr::{BinaryOp, UnaryOp};
-        
         let functions = vec![
             Function {
                 name: "add".to_string(),
@@ -385,17 +398,13 @@ impl Default for SymbolicRegressionConfig {
                 Terminal::Ephemeral,
             ],
             functions,
-            fitness_fn: FitnessFunction::MSE,
         }
     }
 }
 
-/// Helper function to run symbolic regression on simple data
+/// Legacy compatibility function
 pub fn find_expression(data: &[DataPoint]) -> Option<Expr> {
-    let config = SymbolicRegressionConfig::default();
-    let mut engine = SymbolicRegression::new(config);
-    
-    engine.run(data).map(|ind| ind.expr.clone())
+    SymbolicRegressionEngine::find_expression(data)
 }
 
 #[cfg(test)]
@@ -411,12 +420,53 @@ mod tests {
     }
     
     #[test]
-    fn test_random_expr_generation() {
+    fn test_generate_random_terminal() {
         let config = SymbolicRegressionConfig::default();
-        let mut engine = SymbolicRegression::new(config);
-        let expr = engine.generate_random_expr(3, true);
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        let mut generator = SymbolicRegressionGenerator::new(config, &mut rng);
         
-        // Expression should be valid
-        assert!(matches!(expr, Expr::Literal(_) | Expr::Column(_) | Expr::BinaryExpr { .. } | Expr::UnaryExpr { .. } | Expr::FunctionCall { .. }));
+        let expr = generator.generate_random_terminal();
+        assert!(matches!(expr, Expr::Literal(_) | Expr::Column(_)));
+    }
+    
+    #[test]
+    fn test_fitness_evaluator() {
+        let data_points = vec![
+            DataPoint {
+                inputs: {
+                    let mut m = HashMap::new();
+                    m.insert("x".to_string(), 1.0);
+                    m
+                },
+                target: 2.0,
+            },
+            DataPoint {
+                inputs: {
+                    let mut m = HashMap::new();
+                    m.insert("x".to_string(), 2.0);
+                    m
+                },
+                target: 4.0,
+            },
+        ];
+        
+        let evaluator = SymbolicRegressionFitnessEvaluator {
+            data_points: data_points.clone(),
+        };
+        
+        // Test with expression x * 2
+        let expr = Expr::Column("x".to_string())
+            .binary(BinaryOp::Multiply, Expr::Literal(Literal::Float(2.0)));
+        
+        let fitness = evaluator.fitness(&expr);
+        // Perfect fit should have high fitness (low negative MSE)
+        assert!(fitness > -1e-6);
+    }
+    
+    #[test]
+    fn test_engine_creation() {
+        let _engine = SymbolicRegressionEngine::new();
+        // Should compile and create without error
+        assert!(true);
     }
 }
