@@ -281,14 +281,14 @@ mod tests {
         let dim = infer_dimension(&expr, &ctx).unwrap();
         assert_eq!(dim.kind, DimKind::TimeSeries);
         
-        // Invalid: branches have different dimensions
+        // Mixed dimensions: TimeSeries vs Scalar -> TimeSeries
         let expr = Expr::conditional(
             Expr::Literal(Literal::Boolean(true)),
             Expr::Column("price".to_string()),  // TimeSeries
             Expr::Literal(Literal::Float(0.0)), // Scalar
         );
-        let result = infer_dimension(&expr, &ctx);
-        assert!(result.is_err());
+        let dim = infer_dimension(&expr, &ctx).unwrap();
+        assert_eq!(dim.kind, DimKind::TimeSeries);
     }
     
     #[test]

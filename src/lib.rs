@@ -5,6 +5,7 @@
 //! alpha computation and symbolic regression.
 
 pub mod alpha;
+pub mod clickhouse_provider;
 pub mod config;
 pub mod data_provider;
 pub mod dim;
