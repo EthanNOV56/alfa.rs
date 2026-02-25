@@ -18,8 +18,8 @@ impl AlphaBuilder {
     }
     
     /// Create a momentum alpha factor (price change over N periods)
-    pub fn momentum(self, periods: i64) -> Expr {
-        let base = self.base_expr;
+    pub fn momentum(&self, periods: i64) -> Expr {
+        let base = self.base_expr.clone();
         // TODO: Implement proper time series lag operation
         // For now, create a placeholder expression
         Expr::function(
@@ -29,8 +29,8 @@ impl AlphaBuilder {
     }
     
     /// Create a moving average alpha factor
-    pub fn moving_average(self, window: i64) -> Expr {
-        let base = self.base_expr;
+    pub fn moving_average(&self, window: i64) -> Expr {
+        let base = self.base_expr.clone();
         Expr::function(
             "moving_average",
             vec![base, Expr::lit_int(window)]
@@ -38,8 +38,8 @@ impl AlphaBuilder {
     }
     
     /// Create a volatility alpha factor (standard deviation over N periods)
-    pub fn volatility(self, periods: i64) -> Expr {
-        let base = self.base_expr;
+    pub fn volatility(&self, periods: i64) -> Expr {
+        let base = self.base_expr.clone();
         Expr::function(
             "volatility",
             vec![base, Expr::lit_int(periods)]
@@ -47,7 +47,7 @@ impl AlphaBuilder {
     }
     
     /// Create a Sharpe ratio alpha factor
-    pub fn sharpe_ratio(self, returns_expr: Expr, risk_free_expr: Expr, periods: i64) -> Expr {
+    pub fn sharpe_ratio(&self, returns_expr: Expr, risk_free_expr: Expr, periods: i64) -> Expr {
         Expr::function(
             "sharpe_ratio",
             vec![returns_expr, risk_free_expr, Expr::lit_int(periods)]
@@ -55,8 +55,8 @@ impl AlphaBuilder {
     }
     
     /// Create a correlation alpha factor between two series
-    pub fn correlation(self, other: Expr, periods: i64) -> Expr {
-        let base = self.base_expr;
+    pub fn correlation(&self, other: Expr, periods: i64) -> Expr {
+        let base = self.base_expr.clone();
         Expr::function(
             "correlation",
             vec![base, other, Expr::lit_int(periods)]
@@ -64,8 +64,8 @@ impl AlphaBuilder {
     }
     
     /// Create a beta alpha factor (relative to market)
-    pub fn beta(self, market_expr: Expr, periods: i64) -> Expr {
-        let base = self.base_expr;
+    pub fn beta(&self, market_expr: Expr, periods: i64) -> Expr {
+        let base = self.base_expr.clone();
         Expr::function(
             "beta",
             vec![base, market_expr, Expr::lit_int(periods)]
@@ -73,8 +73,8 @@ impl AlphaBuilder {
     }
     
     /// Create an R-squared alpha factor
-    pub fn r_squared(self, market_expr: Expr, periods: i64) -> Expr {
-        let base = self.base_expr;
+    pub fn r_squared(&self, market_expr: Expr, periods: i64) -> Expr {
+        let base = self.base_expr.clone();
         Expr::function(
             "r_squared",
             vec![base, market_expr, Expr::lit_int(periods)]
@@ -82,8 +82,8 @@ impl AlphaBuilder {
     }
     
     /// Create a maximum drawdown alpha factor
-    pub fn max_drawdown(self, periods: i64) -> Expr {
-        let base = self.base_expr;
+    pub fn max_drawdown(&self, periods: i64) -> Expr {
+        let base = self.base_expr.clone();
         Expr::function(
             "max_drawdown",
             vec![base, Expr::lit_int(periods)]
@@ -91,8 +91,8 @@ impl AlphaBuilder {
     }
     
     /// Create a value at risk (VaR) alpha factor
-    pub fn var(self, confidence_level: f64, periods: i64) -> Expr {
-        let base = self.base_expr;
+    pub fn var(&self, confidence_level: f64, periods: i64) -> Expr {
+        let base = self.base_expr.clone();
         Expr::function(
             "var",
             vec![base, Expr::lit_float(confidence_level), Expr::lit_int(periods)]
