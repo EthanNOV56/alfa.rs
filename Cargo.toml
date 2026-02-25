@@ -1,0 +1,20 @@
+[package]
+name = "alpha-expr"
+version = "0.1.0"
+edition = "2024"
+description = "Alpha expression system inspired by relational algebra and Polars expr API"
+authors = ["tip <tip@example.com>"]
+license = "MIT OR Apache-2.0"
+repository = ""
+
+[dependencies]
+rand = "0.8"
+thiserror = "1.0"
+serde = { version = "1.0", features = ["derive"], optional = true }
+
+[dev-dependencies]
+criterion = "0.5"
+
+# [[bench]]
+# name = "benchmarks"
+# harness = false
