@@ -6,7 +6,6 @@
 use rand::Rng;
 use std::collections::HashMap;
 use crate::expr::{Expr, Literal};
-use crate::evaluation::EvaluationContext;
 
 /// Configuration for symbolic regression
 #[derive(Clone)]
