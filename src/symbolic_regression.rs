@@ -127,7 +127,7 @@ impl SymbolicRegression {
     }
     
     /// Run the evolutionary algorithm
-    pub fn run(&mut self, data: &[DataPoint]) -> Option<&Individual> {
+    pub fn run(&mut self, _data: &[DataPoint]) -> Option<&Individual> {
         self.initialize_population();
         
         for generation in 0..self.config.max_generations {
@@ -166,18 +166,20 @@ impl SymbolicRegression {
                 
                 let fitness1 = self.evaluate_fitness(&child1);
                 let fitness2 = self.evaluate_fitness(&child2);
+                let depth1 = self.calculate_depth(&child1);
+                let depth2 = self.calculate_depth(&child2);
                 
                 new_population.push(Individual {
                     expr: child1,
                     fitness: fitness1,
-                    depth: self.calculate_depth(&child1),
+                    depth: depth1,
                 });
                 
                 if new_population.len() < self.config.population_size {
                     new_population.push(Individual {
                         expr: child2,
                         fitness: fitness2,
-                        depth: self.calculate_depth(&child2),
+                        depth: depth2,
                     });
                 }
             }
@@ -228,7 +230,7 @@ impl SymbolicRegression {
     }
     
     /// Evaluate fitness of an expression
-    fn evaluate_fitness(&self, expr: &Expr) -> f64 {
+    fn evaluate_fitness(&self, _expr: &Expr) -> f64 {
         // TODO: Use actual data points
         // For now, return a placeholder
         0.0
