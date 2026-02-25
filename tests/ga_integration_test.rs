@@ -34,7 +34,7 @@ impl FitnessEvaluator for RunnerEvaluator {
         vals.insert("x".to_string(), 2.0f64);
         let provider = MockProvider::new(vals);
         let exec = EvalExecutor;
-        let res = exec.execute_plan(&opt_plan, &provider);
+        let res = exec.execute_plan(&opt_plan, &provider, None);
         // Extract scalar result from execution result
         // This is a simplification; actual implementation may differ
         0.0 // Placeholder
