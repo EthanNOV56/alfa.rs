@@ -10,6 +10,7 @@ pub mod expr;
 pub mod logical_plan;
 pub mod optimizer;
 pub mod symbolic_regression;
+pub mod timeseries;
 
 // Re-exports for common usage
 pub use expr::Expr;
