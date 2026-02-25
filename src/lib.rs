@@ -10,6 +10,7 @@ pub mod dim;
 pub mod evaluation;
 pub mod executor;
 pub mod expr;
+pub mod ga;
 pub mod logical_plan;
 pub mod optimizer;
 pub mod symbolic_regression;
