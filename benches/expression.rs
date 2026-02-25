@@ -2,7 +2,7 @@
 
 use alpha_expr::expr::{Expr, Literal};
 use alpha_expr::evaluation::EvaluationContext;
-use alpha_expr::data_provider::{MockProvider, DataProvider};
+use alpha_expr::data_provider::MockProvider;
 use alpha_expr::executor::{EvalExecutor, Executor};
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use std::collections::HashMap;
@@ -13,7 +13,7 @@ fn bench_literal_evaluation(c: &mut Criterion) {
         let context = EvaluationContext::new();
         
         b.iter(|| {
-            let result = context.evaluate(black_box(&expr));
+            let result = context.evaluate(black_box(&expr)).unwrap();
             black_box(result);
         });
     });
@@ -26,7 +26,7 @@ fn bench_binary_operation(c: &mut Criterion) {
         let context = EvaluationContext::new();
         
         b.iter(|| {
-            let result = context.evaluate(black_box(&expr));
+            let result = context.evaluate(black_box(&expr)).unwrap();
             black_box(result);
         });
     });
@@ -43,7 +43,7 @@ fn bench_binary_operation(c: &mut Criterion) {
         let context = EvaluationContext::new();
         
         b.iter(|| {
-            let result = context.evaluate(black_box(&expr));
+            let result = context.evaluate(black_box(&expr)).unwrap();
             black_box(result);
         });
     });
@@ -85,7 +85,7 @@ fn bench_function_evaluation(c: &mut Criterion) {
         let context = EvaluationContext::new();
         
         b.iter(|| {
-            let result = context.evaluate(black_box(&expr));
+            let result = context.evaluate(black_box(&expr)).unwrap();
             black_box(result);
         });
     });
@@ -111,7 +111,7 @@ fn bench_function_evaluation(c: &mut Criterion) {
 }
 
 fn bench_aggregate_evaluation(c: &mut Criterion) {
-    let mut scalars = HashMap::new();
+    let scalars = HashMap::new();
     let mut series = HashMap::new();
     
     // Create a series of 1000 prices

@@ -5,7 +5,7 @@ use alpha_expr::logical_plan::LogicalPlan;
 use alpha_expr::optimizer::{
     Optimizer, ConstantFolding, PredicatePushdown, ProjectionPushdown, DimensionValidation
 };
-use alpha_expr::dim::{Dimension, DimensionContext, DimKind};
+use alpha_expr::dim::{Dimension, DimensionContext};
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use std::sync::Arc;
 

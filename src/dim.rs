@@ -324,7 +324,7 @@ mod tests {
         ctx.push(("price".to_string(), Dimension::new_timeseries()));
         
         // Aggregate of TimeSeries -> Scalar
-        let expr = Expr::aggregate("sum", Expr::Column("price".to_string()), false);
+        let expr = Expr::Column("price".to_string()).aggregate(AggregateOp::Sum, false);
         let dim = infer_dimension(&expr, &ctx).unwrap();
         assert_eq!(dim.kind, DimKind::Scalar);
     }

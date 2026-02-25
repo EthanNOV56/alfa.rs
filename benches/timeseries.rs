@@ -2,7 +2,6 @@
 
 use alpha_expr::timeseries::TimeSeries;
 use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
-use ndarray::Array1;
 
 fn create_large_series(size: usize) -> TimeSeries {
     let data: Vec<f64> = (0..size).map(|i| (i as f64).sin() * 100.0).collect();
