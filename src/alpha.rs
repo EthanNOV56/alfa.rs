@@ -4,8 +4,6 @@
 //! alpha factors and other quantitative finance indicators.
 
 use crate::expr::Expr;
-use crate::evaluation::EvaluationContext;
-use crate::timeseries::TimeSeries;
 
 /// Alpha factor expression builder
 pub struct AlphaBuilder {

@@ -3,12 +3,12 @@
 //! This module provides generic genetic algorithm operations that can be used
 //! for symbolic regression and other expression optimization tasks.
 
-use crate::config::{Config, ClickhouseConfig};
-use crate::data_provider::{DataProvider, MockProvider};
+use crate::config::Config;
+use crate::data_provider::DataProvider;
 use crate::executor::{EvalExecutor, Executor};
 use crate::expr::{Expr, Literal, BinaryOp, UnaryOp, AggregateOp, DataType};
 use crate::logical_plan::LogicalPlan;
-use crate::optimizer::{Optimizer, ConstantFolding, PredicatePushdown, ProjectionPushdown, DimensionValidation};
+use crate::optimizer::{Optimizer, ConstantFolding, PredicatePushdown, ProjectionPushdown};
 use ahash::AHasher;
 use bincode;
 use lru::LruCache;
@@ -1054,9 +1054,9 @@ mod tests {
     #[test]
     fn test_pipeline_evaluator_creation() {
         let optimizer = Arc::new(Optimizer::new()
-            .add_rule(ConstantFolding)
-            .add_rule(PredicatePushdown)
-            .add_rule(ProjectionPushdown));
+            .add_rule(ConstantFolding::new())
+            .add_rule(PredicatePushdown::new())
+            .add_rule(ProjectionPushdown::new()));
         let provider = Arc::new(MockProvider::new(HashMap::new()));
         
         let evaluator = PipelineEvaluator::new(optimizer, provider);
