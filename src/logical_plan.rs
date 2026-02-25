@@ -175,13 +175,10 @@ impl LogicalPlan {
     }
 
     /// Transform the logical plan using a visitor
-    pub fn transform<F>(self, mut f: F) -> LogicalPlan
-    where
-        F: FnMut(LogicalPlan) -> LogicalPlan,
-    {
+    pub fn transform(self, f: &mut dyn FnMut(LogicalPlan) -> LogicalPlan) -> LogicalPlan {
         let transformed_children = self.children()
             .iter()
-            .map(|child| (*child).clone().transform(&mut f))
+            .map(|child| (*child).clone().transform(f))
             .collect::<Vec<_>>();
         
         let mut plan = match self {

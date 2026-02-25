@@ -75,7 +75,7 @@ impl ConstantFolding {
 
 impl OptimizerRule for ConstantFolding {
     fn optimize(&self, plan: LogicalPlan) -> LogicalPlan {
-        plan.transform(|plan| {
+        let mut transform_fn = |plan: LogicalPlan| {
             match plan {
                 LogicalPlan::Filter { input, predicate } => {
                     let folded_predicate = self.fold_expr(predicate);
@@ -95,7 +95,8 @@ impl OptimizerRule for ConstantFolding {
                 }
                 _ => plan,
             }
-        })
+        };
+        plan.transform(&mut transform_fn)
     }
     
     fn name(&self) -> &str {
