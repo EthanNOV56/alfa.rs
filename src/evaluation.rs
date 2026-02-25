@@ -3,13 +3,14 @@
 //! This module provides functionality to evaluate expressions against data.
 
 use std::collections::HashMap;
-use crate::expr::{Expr, Literal, BinaryOp, UnaryOp, AggregateOp, DataType};
+use crate::expr::{Expr, Literal, BinaryOp, UnaryOp, DataType};
 
 /// Context for evaluating expressions
 pub struct EvaluationContext {
     /// Column name to value mapping for the current row
     row_data: HashMap<String, Literal>,
     /// Aggregated data for window functions (optional)
+    #[allow(dead_code)]
     window_data: Option<HashMap<String, Vec<Literal>>>,
 }
 

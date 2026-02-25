@@ -3,9 +3,10 @@
 //! This module provides rule-based optimization for transforming logical plans
 //! and expressions to more efficient forms.
 
-use crate::logical_plan::{LogicalPlan, JoinType, SetOp};
+#[allow(unused_imports)]
+use crate::logical_plan::{LogicalPlan, SetOp};
 use crate::expr::{Expr, Literal, BinaryOp, UnaryOp};
-use crate::dim::{DimensionContext, DimensionError};
+use crate::dim::DimensionContext;
 use std::collections::HashSet;
 use std::sync::Arc;
 

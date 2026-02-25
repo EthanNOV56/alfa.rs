@@ -8,7 +8,7 @@ use crate::data_provider::DataProvider;
 use crate::executor::{EvalExecutor, Executor};
 use crate::expr::{Expr, Literal, BinaryOp, UnaryOp, AggregateOp, DataType};
 use crate::logical_plan::LogicalPlan;
-use crate::optimizer::{Optimizer, ConstantFolding, PredicatePushdown, ProjectionPushdown};
+use crate::optimizer::Optimizer;
 use ahash::AHasher;
 use bincode;
 use lru::LruCache;
@@ -83,13 +83,7 @@ pub fn mutate<R: Rng + ?Sized>(ch: &mut Chromosome, rate: f64, max_val: u8, rng:
     }
 }
 
-fn random_chromosome<R: Rng + ?Sized>(len: usize, max_val: u8, rng: &mut R) -> Chromosome {
-    let mut genes = Vec::with_capacity(len);
-    for _ in 0..len {
-        genes.push(rng.gen_range(0..max_val));
-    }
-    Chromosome { genes }
-}
+
 
 pub struct GAConfig {
     pub generations: usize,
@@ -1014,8 +1008,12 @@ impl FitnessEvaluator for PipelineEvaluator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data_provider::MockProvider;
+    use crate::optimizer::{ConstantFolding, PredicatePushdown, ProjectionPushdown};
     use rand::SeedableRng;
     use rand::rngs::StdRng;
+    use std::collections::HashMap;
+    use std::sync::Arc;
     
     #[test]
     fn test_chromosome_crossover() {

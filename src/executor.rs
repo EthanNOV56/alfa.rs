@@ -448,7 +448,7 @@ impl Executor for EvalExecutor {
             LogicalPlan::Expression(expr) => {
                 self.evaluate_expr(expr, provider, ctx)
             }
-            LogicalPlan::Projection { expr, input, .. } => {
+            LogicalPlan::Projection { expr, input: _input, .. } => {
                 // For now, just evaluate the first expression in the projection
                 if expr.is_empty() {
                     return ExecResult::error("Empty projection".to_string());
@@ -480,7 +480,7 @@ impl Executor for EvalExecutor {
                     ExecResult::error("Filter predicate false".to_string())
                 }
             }
-            LogicalPlan::Scan { source_name, projection, filters } => {
+            LogicalPlan::Scan { source_name: _source_name, projection, filters } => {
                 // For scans, we need to set up the execution context
                 // For now, we'll just evaluate any filters and return a dummy result
                 for filter in filters {

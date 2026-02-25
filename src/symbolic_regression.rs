@@ -4,7 +4,7 @@
 //! leveraging the advanced genetic algorithm infrastructure in the `ga` module.
 
 use crate::expr::{Expr, Literal, BinaryOp, UnaryOp};
-use crate::ga::{self, GenotypeDecoder, FitnessEvaluator, GAConfig};
+use crate::ga::{self, FitnessEvaluator, GAConfig};
 use rand::prelude::*;
 use std::collections::HashMap;
 

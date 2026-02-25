@@ -3,7 +3,7 @@
 //! This module provides functionality to infer whether expressions represent
 //! scalar values or time series, ensuring dimensional consistency in computations.
 
-use crate::expr::{Expr, BinaryOp, UnaryOp, AggregateOp};
+use crate::expr::{Expr, BinaryOp};
 
 /// Dimension kind (scalar vs time series)
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -202,7 +202,7 @@ pub fn validate_timeseries(expr: &Expr, ctx: &DimensionContext) -> Result<(), Di
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::expr::{Expr, Literal};
+    use crate::expr::{Expr, Literal, AggregateOp};
     
     #[test]
     fn test_literal_dimension() {

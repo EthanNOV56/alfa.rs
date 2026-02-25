@@ -4,7 +4,7 @@
 //! including window operations, lags, and statistical calculations.
 
 use ndarray::Array1;
-use ndarray_stats::{QuantileExt, SummaryStatisticsExt};
+use ndarray_stats::QuantileExt;
 
 /// Time series data structure
 #[derive(Debug, Clone)]
@@ -12,6 +12,7 @@ pub struct TimeSeries {
     /// Values stored as a 1D array
     data: Array1<f64>,
     /// Optional timestamps (not yet used)
+    #[allow(dead_code)]
     timestamps: Option<Array1<i64>>,
 }
 

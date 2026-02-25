@@ -8,7 +8,6 @@ use crate::data_provider::{DataProvider, Series};
 use once_cell::sync::Lazy;
 use reqwest;
 use serde_json::Value;
-use std::collections::HashMap;
 use std::time::Duration;
 use tokio;
 
