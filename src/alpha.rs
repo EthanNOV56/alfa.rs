@@ -226,10 +226,16 @@ mod tests {
     #[test]
     fn test_alpha_builder() {
         let price = Expr::col("price");
-        let alpha = price.clone().alpha();
-        let momentum = alpha.momentum(20);
         
+        // Each method consumes the builder, so we need to recreate it
+        let momentum = price.clone().alpha().momentum(20);
         assert!(matches!(momentum, Expr::FunctionCall { .. }));
+        
+        let volatility = price.clone().alpha().volatility(30);
+        assert!(matches!(volatility, Expr::FunctionCall { .. }));
+        
+        let moving_avg = price.clone().alpha().moving_average(50);
+        assert!(matches!(moving_avg, Expr::FunctionCall { .. }));
     }
     
     #[test]
@@ -237,16 +243,58 @@ mod tests {
         let price = Expr::col("price");
         let lagged = timeseries::lag(price.clone(), 1);
         let diff = timeseries::diff(price.clone(), 1);
+        let pct_change = timeseries::pct_change(price.clone(), 1);
+        let rolling = timeseries::rolling(price.clone(), 10, "mean");
+        let ema = timeseries::ema(price.clone(), 20);
         
         assert!(matches!(lagged, Expr::FunctionCall { .. }));
         assert!(matches!(diff, Expr::BinaryExpr { .. }));
+        assert!(matches!(pct_change, Expr::BinaryExpr { .. }));
+        assert!(matches!(rolling, Expr::FunctionCall { .. }));
+        assert!(matches!(ema, Expr::FunctionCall { .. }));
     }
     
     #[test]
     fn test_predefined_factors() {
         let price = Expr::col("price");
-        let momentum = factors::momentum(price, 20, 10);
-        
+        let momentum = factors::momentum(price.clone(), 20, 10);
         assert!(matches!(momentum, Expr::FunctionCall { .. }));
+        
+        let book_value = Expr::col("book_value");
+        let market_value = Expr::col("market_value");
+        let value = factors::value(book_value, market_value);
+        assert!(matches!(value, Expr::BinaryExpr { .. }));
+        
+        let market_cap = Expr::col("market_cap");
+        let size = factors::size(market_cap);
+        assert!(matches!(size, Expr::FunctionCall { .. }));
+        
+        let returns = Expr::col("returns");
+        let low_vol = factors::low_volatility(returns.clone(), 30);
+        assert!(matches!(low_vol, Expr::BinaryExpr { .. }));
+        
+        let profitability = Expr::col("profitability");
+        let growth = Expr::col("growth");
+        let safety = Expr::col("safety");
+        let quality = factors::quality(profitability, growth, safety);
+        assert!(matches!(quality, Expr::BinaryExpr { .. }));
+    }
+    
+    #[test]
+    fn test_z_score() {
+        let expr = Expr::col("x");
+        let z = factors::z_score(expr);
+        // z = (x - mean) / std
+        assert!(matches!(z, Expr::BinaryExpr { .. }));
+    }
+    
+    #[test]
+    fn test_alpha_evaluation_context() {
+        let ctx = AlphaEvaluationContext::new();
+        let expr = Expr::lit_float(42.0);
+        match ctx.evaluate_alpha(&expr) {
+            Ok(val) => assert!((val - 42.0).abs() < 1e-10),
+            Err(e) => panic!("Expected evaluation to succeed, got {:?}", e),
+        }
     }
 }
