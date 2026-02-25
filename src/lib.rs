@@ -5,7 +5,10 @@
 //! alpha computation and symbolic regression.
 
 pub mod alpha;
+pub mod data_provider;
+pub mod dim;
 pub mod evaluation;
+pub mod executor;
 pub mod expr;
 pub mod logical_plan;
 pub mod optimizer;

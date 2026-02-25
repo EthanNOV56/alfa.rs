@@ -5,6 +5,7 @@
 
 use crate::logical_plan::{LogicalPlan, JoinType, SetOp};
 use crate::expr::{Expr, Literal, BinaryOp, UnaryOp};
+use crate::dim::{DimensionContext, DimensionError};
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -791,6 +792,127 @@ impl EliminateCommonSubexpressions {
         
         // For now, we'll just return the original expressions
         (exprs, vec![])
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Dimension validation rule
+// ----------------------------------------------------------------------------
+
+/// Validate dimension compatibility in expressions
+pub struct DimensionValidation {
+    name: String,
+    context: DimensionContext,
+}
+
+impl DimensionValidation {
+    pub fn new(context: DimensionContext) -> Self {
+        Self {
+            name: "dimension_validation".to_string(),
+            context,
+        }
+    }
+}
+
+impl OptimizerRule for DimensionValidation {
+    fn optimize(&self, plan: LogicalPlan) -> LogicalPlan {
+        // Validate dimensions in the plan without modifying it
+        self.validate_dimensions(&plan);
+        plan
+    }
+    
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+impl DimensionValidation {
+    fn validate_dimensions(&self, plan: &LogicalPlan) {
+        match plan {
+            LogicalPlan::Projection { expr, input, .. } => {
+                // First validate the input
+                self.validate_dimensions(input);
+                
+                // Validate each projection expression
+                for e in expr {
+                    if let Err(err) = crate::dim::infer_dimension(e, &self.context) {
+                        // In a production system, we might want to collect errors
+                        // rather than panicking. For now, we'll panic for simplicity.
+                        panic!("Dimension validation error in projection: {}", err);
+                    }
+                }
+            }
+            LogicalPlan::Filter { predicate, input } => {
+                self.validate_dimensions(input);
+                
+                // Filter predicates should be scalar
+                if let Err(err) = crate::dim::infer_dimension(predicate, &self.context) {
+                    panic!("Dimension validation error in filter predicate: {}", err);
+                }
+                
+                // Additionally, ensure predicate is scalar (boolean)
+                if let Err(err) = crate::dim::validate_scalar(predicate, &self.context) {
+                    panic!("Filter predicate must be scalar: {}", err);
+                }
+            }
+            LogicalPlan::Aggregate { group_expr, agg_expr, input } => {
+                self.validate_dimensions(input);
+                
+                // Group expressions should be scalar
+                for e in group_expr {
+                    if let Err(err) = crate::dim::validate_scalar(e, &self.context) {
+                        panic!("Group expression must be scalar: {}", err);
+                    }
+                }
+                
+                // Aggregate expressions should have valid dimensions
+                for e in agg_expr {
+                    if let Err(err) = crate::dim::infer_dimension(e, &self.context) {
+                        panic!("Dimension error in aggregate expression: {}", err);
+                    }
+                }
+            }
+            LogicalPlan::Join { left, right, condition, .. } => {
+                self.validate_dimensions(left);
+                self.validate_dimensions(right);
+                
+                if let Some(cond) = condition {
+                    if let Err(err) = crate::dim::infer_dimension(cond, &self.context) {
+                        panic!("Dimension error in join condition: {}", err);
+                    }
+                }
+            }
+            LogicalPlan::Sort { sort_expr, input, .. } => {
+                self.validate_dimensions(input);
+                
+                // Sort expressions should be scalar
+                for e in sort_expr {
+                    if let Err(err) = crate::dim::validate_scalar(e, &self.context) {
+                        panic!("Sort expression must be scalar: {}", err);
+                    }
+                }
+            }
+            LogicalPlan::Scan { filters, .. } => {
+                // Validate filter expressions in scan
+                for filter in filters {
+                    if let Err(err) = crate::dim::infer_dimension(filter, &self.context) {
+                        panic!("Dimension error in scan filter: {}", err);
+                    }
+                }
+            }
+            LogicalPlan::Limit { input, .. } => {
+                self.validate_dimensions(input);
+            }
+            LogicalPlan::SetOperation { left, right, .. } => {
+                self.validate_dimensions(left);
+                self.validate_dimensions(right);
+            }
+            LogicalPlan::Expression(expr) => {
+                if let Err(err) = crate::dim::infer_dimension(expr, &self.context) {
+                    panic!("Dimension error in expression: {}", err);
+                }
+            }
+        }
     }
 }
 
