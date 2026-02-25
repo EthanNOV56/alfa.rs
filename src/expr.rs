@@ -328,6 +328,15 @@ impl std::ops::Div for Expr {
     }
 }
 
+impl Expr {
+    /// Add an alias to this expression
+    pub fn alias(self, _name: impl Into<String>) -> Self {
+        // For now, just return the expression itself
+        // In a real implementation, this would create an Alias expression variant
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
