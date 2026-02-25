@@ -130,7 +130,7 @@ fn bench_aggregate_evaluation(c: &mut Criterion) {
     ctx.insert("trading_date".to_string(), "20230101".to_string());
     
     c.bench_function("mean_aggregate", |b| {
-        let expr = Expr::aggregate("mean", Expr::Column("close".to_string()), false);
+        let expr = Expr::Column("close".to_string()).aggregate(alpha_expr::expr::AggregateOp::Mean, false);
         
         b.iter(|| {
             let result = executor.evaluate_expr(black_box(&expr), &provider, Some(&ctx));
@@ -139,7 +139,7 @@ fn bench_aggregate_evaluation(c: &mut Criterion) {
     });
     
     c.bench_function("sum_aggregate", |b| {
-        let expr = Expr::aggregate("sum", Expr::Column("close".to_string()), false);
+        let expr = Expr::Column("close".to_string()).aggregate(alpha_expr::expr::AggregateOp::Sum, false);
         
         b.iter(|| {
             let result = executor.evaluate_expr(black_box(&expr), &provider, Some(&ctx));

@@ -96,7 +96,7 @@ fn random_chromosome(len: usize, max_val: u8, rng: &mut impl Rng) -> Chromosome 
 }
 
 /// Check if an expression is executable (no division by zero, valid operations, etc.)
-pub fn is_executable_expr(expr: &Expr) -> bool {
+pub fn is_executable_expr(_expr: &Expr) -> bool {
     // Simple check for now
     // TODO: Implement more sophisticated checks
     true
@@ -241,7 +241,7 @@ mod tests {
     
     #[test]
     fn test_evaluate_population() {
-        let mut rng = StdRng::seed_from_u64(42);
+        let _rng = StdRng::seed_from_u64(42);
         let decoder = TestDecoder;
         let evaluator = TestEvaluator;
         
