@@ -17,6 +17,7 @@ pub mod expr;
 pub mod ga;
 pub mod logical_plan;
 pub mod optimizer;
+pub mod polars_style;
 pub mod symbolic_regression;
 pub mod timeseries;
 
