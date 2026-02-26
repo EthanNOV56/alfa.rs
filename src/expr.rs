@@ -7,7 +7,7 @@ use std::fmt;
 use std::sync::Arc;
 
 /// Data type supported by the expression system
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum DataType {
     Boolean,
     Integer,
@@ -17,7 +17,7 @@ pub enum DataType {
 }
 
 /// An expression node in the computation graph
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub enum Expr {
     /// A literal value
     Literal(Literal),
@@ -69,7 +69,7 @@ pub enum Literal {
 }
 
 /// Binary operators
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BinaryOp {
     Add,
     Subtract,
@@ -88,7 +88,7 @@ pub enum BinaryOp {
 }
 
 /// Unary operators
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UnaryOp {
     Negate,
     Not,
@@ -100,7 +100,7 @@ pub enum UnaryOp {
 }
 
 /// Aggregate operators
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AggregateOp {
     Sum,
     Mean,

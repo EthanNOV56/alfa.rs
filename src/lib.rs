@@ -14,6 +14,7 @@ pub mod dim;
 pub mod evaluation;
 pub mod executor;
 pub mod expr;
+pub mod expr_optimizer;
 pub mod ga;
 pub mod logical_plan;
 pub mod optimizer;

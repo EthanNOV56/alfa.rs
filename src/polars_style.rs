@@ -4,6 +4,7 @@
 //! expressions on time series data in a vectorized manner.
 
 use crate::expr::{Expr, Literal, BinaryOp, UnaryOp};
+use crate::expr_optimizer::{ExpressionOptimizer, optimize_expression};
 use ndarray::{Array1, Array2};
 use std::collections::HashMap;
 
@@ -502,4 +503,205 @@ pub fn create_backtest_dataframe(
     }
     
     Ok(result)
+}
+// ============================================================================
+// Optimized Expression Evaluation with Caching
+// ============================================================================
+
+/// Cached expression evaluator for improved performance
+pub struct CachedExpressionEvaluator<'a> {
+    df: &'a DataFrame,
+    cache: HashMap<String, Series>,
+    optimizer: ExpressionOptimizer,
+}
+
+impl<'a> CachedExpressionEvaluator<'a> {
+    /// Create a new cached evaluator for a DataFrame
+    pub fn new(df: &'a DataFrame) -> Self {
+        Self {
+            df,
+            cache: HashMap::new(),
+            optimizer: ExpressionOptimizer::new(),
+        }
+    }
+    
+    /// Evaluate an expression with caching
+    pub fn evaluate(&mut self, expr: &Expr) -> Result<Series, String> {
+        // First, optimize the expression
+        let optimized = self.optimizer.optimize(expr.clone());
+        
+        // Use string representation as cache key
+        let cache_key = format!("{:?}", optimized);
+        
+        // Check cache
+        if let Some(cached) = self.cache.get(&cache_key) {
+            return Ok(cached.clone());
+        }
+        
+        // Evaluate (using the optimized expression)
+        let result = self.evaluate_uncached(&optimized)?;
+        
+        // Cache the result
+        self.cache.insert(cache_key, result.clone());
+        
+        Ok(result)
+    }
+    
+    /// Evaluate without caching (internal method)
+    fn evaluate_uncached(&mut self, expr: &Expr) -> Result<Series, String> {
+        match expr {
+            Expr::Literal(lit) => {
+                match lit {
+                    Literal::Float(f) => {
+                        let data = Array1::from_elem(self.df.n_rows(), *f);
+                        Ok(Series::from_array(data))
+                    }
+                    Literal::Integer(i) => {
+                        let data = Array1::from_elem(self.df.n_rows(), *i as f64);
+                        Ok(Series::from_array(data))
+                    }
+                    Literal::Boolean(b) => {
+                        let data = Array1::from_elem(self.df.n_rows(), if *b { 1.0 } else { 0.0 });
+                        Ok(Series::from_array(data))
+                    }
+                    Literal::String(_) => Err("String literals not supported in vectorized evaluation".to_string()),
+                    Literal::Null => {
+                        let data = Array1::from_elem(self.df.n_rows(), f64::NAN);
+                        Ok(Series::from_array(data))
+                    }
+                }
+            }
+            Expr::Column(name) => {
+                self.df.column(name)
+                    .cloned()
+                    .ok_or_else(|| format!("Column '{}' not found in DataFrame", name))
+            }
+            Expr::BinaryExpr { left, op, right } => {
+                let left_series = self.evaluate(left)?;
+                let right_series = self.evaluate(right)?;
+                
+                match op {
+                    BinaryOp::Add => left_series.add(&right_series),
+                    BinaryOp::Subtract => left_series.sub(&right_series),
+                    BinaryOp::Multiply => left_series.mul(&right_series),
+                    BinaryOp::Divide => left_series.div(&right_series),
+                    BinaryOp::GreaterThan => left_series.gt(&right_series),
+                    _ => Err(format!("Binary operator {:?} not yet implemented in vectorized evaluator", op)),
+                }
+            }
+            Expr::UnaryExpr { op, expr } => {
+                let series = self.evaluate(expr)?;
+                match op {
+                    UnaryOp::Negate => Ok(series.neg()),
+                    UnaryOp::Abs => Ok(series.abs()),
+                    UnaryOp::Sqrt => Ok(series.sqrt()),
+                    UnaryOp::Log => Ok(series.log()),
+                    UnaryOp::Exp => Ok(series.exp()),
+                    _ => Err(format!("Unary operator {:?} not yet implemented in vectorized evaluator", op)),
+                }
+            }
+            Expr::FunctionCall { name, args } => {
+                self.evaluate_function(name, args)
+            }
+            _ => Err(format!("Expression type {:?} not yet supported in vectorized evaluation", expr)),
+        }
+    }
+    
+    /// Evaluate a function call
+    fn evaluate_function(&mut self, name: &str, args: &[Expr]) -> Result<Series, String> {
+        match name {
+            "lag" => {
+                if args.len() != 2 {
+                    return Err("lag function requires 2 arguments: expression and periods".to_string());
+                }
+                let series = self.evaluate(&args[0])?;
+                let periods = match &args[1] {
+                    Expr::Literal(Literal::Integer(p)) => *p as usize,
+                    _ => return Err("lag periods must be an integer literal".to_string()),
+                };
+                Ok(series.lag(periods))
+            }
+            "diff" => {
+                if args.len() != 2 {
+                    return Err("diff function requires 2 arguments: expression and periods".to_string());
+                }
+                let series = self.evaluate(&args[0])?;
+                let periods = match &args[1] {
+                    Expr::Literal(Literal::Integer(p)) => *p as usize,
+                    _ => return Err("diff periods must be an integer literal".to_string()),
+                };
+                Ok(series.diff(periods))
+            }
+            "pct_change" => {
+                if args.len() != 2 {
+                    return Err("pct_change function requires 2 arguments: expression and periods".to_string());
+                }
+                let series = self.evaluate(&args[0])?;
+                let periods = match &args[1] {
+                    Expr::Literal(Literal::Integer(p)) => *p as usize,
+                    _ => return Err("pct_change periods must be an integer literal".to_string()),
+                };
+                Ok(series.pct_change(periods))
+            }
+            "moving_average" => {
+                if args.len() != 2 {
+                    return Err("moving_average function requires 2 arguments: expression and window".to_string());
+                }
+                let series = self.evaluate(&args[0])?;
+                let window = match &args[1] {
+                    Expr::Literal(Literal::Integer(w)) => *w as usize,
+                    _ => return Err("moving_average window must be an integer literal".to_string()),
+                };
+                Ok(series.moving_average(window))
+            }
+            "momentum" => {
+                // momentum is same as pct_change
+                self.evaluate_function("pct_change", args)
+            }
+            "volatility" => {
+                if args.len() != 2 {
+                    return Err("volatility function requires 2 arguments: expression and periods".to_string());
+                }
+                let series = self.evaluate(&args[0])?;
+                let periods = match &args[1] {
+                    Expr::Literal(Literal::Integer(p)) => *p as usize,
+                    _ => return Err("volatility periods must be an integer literal".to_string()),
+                };
+                Ok(series.rolling_std(periods))
+            }
+            "ema" => {
+                if args.len() != 2 {
+                    return Err("ema function requires 2 arguments: expression and span".to_string());
+                }
+                let series = self.evaluate(&args[0])?;
+                let span = match &args[1] {
+                    Expr::Literal(Literal::Integer(s)) => *s as usize,
+                    _ => return Err("ema span must be an integer literal".to_string()),
+                };
+                Ok(series.ema(span))
+            }
+            _ => Err(format!("Unknown function in vectorized evaluator: {}", name)),
+        }
+    }
+    
+    /// Clear the cache
+    pub fn clear_cache(&mut self) {
+        self.cache.clear();
+    }
+    
+    /// Get the number of cached results
+    pub fn cache_size(&self) -> usize {
+        self.cache.len()
+    }
+}
+
+/// Optimized version of evaluate_expr_on_dataframe with caching
+pub fn evaluate_expr_on_dataframe_optimized(expr: &Expr, df: &DataFrame) -> Result<Series, String> {
+    let mut evaluator = CachedExpressionEvaluator::new(df);
+    evaluator.evaluate(expr)
+}
+
+/// Pre-optimize an expression for better performance
+pub fn optimize_expr_for_evaluation(expr: &Expr) -> Expr {
+    optimize_expression(expr.clone())
 }
