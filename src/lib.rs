@@ -5,6 +5,7 @@
 //! alpha computation and symbolic regression.
 
 pub mod alpha;
+pub mod backtest;
 pub mod clickhouse_provider;
 pub mod config;
 pub mod data_provider;
@@ -31,4 +32,5 @@ pub mod prelude {
     pub use crate::evaluation::*;
     pub use crate::alpha::*;
     pub use crate::symbolic_regression::*;
+    pub use crate::backtest::*;
 }

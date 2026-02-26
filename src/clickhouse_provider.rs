@@ -111,7 +111,7 @@ impl ClickhouseProvider {
     }
     
     /// Execute a query with FORMAT JSONEachRow and parse each line as JSON
-    fn exec_query_json_each(&self, sql: &str) -> Result<Vec<Value>, String> {
+    pub fn exec_query_json_each(&self, sql: &str) -> Result<Vec<Value>, String> {
         let q = format!("{} FORMAT JSONEachRow", sql.trim_end_matches(';'));
         let s = self.exec_query_raw(&q)?;
         let mut out = Vec::new();
