@@ -34,6 +34,15 @@ try:
         cumsum,
         cumprod,
         evaluate_expression,
+        # Genetic Programming
+        GpEngine,
+        # Persistence system
+        PersistenceManager,
+        FactorMetadata,
+        GPHistoryRecord,
+        # Meta-learning system
+        MetaLearningAnalyzer,
+        GPRecommendations,
     )
     HAS_RUST_EXT = True
     # Create aliases for internal use
@@ -63,6 +72,31 @@ except ImportError:
     
     class LazyFrame:
         """Stub LazyFrame class for fallback mode."""
+        pass
+    
+    # GP system stubs
+    class GpEngine:
+        """Stub GpEngine class for fallback mode."""
+        pass
+    
+    class PersistenceManager:
+        """Stub PersistenceManager class for fallback mode."""
+        pass
+    
+    class FactorMetadata:
+        """Stub FactorMetadata class for fallback mode."""
+        pass
+    
+    class GPHistoryRecord:
+        """Stub GPHistoryRecord class for fallback mode."""
+        pass
+    
+    class MetaLearningAnalyzer:
+        """Stub MetaLearningAnalyzer class for fallback mode."""
+        pass
+    
+    class GPRecommendations:
+        """Stub GPRecommendations class for fallback mode."""
         pass
     
     def rolling_window(*args, **kwargs):
@@ -97,7 +131,7 @@ except ImportError:
         """Stub function for fallback mode."""
         return np.array([])
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __all__ = [
     # Core backtesting
     "factor_returns",
@@ -121,6 +155,15 @@ __all__ = [
     "rolling_mean",
     "cumsum",
     "cumprod",
+    # Genetic Programming
+    "GpEngine",
+    # Persistence system
+    "PersistenceManager",
+    "FactorMetadata",
+    "GPHistoryRecord",
+    # Meta-learning system
+    "MetaLearningAnalyzer",
+    "GPRecommendations",
 ]
 
 

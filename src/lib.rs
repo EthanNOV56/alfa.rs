@@ -7,6 +7,8 @@ mod expr_optimizer;
 mod lazy;
 mod polars_style;
 mod gp;
+mod persistence;
+mod metalearning;
 
 use pyo3::prelude::*;
 use pyo3::exceptions::PyValueError;
@@ -851,6 +853,15 @@ fn _core(_py: Python, m: &PyModule) -> PyResult<()> {
     // Genetic Programming system
     m.add_class::<PyGpEngine>()?;
     
+    // Persistence system
+    m.add_class::<PyPersistenceManager>()?;
+    m.add_class::<PyFactorMetadata>()?;
+    m.add_class::<PyGpHistoryRecord>()?;
+    
+    // Meta-learning system
+    m.add_class::<PyMetaLearningAnalyzer>()?;
+    m.add_class::<PyGpRecommendations>()?;
+    
     Ok(())
 }
 
@@ -1334,5 +1345,341 @@ impl PyGpEngine {
         );
         
         Ok(format!("Best expression: {:?}, Fitness: {:.6}", best_expr, fitness))
+    }
+}
+
+// ============================================================================
+// Persistence Module Python Bindings
+// ============================================================================
+
+use crate::persistence::{PersistenceManager, FactorMetadata, GPHistoryRecord};
+use crate::metalearning::{MetaLearningAnalyzer, GPRecommendations};
+
+/// Python-exposed Persistence Manager for factor storage and retrieval
+#[pyclass(name = "PersistenceManager")]
+pub struct PyPersistenceManager {
+    inner: PersistenceManager,
+}
+
+#[pymethods]
+impl PyPersistenceManager {
+    #[new]
+    fn new(path: &str) -> PyResult<Self> {
+        match PersistenceManager::new(path) {
+            Ok(manager) => Ok(PyPersistenceManager { inner: manager }),
+            Err(e) => Err(PyValueError::new_err(format!("Failed to create persistence manager: {}", e))),
+        }
+    }
+    
+    /// Save a factor to disk
+    fn save_factor(&mut self, factor: &PyFactorMetadata) -> PyResult<()> {
+        self.inner.save_factor(&factor.inner)
+            .map_err(|e| PyValueError::new_err(format!("Failed to save factor: {}", e)))
+    }
+    
+    /// Load a factor from disk
+    fn load_factor(&mut self, factor_id: &str) -> PyResult<Option<PyFactorMetadata>> {
+        match self.inner.load_factor(factor_id) {
+            Ok(Some(factor)) => Ok(Some(PyFactorMetadata { inner: factor })),
+            Ok(None) => Ok(None),
+            Err(e) => Err(PyValueError::new_err(format!("Failed to load factor: {}", e))),
+        }
+    }
+    
+    /// Search factors by criteria
+    #[pyo3(signature = (min_ic = None, max_complexity = None, tags = Vec::new()))]
+    fn search_factors(
+        &self,
+        min_ic: Option<f64>,
+        max_complexity: Option<f64>,
+        tags: Vec<String>,
+    ) -> PyResult<Vec<PyFactorMetadata>> {
+        let factors = self.inner.search_factors(min_ic, None, max_complexity, &tags);
+        Ok(factors.into_iter().map(|f| PyFactorMetadata { inner: f }).collect())
+    }
+    
+    /// Load all factors from disk
+    fn load_all_factors(&mut self) -> PyResult<usize> {
+        self.inner.load_all_factors()
+            .map_err(|e| PyValueError::new_err(format!("Failed to load factors: {}", e)))
+    }
+    
+    /// Load all GP history records from disk
+    fn load_all_history(&mut self) -> PyResult<usize> {
+        self.inner.load_all_history()
+            .map_err(|e| PyValueError::new_err(format!("Failed to load history: {}", e)))
+    }
+    
+    /// Get all loaded factors
+    fn get_all_factors(&self) -> Vec<PyFactorMetadata> {
+        self.inner.get_all_factors()
+            .into_iter()
+            .map(|f| PyFactorMetadata { inner: f })
+            .collect()
+    }
+    
+    /// Get all loaded GP history records
+    fn get_all_history(&self) -> Vec<PyGpHistoryRecord> {
+        self.inner.get_all_history()
+            .into_iter()
+            .map(|r| PyGpHistoryRecord { inner: r })
+            .collect()
+    }
+    
+    /// Clear all in-memory data (but not disk)
+    fn clear_memory(&mut self) {
+        self.inner.clear_memory();
+    }
+    
+    /// Get cache statistics
+    fn cache_stats(&self) -> PyResult<Py<PyDict>> {
+        use crate::persistence::CacheStats;
+        Python::with_gil(|py| {
+            match self.inner.get_cache_stats() {
+                Ok(stats) => {
+                    let dict = PyDict::new(py);
+                    dict.set_item("total_entries", stats.total_entries)?;
+                    dict.set_item("total_size_bytes", stats.total_size_bytes)?;
+                    dict.set_item("avg_access_count", stats.avg_access_count)?;
+                    dict.set_item("max_size", stats.max_size)?;
+                    Ok(dict.into_py(py))
+                }
+                Err(e) => Err(PyValueError::new_err(format!("Failed to get cache stats: {}", e))),
+            }
+        })
+    }
+    
+    fn __repr__(&self) -> String {
+        format!("PersistenceManager({} factors loaded)", self.inner.get_all_factors().len())
+    }
+}
+
+/// Python wrapper for FactorMetadata
+#[pyclass(name = "FactorMetadata")]
+pub struct PyFactorMetadata {
+    inner: FactorMetadata,
+}
+
+#[pymethods]
+impl PyFactorMetadata {
+    #[getter]
+    fn id(&self) -> String {
+        self.inner.id.clone()
+    }
+    
+    #[getter]
+    fn expression(&self) -> String {
+        self.inner.expression.clone()
+    }
+    
+    #[getter]
+    fn metrics(&self) -> PyResult<Py<PyDict>> {
+        Python::with_gil(|py| {
+            let dict = PyDict::new(py);
+            dict.set_item("ic_mean", self.inner.metrics.ic_mean)?;
+            dict.set_item("ic_ir", self.inner.metrics.ic_ir)?;
+            dict.set_item("turnover", self.inner.metrics.turnover)?;
+            dict.set_item("complexity_penalty", self.inner.metrics.complexity_penalty)?;
+            dict.set_item("combined_score", self.inner.metrics.combined_score)?;
+            Ok(dict.into_py(py))
+        })
+    }
+    
+    #[getter]
+    fn tags(&self) -> Vec<String> {
+        self.inner.tags.clone()
+    }
+    
+    fn __repr__(&self) -> String {
+        format!("FactorMetadata(id={}, ic={:.4})", self.inner.id, self.inner.metrics.ic_mean)
+    }
+}
+
+/// Python wrapper for GPHistoryRecord
+#[pyclass(name = "GPHistoryRecord")]
+pub struct PyGpHistoryRecord {
+    inner: GPHistoryRecord,
+}
+
+#[pymethods]
+impl PyGpHistoryRecord {
+    #[getter]
+    fn run_id(&self) -> String {
+        self.inner.run_id.clone()
+    }
+    
+    #[getter]
+    fn best_factor(&self) -> PyFactorMetadata {
+        PyFactorMetadata { inner: self.inner.best_factor.clone() }
+    }
+    
+    #[getter]
+    fn config(&self) -> PyResult<Py<PyDict>> {
+        Python::with_gil(|py| {
+            let dict = PyDict::new(py);
+            dict.set_item("population_size", self.inner.config.population_size)?;
+            dict.set_item("max_generations", self.inner.config.max_generations)?;
+            dict.set_item("tournament_size", self.inner.config.tournament_size)?;
+            dict.set_item("crossover_prob", self.inner.config.crossover_prob)?;
+            dict.set_item("mutation_prob", self.inner.config.mutation_prob)?;
+            dict.set_item("max_depth", self.inner.config.max_depth)?;
+            Ok(dict.into_py(py))
+        })
+    }
+    
+    fn __repr__(&self) -> String {
+        format!("GPHistoryRecord(id={})", self.inner.run_id)
+    }
+}
+
+// ============================================================================
+// Meta-learning Module Python Bindings
+// ============================================================================
+
+/// Python-exposed Meta-learning Analyzer for intelligent factor mining
+#[pyclass(name = "MetaLearningAnalyzer")]
+pub struct PyMetaLearningAnalyzer {
+    inner: MetaLearningAnalyzer,
+}
+
+#[pymethods]
+impl PyMetaLearningAnalyzer {
+    #[new]
+    fn new() -> Self {
+        PyMetaLearningAnalyzer { inner: MetaLearningAnalyzer::new() }
+    }
+    
+    /// Train the meta-learning model on historical data
+    fn train(
+        &mut self,
+        factors: Vec<PyRef<PyFactorMetadata>>,
+        gp_runs: Vec<PyRef<PyGpHistoryRecord>>,
+    ) -> PyResult<()> {
+        let factors_rust: Vec<FactorMetadata> = factors.into_iter().map(|f| f.inner.clone()).collect();
+        let gp_runs_rust: Vec<GPHistoryRecord> = gp_runs.into_iter().map(|r| r.inner.clone()).collect();
+        
+        self.inner.train(&factors_rust, &gp_runs_rust)
+            .map_err(|e| PyValueError::new_err(format!("Failed to train meta-learning model: {}", e)))
+    }
+    
+    /// Get recommendations for next GP run
+    fn get_recommendations(&self, target_complexity: Option<f64>) -> PyResult<PyGpRecommendations> {
+        let recommendations = self.inner.get_recommendations(target_complexity);
+        Ok(PyGpRecommendations { inner: recommendations })
+    }
+    
+    /// Check if model is trained
+    fn is_trained(&self) -> bool {
+        self.inner.is_trained()
+    }
+    
+    /// Get model version
+    fn version(&self) -> u32 {
+        self.inner.version()
+    }
+    
+    /// Get confidence score of recommendations
+    fn confidence_score(&self) -> f64 {
+        let recommendations = self.inner.get_recommendations(None);
+        recommendations.confidence_score
+    }
+    
+    /// Save model to file
+    fn save_model(&self, path: &str) -> PyResult<()> {
+        self.inner.save_model(path)
+            .map_err(|e| PyValueError::new_err(format!("Failed to save model: {}", e)))
+    }
+    
+    /// Load model from file
+    #[staticmethod]
+    fn load_model(path: &str) -> PyResult<Self> {
+        match MetaLearningAnalyzer::load_model(path) {
+            Ok(analyzer) => Ok(PyMetaLearningAnalyzer { inner: analyzer }),
+            Err(e) => Err(PyValueError::new_err(format!("Failed to load model: {}", e))),
+        }
+    }
+    
+    /// Get high performance threshold
+    fn get_high_perf_threshold(&self) -> f64 {
+        self.inner.get_high_perf_threshold()
+    }
+    
+    /// Set high performance threshold
+    fn set_high_perf_threshold(&mut self, threshold: f64) {
+        self.inner.set_high_perf_threshold(threshold);
+    }
+    
+    /// Get minimum data points required for training
+    fn get_min_data_points(&self) -> u32 {
+        self.inner.get_min_data_points()
+    }
+    
+    /// Set minimum data points required for training
+    fn set_min_data_points(&mut self, min_points: u32) {
+        self.inner.set_min_data_points(min_points);
+    }
+    
+    fn __repr__(&self) -> String {
+        format!("MetaLearningAnalyzer(trained={}, version={})", 
+                self.is_trained(), self.version())
+    }
+}
+
+/// Python wrapper for GPRecommendations
+#[pyclass(name = "GPRecommendations")]
+pub struct PyGpRecommendations {
+    inner: GPRecommendations,
+}
+
+#[pymethods]
+impl PyGpRecommendations {
+    #[getter]
+    fn recommended_functions(&self) -> Vec<String> {
+        self.inner.recommended_functions.clone()
+    }
+    
+    #[getter]
+    fn recommended_terminals(&self) -> Vec<String> {
+        self.inner.recommended_terminals.clone()
+    }
+    
+    #[getter]
+    fn target_complexity(&self) -> f64 {
+        self.inner.target_complexity
+    }
+    
+    #[getter]
+    fn confidence_score(&self) -> f64 {
+        self.inner.confidence_score
+    }
+    
+    #[getter]
+    fn confidence_level(&self) -> &'static str {
+        self.inner.confidence_level()
+    }
+    
+    /// Convert recommendations to a GPConfig (using midpoint of ranges)
+    fn to_gp_config(&self) -> PyResult<Py<PyDict>> {
+        Python::with_gil(|py| {
+            let config = self.inner.to_gp_config();
+            let dict = PyDict::new(py);
+            dict.set_item("population_size", config.population_size)?;
+            dict.set_item("max_generations", config.max_generations)?;
+            dict.set_item("tournament_size", config.tournament_size)?;
+            dict.set_item("crossover_prob", config.crossover_prob)?;
+            dict.set_item("mutation_prob", config.mutation_prob)?;
+            dict.set_item("max_depth", config.max_depth)?;
+            Ok(dict.into_py(py))
+        })
+    }
+    
+    /// Check if recommendations are valid
+    fn is_valid(&self) -> bool {
+        self.inner.is_valid()
+    }
+    
+    fn __repr__(&self) -> String {
+        format!("GPRecommendations(functions={}, confidence={:.2})", 
+                self.inner.recommended_functions.len(), self.inner.confidence_score)
     }
 }

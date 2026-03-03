@@ -7,18 +7,32 @@
 use crate::expr::{Expr, Literal, BinaryOp, UnaryOp};
 use crate::polars_style::{DataFrame, Series, evaluate_expr_on_dataframe};
 use crate::{BacktestEngine, BacktestResult, WeightMethod};
+use lru::LruCache;
 use ndarray::Array2;
 use rand::prelude::*;
+use rayon::prelude::*;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::num::NonZeroUsize;
+use std::sync::{Arc, Mutex};
 
 /// Fitness evaluator trait for evaluating expression fitness
 pub trait FitnessEvaluator: Send + Sync {
     fn fitness(&self, expr: &Expr) -> f64;
+    
+    /// Batch evaluate multiple expressions (optional optimization)
+    fn fitness_batch(&self, exprs: &[Expr]) -> Vec<f64> {
+        // Default implementation: evaluate sequentially
+        exprs.iter().map(|e| self.fitness(e)).collect()
+    }
+    
+    /// Check if this evaluator supports batch evaluation
+    fn supports_batch(&self) -> bool {
+        false
+    }
 }
 
 /// Configuration for genetic programming
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct GPConfig {
     /// Population size
     pub population_size: usize,
@@ -150,7 +164,7 @@ impl Function {
 }
 
 /// Terminal set (leaf nodes) for expression trees
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub enum Terminal {
     /// Variable (column) reference
     Variable(String),
@@ -466,11 +480,12 @@ pub fn run_gp<R: Rng + ?Sized>(
     let mut population = generator.generate_initial_population(config.population_size, rng);
     let pop_size = population.len();
     
-    // Evaluate initial population
-    let mut scores: Vec<f64> = population
-        .iter()
-        .map(|e| evaluator.fitness(e))
-        .collect();
+    // Evaluate initial population (using batch if supported)
+    let mut scores: Vec<f64> = if evaluator.supports_batch() {
+        evaluator.fitness_batch(&population)
+    } else {
+        population.iter().map(|e| evaluator.fitness(e)).collect()
+    };
     
     let mut best_idx = 0;
     for i in 1..pop_size {
@@ -523,10 +538,11 @@ pub fn run_gp<R: Rng + ?Sized>(
 
         // Update population
         population = next_population;
-        scores = population
-            .iter()
-            .map(|e| evaluator.fitness(e))
-            .collect();
+        scores = if evaluator.supports_batch() {
+            evaluator.fitness_batch(&population)
+        } else {
+            population.iter().map(|e| evaluator.fitness(e)).collect()
+        };
         
         // Update best individual
         for i in 0..pop_size {
@@ -626,10 +642,8 @@ impl RealBacktestFitnessEvaluator {
     
     /// Evaluate expression and run backtest with multiple objectives
     fn evaluate_with_backtest(&self, expr: &Expr) -> Option<MultiObjectiveFitness> {
-        use std::collections::HashMap as StdHashMap;
         
         let n_days = self.returns.shape()[0];
-        let n_assets = self.returns.shape()[1];
         
         if n_days < self.min_valid_days {
             return None; // Not enough data for valid backtest
@@ -659,8 +673,6 @@ impl RealBacktestFitnessEvaluator {
     
     /// Evaluate expression to get factor matrix
     fn evaluate_expression(&self, expr: &Expr) -> Option<Array2<f64>> {
-        use std::collections::HashMap as StdHashMap;
-        
         let n_days = self.returns.shape()[0];
         let n_assets = self.returns.shape()[1];
         let mut factor_matrix = Array2::<f64>::zeros((n_days, n_assets));
@@ -668,7 +680,7 @@ impl RealBacktestFitnessEvaluator {
         // Evaluate expression for each asset
         for asset_idx in 0..n_assets {
             // Create DataFrame for this asset
-            let mut columns = StdHashMap::new();
+            let mut columns = HashMap::new();
             
             for (col_name, array) in &self.data {
                 let column_data = array.column(asset_idx).to_vec();
@@ -963,6 +975,145 @@ impl FitnessEvaluator for BacktestFitnessEvaluator {
         
         // Higher fitness for simpler expressions (encourage parsimony)
         1.0 / (complexity as f64 + 1.0)
+    }
+}
+
+/// Cached fitness evaluator with LRU cache for performance
+pub struct CachedFitnessEvaluator<E: FitnessEvaluator> {
+    evaluator: E,
+    cache: Mutex<LruCache<String, f64>>,
+}
+
+impl<E: FitnessEvaluator> CachedFitnessEvaluator<E> {
+    /// Create a new cached evaluator with given capacity
+    pub fn new(evaluator: E, capacity: usize) -> Self {
+        let cap = NonZeroUsize::new(capacity.max(1)).unwrap_or(NonZeroUsize::new(100).unwrap());
+        Self {
+            evaluator,
+            cache: Mutex::new(LruCache::new(cap)),
+        }
+    }
+    
+    /// Clear the cache
+    pub fn clear_cache(&self) {
+        self.cache.lock().unwrap().clear();
+    }
+    
+    /// Get cache size
+    pub fn cache_size(&self) -> usize {
+        self.cache.lock().unwrap().len()
+    }
+    
+    /// Get cache hit rate statistics
+    pub fn cache_stats(&self) -> (usize, usize) {
+        // For simplicity, just return cache size and capacity
+        let cache = self.cache.lock().unwrap();
+        (cache.len(), cache.cap().get())
+    }
+}
+
+impl<E: FitnessEvaluator> FitnessEvaluator for CachedFitnessEvaluator<E> {
+    fn fitness(&self, expr: &Expr) -> f64 {
+        let key = format!("{:?}", expr);
+        
+        // Check cache first
+        {
+            let mut cache = self.cache.lock().unwrap();
+            if let Some(&cached) = cache.get(&key) {
+                return cached;
+            }
+        }
+        
+        // Compute fitness
+        let fitness = self.evaluator.fitness(expr);
+        
+        // Store in cache
+        {
+            let mut cache = self.cache.lock().unwrap();
+            cache.put(key, fitness);
+        }
+        
+        fitness
+    }
+    
+    fn fitness_batch(&self, exprs: &[Expr]) -> Vec<f64> {
+        let mut results = Vec::with_capacity(exprs.len());
+        let mut to_compute = Vec::new();
+        
+        // First pass: check cache
+        {
+            let mut cache = self.cache.lock().unwrap();
+            
+            for (idx, expr) in exprs.iter().enumerate() {
+                let key = format!("{:?}", expr);
+                if let Some(&cached) = cache.get(&key) {
+                    results.push(cached);
+                } else {
+                    results.push(0.0); // placeholder
+                    to_compute.push((idx, expr.clone(), key));
+                }
+            }
+        }
+        
+        // Compute missing fitness values
+        if !to_compute.is_empty() {
+            let exprs_to_compute: Vec<Expr> = to_compute.iter().map(|(_, expr, _)| expr.clone()).collect();
+            let computed = self.evaluator.fitness_batch(&exprs_to_compute);
+            
+            // Update cache and results
+            {
+                let mut cache = self.cache.lock().unwrap();
+                
+                for ((idx, _, key), fitness) in to_compute.into_iter().zip(computed.into_iter()) {
+                    cache.put(key, fitness);
+                    results[idx] = fitness;
+                }
+            }
+        }
+        
+        results
+    }
+    
+    fn supports_batch(&self) -> bool {
+        true
+    }
+}
+
+/// Batch-optimized fitness evaluator for parallel processing
+pub struct BatchFitnessEvaluator<E: FitnessEvaluator> {
+    evaluator: E,
+    batch_size: usize,
+}
+
+impl<E: FitnessEvaluator> BatchFitnessEvaluator<E> {
+    /// Create a new batch evaluator
+    pub fn new(evaluator: E, batch_size: usize) -> Self {
+        Self {
+            evaluator,
+            batch_size,
+        }
+    }
+}
+
+impl<E: FitnessEvaluator + Clone> FitnessEvaluator for BatchFitnessEvaluator<E> {
+    fn fitness(&self, expr: &Expr) -> f64 {
+        self.evaluator.fitness(expr)
+    }
+    
+    fn fitness_batch(&self, exprs: &[Expr]) -> Vec<f64> {
+        use rayon::prelude::*;
+        
+        // Process in parallel batches
+        exprs
+            .par_chunks(self.batch_size)
+            .flat_map(|chunk| {
+                self.evaluator.fitness_batch(chunk)
+            })
+            .collect()
+    }
+    
+    fn supports_batch(&self) -> bool {
+        true
     }
 }
 
