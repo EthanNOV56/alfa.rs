@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "alpha-expr"
-version = "0.1.0"
+version = "0.2.0"
 description = "High-performance factor expression and backtesting library"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -34,8 +34,8 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/alpha-expr"
-Repository = "https://github.com/yourusername/alpha-expr"
+Homepage = "https://github.com/EthanNOV56/alpha-expr"
+Repository = "https://github.com/EthanNOV56/alpha-expr"
 
 [tool.maturin]
 module-name = "alpha_expr._core"
