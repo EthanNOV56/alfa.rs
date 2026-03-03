@@ -1,46 +1,18 @@
 [package]
-name = "alpha-expr"
+name = "alpha_expr_core"
 version = "0.1.0"
-edition = "2024"
-description = "Alpha expression system inspired by relational algebra and Polars expr API"
-authors = ["tip <tip@example.com>"]
-license = "MIT OR Apache-2.0"
-repository = ""
+edition = "2021"
+
+[lib]
+name = "alpha_expr_core"
+crate-type = ["cdylib"]  # For Python extension
 
 [dependencies]
-rand = "0.8"
-thiserror = "1.0"
+pyo3 = { version = "0.20", features = ["extension-module"] }
+ndarray = "0.15"
+rayon = "1.10"
 serde = { version = "1.0", features = ["derive"] }
-bincode = "1.3"
-ndarray = "0.16"
-ndarray-stats = "0.6"
-rayon = "1.7"
-lru = "0.11"
-ahash = "0.8"
-once_cell = "1.19"
-tokio = { version = "1.0", features = ["full"] }
-reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
-serde_json = "1.0"
-toml = { version = "0.7", optional = true }
-sha2 = "0.10"
-hex = "0.4"
+numpy = "0.20"
 
-[features]
-default = []
-config = ["toml"]
-
-[dev-dependencies]
-criterion = "0.5"
-approx = "0.5"
-
-[[bench]]
-name = "expression"
-harness = false
-
-[[bench]]
-name = "optimizer"
-harness = false
-
-[[bench]]
-name = "timeseries"
-harness = false
+[build-dependencies]
+pyo3-build-config = "0.20"

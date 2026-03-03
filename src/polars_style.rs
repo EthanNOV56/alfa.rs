@@ -263,6 +263,11 @@ impl DataFrame {
         self.columns.len()
     }
     
+    /// Get the column names
+    pub fn column_names(&self) -> Vec<String> {
+        self.columns.keys().cloned().collect()
+    }
+    
     /// Get a column by name
     pub fn column(&self, name: &str) -> Option<&Series> {
         self.columns.get(name)

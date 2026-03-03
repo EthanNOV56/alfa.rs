@@ -1,1 +1,37 @@
 /target
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.env
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Rust
+target/
+**/*.rs.bk
+Cargo.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+alpha_expr/_core*.so
+alpha_expr/_core*.pyd
+alpha_expr/__pycache__/
+dist/
+build/
+*.egg-info/
+.eggs/
