@@ -10,36 +10,117 @@ This library provides:
 The core implementation is in Rust for maximum performance.
 """
 
-from typing import Optional, Tuple, Dict, Union
+from typing import Optional, Tuple, Dict, Union, Any
 import numpy as np
 import pandas as pd
 
 try:
     from ._core import (
         PyBacktestEngine,
-        PyBacktestResult,
-        quantile_backtest as _quantile_backtest,
-        compute_ic as _compute_ic,
+        quantile_backtest,
+        compute_ic,
+        # Expression system
+        Expr,
+        Series,
+        DataFrame,
+        # Lazy evaluation
+        LazyFrame,
+        rolling_window,
+        expanding_window,
+        # Expression functions
+        lag,
+        diff,
+        rolling_mean,
+        cumsum,
+        cumprod,
+        evaluate_expression,
     )
     HAS_RUST_EXT = True
+    # Create aliases for internal use
+    _quantile_backtest = quantile_backtest
+    _compute_ic = compute_ic
 except ImportError:
     HAS_RUST_EXT = False
     print("Warning: Rust extension not found. Using pure Python fallback.")
     from ._fallback import (
         PyBacktestEngine,
         PyBacktestResult,
-        _quantile_backtest,
-        _compute_ic,
+        quantile_backtest as _quantile_backtest,
+        compute_ic as _compute_ic,
     )
+    # Create simple stubs for new functionality when Rust extension is missing
+    class Expr:
+        """Stub Expr class for fallback mode."""
+        pass
+    
+    class Series:
+        """Stub Series class for fallback mode."""
+        pass
+    
+    class DataFrame:
+        """Stub DataFrame class for fallback mode."""
+        pass
+    
+    class LazyFrame:
+        """Stub LazyFrame class for fallback mode."""
+        pass
+    
+    def rolling_window(*args, **kwargs):
+        """Stub function for fallback mode."""
+        return {}
+    
+    def expanding_window(*args, **kwargs):
+        """Stub function for fallback mode."""
+        return {}
+    
+    def lag(*args, **kwargs):
+        """Stub function for fallback mode."""
+        return Expr()
+    
+    def diff(*args, **kwargs):
+        """Stub function for fallback mode."""
+        return Expr()
+    
+    def rolling_mean(*args, **kwargs):
+        """Stub function for fallback mode."""
+        return Expr()
+    
+    def cumsum(*args, **kwargs):
+        """Stub function for fallback mode."""
+        return Expr()
+    
+    def cumprod(*args, **kwargs):
+        """Stub function for fallback mode."""
+        return Expr()
+    
+    def evaluate_expression(*args, **kwargs):
+        """Stub function for fallback mode."""
+        return np.array([])
 
 __version__ = "0.1.0"
 __all__ = [
+    # Core backtesting
     "factor_returns",
     "quantile_backtest",
     "create_factor_tear_sheet",
     "BacktestEngine",
     "BacktestResult",
     "compute_information_coefficient",
+    # Expression system
+    "Expr",
+    "Series",
+    "DataFrame",
+    "evaluate_expression",
+    # Lazy evaluation
+    "LazyFrame",
+    "rolling_window",
+    "expanding_window",
+    # Expression functions
+    "lag",
+    "diff",
+    "rolling_mean",
+    "cumsum",
+    "cumprod",
 ]
 
 
@@ -120,7 +201,7 @@ class BacktestResult:
         self.ic_ir = ic_ir
     
     @classmethod
-    def from_rust_result(cls, rust_result: PyBacktestResult) -> "BacktestResult":
+    def from_rust_result(cls, rust_result: Any) -> "BacktestResult":
         """Create from Rust result object."""
         return cls(
             group_returns=np.array(rust_result.group_returns),

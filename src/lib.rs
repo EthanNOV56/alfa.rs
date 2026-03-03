@@ -18,7 +18,7 @@ use std::sync::Arc;
 // Re-exports for internal use
 use crate::expr::{Expr, Literal, BinaryOp, UnaryOp};
 use crate::polars_style::{DataFrame, Series, evaluate_expr_on_dataframe};
-use crate::lazy::{LazyFrame, DataSource};
+use crate::lazy::{LazyFrame, DataSource, JoinType};
 
 /// Weight allocation method
 #[derive(Debug, Clone, Copy)]
@@ -392,6 +392,12 @@ impl PyExpr {
         }
     }
 
+    /// Python operator overload: +
+    #[pyo3(name = "__add__")]
+    fn python_add(&self, other: &PyExpr) -> Self {
+        self.add(other)
+    }
+
     /// Subtract two expressions
     fn sub(&self, other: &PyExpr) -> Self {
         PyExpr {
@@ -401,6 +407,12 @@ impl PyExpr {
                 right: Arc::new(other.inner.clone()),
             },
         }
+    }
+
+    /// Python operator overload: -
+    #[pyo3(name = "__sub__")]
+    fn python_sub(&self, other: &PyExpr) -> Self {
+        self.sub(other)
     }
 
     /// Multiply two expressions
@@ -414,6 +426,12 @@ impl PyExpr {
         }
     }
 
+    /// Python operator overload: *
+    #[pyo3(name = "__mul__")]
+    fn python_mul(&self, other: &PyExpr) -> Self {
+        self.mul(other)
+    }
+
     /// Divide two expressions
     fn div(&self, other: &PyExpr) -> Self {
         PyExpr {
@@ -423,6 +441,12 @@ impl PyExpr {
                 right: Arc::new(other.inner.clone()),
             },
         }
+    }
+
+    /// Python operator overload: /
+    #[pyo3(name = "__truediv__")]
+    fn python_div(&self, other: &PyExpr) -> Self {
+        self.div(other)
     }
 
     /// Negate expression
@@ -779,6 +803,19 @@ fn cumprod(expr: &PyExpr) -> PyResult<PyExpr> {
     Ok(PyExpr { inner: cumprod_expr })
 }
 
+/// Create a rolling standard deviation expression
+#[pyfunction]
+fn rolling_std(expr: &PyExpr, window: usize) -> PyResult<PyExpr> {
+    let std_expr = Expr::FunctionCall {
+        name: "rolling_std".to_string(),
+        args: vec![
+            expr.inner.clone(),
+            Expr::Literal(Literal::Integer(window as i64)),
+        ],
+    };
+    Ok(PyExpr { inner: std_expr })
+}
+
 // ============================================================================
 // Main Python Module
 // ============================================================================
@@ -803,6 +840,7 @@ fn _core(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rolling_mean, m)?)?;
     m.add_function(wrap_pyfunction!(cumsum, m)?)?;
     m.add_function(wrap_pyfunction!(cumprod, m)?)?;
+    m.add_function(wrap_pyfunction!(rolling_std, m)?)?;
     
     // Lazy evaluation system
     m.add_class::<PyLazyFrame>()?;
@@ -1033,6 +1071,35 @@ impl PyLazyFrame {
         
         // Create new LazyFrame with columns added
         let new_lazy_frame = inner.clone().with_columns(rust_exprs);
+        
+        Ok(PyLazyFrame {
+            inner: Some(new_lazy_frame),
+        })
+    }
+    
+    /// Join with another LazyFrame
+    fn join(&self, other: &PyLazyFrame, on: Vec<String>, how: &str) -> PyResult<Self> {
+        let Some(ref inner) = self.inner else {
+            return Err(PyValueError::new_err("LazyFrame is already consumed"));
+        };
+        
+        let Some(ref other_inner) = other.inner else {
+            return Err(PyValueError::new_err("Other LazyFrame is already consumed"));
+        };
+        
+        // Convert string join type to JoinType enum
+        let join_type = match how.to_lowercase().as_str() {
+            "inner" => JoinType::Inner,
+            "left" => JoinType::Left,
+            "right" => JoinType::Right,
+            "outer" => JoinType::Outer,
+            _ => return Err(PyValueError::new_err(
+                "Join type must be 'inner', 'left', 'right', or 'outer'"
+            )),
+        };
+        
+        // Create new LazyFrame with join
+        let new_lazy_frame = inner.clone().join(other_inner.clone(), on, join_type);
         
         Ok(PyLazyFrame {
             inner: Some(new_lazy_frame),
