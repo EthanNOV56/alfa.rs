@@ -6,6 +6,7 @@ mod expr;
 mod expr_optimizer;
 mod lazy;
 mod polars_style;
+mod gp;
 
 use pyo3::prelude::*;
 use pyo3::exceptions::PyValueError;
@@ -847,6 +848,9 @@ fn _core(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rolling_window, m)?)?;
     m.add_function(wrap_pyfunction!(expanding_window, m)?)?;
     
+    // Genetic Programming system
+    m.add_class::<PyGpEngine>()?;
+    
     Ok(())
 }
 
@@ -1173,4 +1177,162 @@ fn expanding_window(min_periods: Option<usize>) -> PyResult<Py<PyDict>> {
         dict.set_item("min_periods", min_periods.unwrap_or(1))?;
         Ok(dict.into())
     })
+}
+
+// ============================================================================
+// Genetic Programming (GP) Module Python Bindings
+// ============================================================================
+
+use crate::gp::{GPConfig, Terminal, Function, BacktestFitnessEvaluator, run_gp};
+use rand::rngs::StdRng;
+use rand::SeedableRng;
+use std::collections::HashMap;
+
+/// Python-exposed Genetic Programming engine for factor mining
+#[pyclass(name = "GpEngine")]
+pub struct PyGpEngine {
+    config: GPConfig,
+    terminals: Vec<Terminal>,
+    functions: Vec<Function>,
+    rng: StdRng,
+}
+
+#[pymethods]
+impl PyGpEngine {
+    #[new]
+    fn new(
+        population_size: usize,
+        max_generations: usize,
+        tournament_size: usize,
+        crossover_prob: f64,
+        mutation_prob: f64,
+        max_depth: usize,
+    ) -> Self {
+        // Create default terminals (will be updated later)
+        let terminals = vec![
+            Terminal::Ephemeral,
+            Terminal::Constant(1.0),
+            Terminal::Constant(2.0),
+        ];
+        
+        // Create default functions
+        let functions = vec![
+            Function::add(),
+            Function::sub(),
+            Function::mul(),
+            Function::div(),
+            Function::sqrt(),
+            Function::abs(),
+            Function::neg(),
+        ];
+        
+        let config = GPConfig {
+            population_size,
+            max_generations,
+            tournament_size,
+            crossover_prob,
+            mutation_prob,
+            max_depth,
+        };
+        
+        let rng = StdRng::from_entropy();
+        
+        PyGpEngine { config, terminals, functions, rng }
+    }
+    
+    /// Set available columns (variables) for expression generation
+    fn set_columns(&mut self, columns: Vec<&str>) {
+        // Update terminals with column variables
+        let mut new_terminals = vec![
+            Terminal::Ephemeral,
+            Terminal::Constant(1.0),
+            Terminal::Constant(2.0),
+        ];
+        
+        for col in columns {
+            new_terminals.push(Terminal::Variable(col.to_string()));
+        }
+        
+        self.terminals = new_terminals;
+    }
+    
+    /// Run genetic programming for factor mining
+    fn mine_factors(
+        &mut self,
+        data: &PyDict,
+        returns: &PyArray2<f64>,
+        num_factors: usize,
+    ) -> PyResult<Vec<(String, f64)>> {
+        use numpy::PyArray2;
+        
+        Python::with_gil(|py| {
+            // Extract data arrays
+            let mut data_arrays = HashMap::new();
+            
+            for (key, value) in data.iter() {
+                let col_name = key.extract::<String>()?;
+                
+                if let Ok(arr) = value.extract::<&PyArray2<f64>>() {
+                    let array = arr.readonly().as_array().to_owned();
+                    data_arrays.insert(col_name, array);
+                } else {
+                    return Err(PyValueError::new_err(
+                        format!("Column '{}' must be a 2D numpy array", col_name)
+                    ));
+                }
+            }
+            
+            // Extract returns array
+            let returns_array = returns.readonly().as_array().to_owned();
+            
+            // Create fitness evaluator
+            let evaluator = BacktestFitnessEvaluator::new(data_arrays, returns_array);
+            
+            // Run GP multiple times to get multiple factors
+            let mut results = Vec::new();
+            
+            for _ in 0..num_factors {
+                let (best_expr, best_fitness) = run_gp(
+                    &self.config,
+                    &evaluator,
+                    self.terminals.clone(),
+                    self.functions.clone(),
+                    &mut self.rng,
+                );
+                
+                // Convert expression to string representation
+                let expr_str = format!("{:?}", best_expr);
+                results.push((expr_str, best_fitness));
+            }
+            
+            Ok(results)
+        })
+    }
+    
+    /// Run a simple test to verify GP functionality
+    fn test_run(&mut self) -> PyResult<String> {
+        // Create simple test data
+        let mut test_data = HashMap::new();
+        test_data.insert("x".to_string(), ndarray::Array2::<f64>::zeros((10, 5)));
+        test_data.insert("y".to_string(), ndarray::Array2::<f64>::ones((10, 5)));
+        
+        let test_returns = ndarray::Array2::<f64>::zeros((10, 5));
+        let evaluator = BacktestFitnessEvaluator::new(test_data, test_returns);
+        
+        // Set test terminals
+        let mut test_terminals = self.terminals.clone();
+        test_terminals.push(Terminal::Variable("x".to_string()));
+        test_terminals.push(Terminal::Variable("y".to_string()));
+        
+        // Run GP
+        let (best_expr, fitness) = run_gp(
+            &self.config,
+            &evaluator,
+            test_terminals,
+            self.functions.clone(),
+            &mut self.rng,
+        );
+        
+        Ok(format!("Best expression: {:?}, Fitness: {:.6}", best_expr, fitness))
+    }
 }
