@@ -280,6 +280,10 @@ impl FactorRegistry {
                 let vals = self.eval_args(args, data, n_rows)?;
                 Ok(scale(&vals))
             }
+            "sign" => {
+                let vals = self.eval_args(args, data, n_rows)?;
+                Ok(sign(&vals))
+            }
             _ => Err(format!("Unknown function: {}", name)),
         }
     }
@@ -297,6 +301,7 @@ impl FactorRegistry {
         match name {
             "ts_mean" | "ts_avg" => Ok(ts_mean(&vals, window)),
             "ts_sum" => Ok(ts_sum(&vals, window)),
+            "ts_count" => Ok(ts_count(&vals, window)),
             "ts_max" => Ok(ts_max(&vals, window)),
             "ts_min" => Ok(ts_min(&vals, window)),
             "ts_std" => Ok(ts_std(&vals, window)),
@@ -392,9 +397,46 @@ fn ts_mean(vals: &[f64], window: usize) -> Vec<f64> {
 fn ts_sum(vals: &[f64], window: usize) -> Vec<f64> {
     let n = vals.len();
     let mut result = vec![0.0; n];
+
+    // Optimized path for expanding window (window=0 means from start)
+    if window == 0 {
+        let mut cumsum = 0.0;
+        for i in 0..n {
+            cumsum += vals[i];
+            result[i] = cumsum;
+        }
+        return result;
+    }
+
+    // Regular rolling window
     for i in 0..n {
         let start = i.saturating_sub(window - 1);
         result[i] = vals[start..=i].iter().sum();
+    }
+    result
+}
+
+fn ts_count(vals: &[f64], window: usize) -> Vec<f64> {
+    let n = vals.len();
+    let mut result = vec![0.0; n];
+
+    // Optimized path for expanding window (window=0 means from start)
+    if window == 0 {
+        let mut cumcount = 0.0;
+        for i in 0..n {
+            if !vals[i].is_nan() {
+                cumcount += 1.0;
+            }
+            result[i] = cumcount;
+        }
+        return result;
+    }
+
+    // Regular rolling window
+    for i in 0..n {
+        let start = i.saturating_sub(window - 1);
+        // Count non-NaN values in the window
+        result[i] = vals[start..=i].iter().filter(|v| !v.is_nan()).count() as f64;
     }
     result
 }
@@ -449,11 +491,26 @@ fn ts_rank(vals: &[f64], window: usize) -> Vec<f64> {
 
 fn rank(vals: &[f64]) -> Vec<f64> {
     let n = vals.len();
-    let mut indexed: Vec<(usize, f64)> = vals.iter().enumerate().map(|(i, &v)| (i, v)).collect();
-    indexed.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-    let mut result = vec![0.0; n];
+    if n == 0 {
+        return vec![];
+    }
+
+    // Separate NaN values and valid values
+    let mut indexed: Vec<(usize, f64)> = vals.iter().enumerate()
+        .filter(|(_, v)| !v.is_nan())
+        .map(|(i, &v)| (i, v))
+        .collect();
+
+    if indexed.is_empty() {
+        return vec![f64::NAN; n];
+    }
+
+    indexed.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut result = vec![f64::NAN; n];
+    let len = indexed.len();
     for (rank, (idx, _)) in indexed.iter().enumerate() {
-        result[*idx] = rank as f64 / n as f64;
+        result[*idx] = rank as f64 / len as f64;
     }
     result
 }
@@ -479,6 +536,18 @@ fn scale(vals: &[f64]) -> Vec<f64> {
         return vec![0.0; n];
     }
     vals.iter().map(|v| (v - mean) / std).collect()
+}
+
+fn sign(vals: &[f64]) -> Vec<f64> {
+    vals.iter().map(|v| {
+        if *v > 0.0 {
+            1.0
+        } else if *v < 0.0 {
+            -1.0
+        } else {
+            0.0
+        }
+    }).collect()
 }
 
 // =============================================================================

@@ -414,13 +414,15 @@ class GPRecommendations:
 class AlphaRegistry:
     """Registry for factor management."""
 
-    def __init__(self) -> None: ...
+    def __init__(self, storage_dir: Optional[str] = None) -> None: ...
 
     def register(
         self,
         name: str,
         expression: str,
-        category: Optional[str] = None,
+        category: str = "custom",
+        description: Optional[str] = None,
+        tags: Optional[List[str]] = None,
     ) -> str:
         """Register a new factor."""
         ...
@@ -429,14 +431,129 @@ class AlphaRegistry:
         self,
         name: str,
         expression: str,
-        dimension_check: bool = True,
+        category: str = "custom",
+        description: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        validate_dimension: bool = True,
     ) -> str:
         """Register a factor with dimension validation."""
         ...
 
-    def get(self, name: str) -> Optional[FactorMetadata]: ...
-    def delete(self, name: str) -> bool: ...
-    def list(self) -> List[str]: ...
+    def get(self, factor_id: str) -> Optional[Dict[str, Any]]: ...
+    def delete(self, factor_id: str) -> bool: ...
+    def list(self, category: Optional[str] = None) -> List[Dict[str, Any]]: ...
+
+
+class FactorRegistry:
+    """Rust-backed factor registry with expression parsing and compute."""
+
+    def __init__(self, mode: Literal["default", "conservative", "high_performance"] = "default") -> None: ...
+
+    def set_columns(self, columns: List[str]) -> None:
+        """Set available column names (e.g., ['close', 'volume', 'open'])."""
+        ...
+
+    def columns(self) -> List[str]:
+        """Get available column names."""
+        ...
+
+    def register(self, name: str, expression: str) -> str:
+        """
+        Register a factor expression.
+
+        The backend automatically parses the expression and generates a compute plan.
+
+        Parameters
+        ----------
+        name : str
+            Factor name
+        expression : str
+            Factor expression (e.g., 'rank(ts_mean(close, 20))')
+
+        Returns
+        -------
+        str
+            Factor name
+        """
+        ...
+
+    def compute(self, name: str, data: Dict[str, Union[npt.NDArray, List[float]]]) -> FactorResult:
+        """
+        Compute factor values with provided data.
+
+        Parameters
+        ----------
+        name : str
+            Factor name
+        data : dict
+            Dictionary of column_name -> numpy array or list
+
+        Returns
+        -------
+        FactorResult
+            Factor computation result with values array
+        """
+        ...
+
+    def list(self) -> List[str]:
+        """List all registered factor names."""
+        ...
+
+    def get(self, name: str) -> Optional[FactorInfo]:
+        """Get factor information by name."""
+        ...
+
+    def unregister(self, name: str) -> bool:
+        """Unregister a factor by name."""
+        ...
+
+    def clear(self) -> None:
+        """Clear all registered factors."""
+        ...
+
+    def get_config(self) -> Dict[str, Any]:
+        """Get compute configuration."""
+        ...
+
+
+class FactorInfo:
+    """
+    Factor information container.
+
+    This class is created by FactorRegistry.get() - do not instantiate directly.
+    """
+
+    name: str
+    expression: str
+    description: str
+    category: str
+
+    def __repr__(self) -> str: ...
+
+
+class FactorResult:
+    """
+    Factor computation result.
+
+    This class is created by FactorRegistry.compute() - do not instantiate directly.
+    """
+
+    name: str
+    """Factor name"""
+
+    values: npt.NDArray[np.float64]
+    """Computed factor values"""
+
+    n_rows: int
+    """Number of rows (elements) in the result"""
+
+    n_cols: int
+    """Number of columns (not used, kept for compatibility)"""
+
+    compute_time_ms: float
+    """Computation time in milliseconds"""
+
+    def __repr__(self) -> str: ...
 
 # =============================================================================
 # Dimension System

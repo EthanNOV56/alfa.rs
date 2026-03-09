@@ -30,6 +30,10 @@ try:
         # Expression system
         Expr,
         FactorMetadata,
+        FactorInfo,
+        FactorResult,
+        # Factor registry
+        FactorRegistry,
         # Genetic Programming
         GpEngine,
         GPHistoryRecord,
@@ -129,6 +133,19 @@ except ImportError:
         """Stub GPRecommendations class for fallback mode."""
         pass
 
+    # Factor registry stubs
+    class FactorRegistry:
+        """Stub FactorRegistry class for fallback mode."""
+        pass
+
+    class FactorInfo:
+        """Stub FactorInfo class for fallback mode."""
+        pass
+
+    class FactorResult:
+        """Stub FactorResult class for fallback mode."""
+        pass
+
     def rolling_window(*args, **kwargs):
         """Stub function for fallback mode."""
         return {}
@@ -196,6 +213,10 @@ __all__ = [
     "GPRecommendations",
     # Factor registry (ergonomic API)
     "AlphaRegistry",
+    # Factor registry (Rust-backed)
+    "FactorRegistry",
+    "FactorInfo",
+    "FactorResult",
     # Dimension types
     "Dimension",
 ]
