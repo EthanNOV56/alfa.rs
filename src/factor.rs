@@ -253,18 +253,46 @@ impl FactorRegistry {
         // This will automatically cache and reuse intermediate results
         let mut results: HashMap<String, FactorResult> = HashMap::new();
 
-        for (name, expr) in factor_exprs {
-            let result = eval_expr_memoized(expr, data, n_rows, &mut cache)?;
-            results.insert(
-                name.clone(),
-                FactorResult {
-                    name,
-                    values: result,
-                    n_rows,
-                    n_cols: 1,
-                    compute_time_ms: 0,
-                },
-            );
+        if parallel && factor_exprs.len() > 1 {
+            // Parallel computation using rayon
+            use rayon::prelude::*;
+
+            let results_vec: Vec<(String, FactorResult)> = factor_exprs
+                .par_iter()
+                .map(|(name, expr)| {
+                    let mut thread_cache = cache.clone();
+                    let result = eval_expr_memoized(expr, data, n_rows, &mut thread_cache).unwrap();
+                    (
+                        name.clone(),
+                        FactorResult {
+                            name: name.clone(),
+                            values: result,
+                            n_rows,
+                            n_cols: 1,
+                            compute_time_ms: 0,
+                        },
+                    )
+                })
+                .collect();
+
+            for (name, result) in results_vec {
+                results.insert(name, result);
+            }
+        } else {
+            // Sequential computation
+            for (name, expr) in factor_exprs {
+                let result = eval_expr_memoized(expr, data, n_rows, &mut cache)?;
+                results.insert(
+                    name.clone(),
+                    FactorResult {
+                        name,
+                        values: result,
+                        n_rows,
+                        n_cols: 1,
+                        compute_time_ms: 0,
+                    },
+                );
+            }
         }
 
         let elapsed = start.elapsed().as_millis() as u64;
