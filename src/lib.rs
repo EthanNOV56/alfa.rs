@@ -124,7 +124,7 @@ impl BacktestEngine {
             let mut valid_data: Vec<(usize, f64)> = factor_row
                 .iter()
                 .enumerate()
-                .filter(|(_, &v)| !v.is_nan())
+                .filter(|&(_, &v)| !v.is_nan())
                 .map(|(i, &v)| (i, v))
                 .collect();
             
