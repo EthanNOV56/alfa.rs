@@ -284,6 +284,48 @@ impl FactorRegistry {
                 let vals = self.eval_args(args, data, n_rows)?;
                 Ok(sign(&vals))
             }
+            "abs" => {
+                let vals = self.eval_args(args, data, n_rows)?;
+                Ok(vals.iter().map(|v| v.abs()).collect())
+            }
+            "log" => {
+                let vals = self.eval_args(args, data, n_rows)?;
+                Ok(vals.iter().map(|v| {
+                    if *v > 0.0 { v.ln() } else { f64::NAN }
+                }).collect())
+            }
+            "log10" => {
+                let vals = self.eval_args(args, data, n_rows)?;
+                Ok(vals.iter().map(|v| {
+                    if *v > 0.0 { v.log10() } else { f64::NAN }
+                }).collect())
+            }
+            "sqrt" => {
+                let vals = self.eval_args(args, data, n_rows)?;
+                Ok(vals.iter().map(|v| v.sqrt()).collect())
+            }
+            "power" => {
+                let vals = self.eval_args(args, data, n_rows)?;
+                let exponent = args.get(1).and_then(|a| get_literal_int(a)).map(|e| e as f64).unwrap_or(2.0);
+                Ok(vals.iter().map(|v| v.powf(exponent)).collect())
+            }
+            "decay_linear" | "decay" => {
+                let vals = self.eval_args(args, data, n_rows)?;
+                let periods = args.get(1).and_then(|a| get_literal_int(a)).unwrap_or(10);
+                Ok(decay_linear(&vals, periods))
+            }
+            "delta" => {
+                let vals = self.eval_args(args, data, n_rows)?;
+                let periods = args.get(1).and_then(|a| get_literal_int(a)).unwrap_or(1);
+                Ok(ts_delta(&vals, periods))
+            }
+            "vwap" => {
+                // VWAP = amount / volume
+                // This requires both amount and volume columns
+                // For now, return close as approximation
+                let vals = self.eval_args(args, data, n_rows)?;
+                Ok(vals)
+            }
             _ => Err(format!("Unknown function: {}", name)),
         }
     }
@@ -302,10 +344,21 @@ impl FactorRegistry {
             "ts_mean" | "ts_avg" => Ok(ts_mean(&vals, window)),
             "ts_sum" => Ok(ts_sum(&vals, window)),
             "ts_count" => Ok(ts_count(&vals, window)),
-            "ts_max" => Ok(ts_max(&vals, window)),
-            "ts_min" => Ok(ts_min(&vals, window)),
-            "ts_std" => Ok(ts_std(&vals, window)),
+            "ts_max" | "ts_argmax" => Ok(ts_argmax(&vals, window)),
+            "ts_min" | "ts_argmin" => Ok(ts_argmin(&vals, window)),
+            "ts_std" | "ts_stddev" => Ok(ts_std(&vals, window)),
             "ts_rank" => Ok(ts_rank(&vals, window)),
+            "ts_correlation" | "ts_corr" => {
+                // Need two columns for correlation
+                let vals2 = if args.len() > 1 {
+                    self.eval_args(&args[1..], data, n_rows)?
+                } else {
+                    vals.clone()
+                };
+                Ok(ts_correlation(&vals, &vals2, window))
+            }
+            "ts_delta" | "delta" => Ok(ts_delta(&vals, window)),
+            "ts_product" | "product" => Ok(ts_product(&vals, window)),
             _ => Err(format!("Unknown ts function: {}", name)),
         }
     }
@@ -485,6 +538,122 @@ fn ts_rank(vals: &[f64], window: usize) -> Vec<f64> {
         let current = vals[i];
         let rank = slice.iter().filter(|&&x| x < current).count() as f64;
         result[i] = rank / slice.len() as f64;
+    }
+    result
+}
+
+// Position of maximum value in window (1-indexed like Alpha101)
+fn ts_argmax(vals: &[f64], window: usize) -> Vec<f64> {
+    let n = vals.len();
+    let mut result = vec![0.0; n];
+    for i in 0..n {
+        let start = i.saturating_sub(window - 1);
+        let slice = &vals[start..=i];
+        let max_val = slice.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let pos = slice.iter().position(|&x| (x - max_val).abs() < f64::EPSILON);
+        result[i] = pos.map(|p| (slice.len() - p) as f64).unwrap_or(0.0);
+    }
+    result
+}
+
+// Position of minimum value in window (1-indexed like Alpha101)
+fn ts_argmin(vals: &[f64], window: usize) -> Vec<f64> {
+    let n = vals.len();
+    let mut result = vec![0.0; n];
+    for i in 0..n {
+        let start = i.saturating_sub(window - 1);
+        let slice = &vals[start..=i];
+        let min_val = slice.iter().cloned().fold(f64::INFINITY, f64::min);
+        let pos = slice.iter().position(|&x| (x - min_val).abs() < f64::EPSILON);
+        result[i] = pos.map(|p| (slice.len() - p) as f64).unwrap_or(0.0);
+    }
+    result
+}
+
+// Rolling correlation between two series
+fn ts_correlation(vals1: &[f64], vals2: &[f64], window: usize) -> Vec<f64> {
+    let n = vals1.len();
+    let mut result = vec![0.0; n];
+
+    for i in 0..n {
+        let start = i.saturating_sub(window - 1);
+        let slice1 = &vals1[start..=i];
+        let slice2 = &vals2[start..=i];
+
+        let len = slice1.len();
+        if len < 2 {
+            result[i] = 0.0;
+            continue;
+        }
+
+        let mean1: f64 = slice1.iter().sum::<f64>() / len as f64;
+        let mean2: f64 = slice2.iter().sum::<f64>() / len as f64;
+
+        let mut cov = 0.0;
+        let mut var1 = 0.0;
+        let mut var2 = 0.0;
+
+        for j in 0..len {
+            let d1 = slice1[j] - mean1;
+            let d2 = slice2[j] - mean2;
+            cov += d1 * d2;
+            var1 += d1 * d1;
+            var2 += d2 * d2;
+        }
+
+        let denom = (var1 * var2).sqrt();
+        if denom > 1e-10 {
+            result[i] = cov / denom;
+        } else {
+            result[i] = 0.0;
+        }
+    }
+    result
+}
+
+// Difference over window periods (like delta in Alpha101)
+fn ts_delta(vals: &[f64], periods: usize) -> Vec<f64> {
+    let n = vals.len();
+    let mut result = vec![0.0; n];
+    for i in periods..n {
+        result[i] = vals[i] - vals[i - periods];
+    }
+    result
+}
+
+// Rolling product
+fn ts_product(vals: &[f64], window: usize) -> Vec<f64> {
+    let n = vals.len();
+    let mut result = vec![0.0; n];
+    for i in 0..n {
+        let start = i.saturating_sub(window - 1);
+        let slice = &vals[start..=i];
+        let prod: f64 = slice.iter().fold(1.0, |acc, &v| acc * v);
+        result[i] = prod;
+    }
+    result
+}
+
+// Decay linear (exponentially weighted with linear weights)
+fn decay_linear(vals: &[f64], periods: usize) -> Vec<f64> {
+    let n = vals.len();
+    let mut result = vec![0.0; n];
+
+    for i in 0..n {
+        let start = i.saturating_sub(periods - 1);
+        let slice = &vals[start..=i];
+        let len = slice.len();
+
+        // Linear weights: 1, 2, 3, ..., len
+        let weight_sum: f64 = (1..=len).sum::<usize>() as f64;
+        let mut weighted_sum = 0.0;
+
+        for (j, &v) in slice.iter().enumerate() {
+            let weight = (j + 1) as f64;
+            weighted_sum += weight * v;
+        }
+
+        result[i] = weighted_sum / weight_sum;
     }
     result
 }
