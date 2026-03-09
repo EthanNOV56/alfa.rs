@@ -1,3 +1,5 @@
+.*/
+
 /target
 # Python
 __pycache__/
@@ -36,5 +38,5 @@ build/
 *.egg-info/
 .eggs/
 
-/priv-md
+/priv
 CLAUDE.md
