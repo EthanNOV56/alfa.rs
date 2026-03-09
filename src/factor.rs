@@ -259,19 +259,24 @@ impl FactorRegistry {
 
             let results_vec: Vec<(String, FactorResult)> = factor_exprs
                 .par_iter()
-                .map(|(name, expr)| {
+                .filter_map(|(name, expr)| {
                     let mut thread_cache = cache.clone();
-                    let result = eval_expr_memoized(expr, data, n_rows, &mut thread_cache).unwrap();
-                    (
-                        name.clone(),
-                        FactorResult {
-                            name: name.clone(),
-                            values: result,
-                            n_rows,
-                            n_cols: 1,
-                            compute_time_ms: 0,
-                        },
-                    )
+                    match eval_expr_memoized(expr, data, n_rows, &mut thread_cache) {
+                        Ok(result) => Some((
+                            name.clone(),
+                            FactorResult {
+                                name: name.clone(),
+                                values: result,
+                                n_rows,
+                                n_cols: 1,
+                                compute_time_ms: 0,
+                            },
+                        )),
+                        Err(e) => {
+                            eprintln!("Error computing {}: {}", name, e);
+                            None
+                        }
+                    }
                 })
                 .collect();
 
@@ -1031,7 +1036,8 @@ fn eval_function_memoized(
 ) -> Result<Vec<f64>, String> {
     let name_lower = name.to_lowercase();
 
-    if name_lower.starts_with("ts_") {
+    // Check for ts_ prefix OR known ts functions without prefix
+    if name_lower.starts_with("ts_") || matches!(name_lower.as_str(), "sma" | "lowday" | "highday" | "wma" | "min" | "max" | "sum") {
         return eval_ts_function_memoized(&name_lower, args, data, n_rows, cache);
     }
 
@@ -1156,6 +1162,9 @@ fn eval_ts_function_memoized(
         "lowday" => Ok(lowday(&vals, window)),
         "highday" => Ok(highday(&vals, window)),
         "wma" => Ok(wma(&vals, window)),
+        "min" => Ok(ts_min(&vals, window)),
+        "max" => Ok(ts_max(&vals, window)),
+        "sum" => Ok(ts_sum(&vals, window)),
         _ => Err(format!("Unknown ts function: {}", name)),
     }
 }
