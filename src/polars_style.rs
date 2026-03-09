@@ -216,6 +216,293 @@ impl Series {
         let z_data = (&self.data - &mean.data) / &std.data;
         Series::from_array(z_data)
     }
+
+    // ==================== Alpha101 Functions ====================
+
+    /// Time series rank over rolling window (ts_rank)
+    pub fn ts_rank(&self, window: usize) -> Series {
+        let n = self.len();
+        let mut result = Array1::zeros(n);
+
+        for i in 0..n {
+            if i + 1 < window {
+                result[i] = f64::NAN;
+            } else {
+                let start = i + 1 - window;
+                let slice = self.data.slice(ndarray::s![start..=i]);
+                let mut vals: Vec<f64> = slice.iter().cloned().collect();
+                // Sort and get rank of last element
+                let last_val = vals[vals.len() - 1];
+                vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                if let Some(pos) = vals.iter().position(|&x| x == last_val) {
+                    result[i] = (pos + 1) as f64 / vals.len() as f64;
+                } else {
+                    result[i] = f64::NAN;
+                }
+            }
+        }
+
+        Series::from_array(result)
+    }
+
+    /// Time series argmax over rolling window (ts_argmax)
+    pub fn ts_argmax(&self, window: usize) -> Series {
+        let n = self.len();
+        let mut result = Array1::zeros(n);
+
+        for i in 0..n {
+            if i + 1 < window {
+                result[i] = f64::NAN;
+            } else {
+                let start = i + 1 - window;
+                let slice = self.data.slice(ndarray::s![start..=i]);
+                // Find position of maximum (1-indexed)
+                let max_pos = slice
+                    .iter()
+                    .enumerate()
+                    .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+                    .map(|(pos, _)| pos + 1);
+                result[i] = max_pos.unwrap_or(0) as f64;
+            }
+        }
+
+        Series::from_array(result)
+    }
+
+    /// Time series argmin over rolling window (ts_argmin)
+    pub fn ts_argmin(&self, window: usize) -> Series {
+        let n = self.len();
+        let mut result = Array1::zeros(n);
+
+        for i in 0..n {
+            if i + 1 < window {
+                result[i] = f64::NAN;
+            } else {
+                let start = i + 1 - window;
+                let slice = self.data.slice(ndarray::s![start..=i]);
+                // Find position of minimum (1-indexed)
+                let min_pos = slice
+                    .iter()
+                    .enumerate()
+                    .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+                    .map(|(pos, _)| pos + 1);
+                result[i] = min_pos.unwrap_or(0) as f64;
+            }
+        }
+
+        Series::from_array(result)
+    }
+
+    /// Cross-sectional rank (rank)
+    pub fn cs_rank(&self) -> Series {
+        let n = self.len();
+        let mut result = Array1::zeros(n);
+
+        let mut vals: Vec<(usize, f64)> = self.data.iter().enumerate().map(|(i, &v)| (i, v)).collect();
+        vals.sort_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+        for (orig_idx, _) in &vals {
+            result[*orig_idx] = (orig_idx + 1) as f64 / n as f64;
+        }
+
+        Series::from_array(result)
+    }
+
+    /// Time series correlation over rolling window (ts_corr)
+    pub fn ts_corr(&self, other: &Series, window: usize) -> Series {
+        let n = self.len();
+        let mut result = Array1::zeros(n);
+
+        for i in 0..n {
+            if i + 1 < window {
+                result[i] = f64::NAN;
+            } else {
+                let start = i + 1 - window;
+                let self_slice = self.data.slice(ndarray::s![start..=i]);
+                let other_slice = other.data.slice(ndarray::s![start..=i]);
+
+                // Calculate correlation
+                let self_mean = self_slice.iter().sum::<f64>() / self_slice.len() as f64;
+                let other_mean = other_slice.iter().sum::<f64>() / other_slice.len() as f64;
+
+                let mut cov = 0.0;
+                let mut self_var = 0.0;
+                let mut other_var = 0.0;
+
+                for j in 0..self_slice.len() {
+                    let self_diff = self_slice[j] - self_mean;
+                    let other_diff = other_slice[j] - other_mean;
+                    cov += self_diff * other_diff;
+                    self_var += self_diff * self_diff;
+                    other_var += other_diff * other_diff;
+                }
+
+                let denom = (self_var * other_var).sqrt();
+                if denom > 0.0 {
+                    result[i] = cov / denom;
+                } else {
+                    result[i] = f64::NAN;
+                }
+            }
+        }
+
+        Series::from_array(result)
+    }
+
+    /// Time series covariance over rolling window (ts_cov)
+    pub fn ts_cov(&self, other: &Series, window: usize) -> Series {
+        let n = self.len();
+        let mut result = Array1::zeros(n);
+
+        for i in 0..n {
+            if i + 1 < window {
+                result[i] = f64::NAN;
+            } else {
+                let start = i + 1 - window;
+                let self_slice = self.data.slice(ndarray::s![start..=i]);
+                let other_slice = other.data.slice(ndarray::s![start..=i]);
+
+                let self_mean = self_slice.iter().sum::<f64>() / self_slice.len() as f64;
+                let other_mean = other_slice.iter().sum::<f64>() / other_slice.len() as f64;
+
+                let mut cov = 0.0;
+                for j in 0..self_slice.len() {
+                    let self_diff = self_slice[j] - self_mean;
+                    let other_diff = other_slice[j] - other_mean;
+                    cov += self_diff * other_diff;
+                }
+
+                result[i] = cov / window as f64;
+            }
+        }
+
+        Series::from_array(result)
+    }
+
+    /// Scale to [-1, 1] using rolling window (scale)
+    pub fn scale(&self, window: usize) -> Series {
+        let n = self.len();
+        let mut result = Array1::zeros(n);
+
+        for i in 0..n {
+            if i + 1 < window {
+                result[i] = f64::NAN;
+            } else {
+                let start = i + 1 - window;
+                let slice = self.data.slice(ndarray::s![start..=i]);
+                let mean = slice.iter().sum::<f64>() / slice.len() as f64;
+                let std = (slice.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / slice.len() as f64).sqrt();
+
+                if std > 0.0 {
+                    result[i] = (self.data[i] - mean) / std;
+                } else {
+                    result[i] = 0.0;
+                }
+            }
+        }
+
+        Series::from_array(result)
+    }
+
+    /// Linear decay weighted average (decay_linear)
+    pub fn decay_linear(&self, periods: usize) -> Series {
+        let n = self.len();
+        let mut result = Array1::zeros(n);
+
+        // Weights: 1, 2, 3, ..., periods
+        let total_weight = (periods * (periods + 1)) as f64 / 2.0;
+
+        for i in 0..n {
+            if i + 1 < periods {
+                result[i] = f64::NAN;
+            } else {
+                let start = i + 1 - periods;
+                let slice = self.data.slice(ndarray::s![start..=i]);
+
+                let mut weighted_sum = 0.0;
+                for (j, &val) in slice.iter().enumerate() {
+                    let weight = (j + 1) as f64;
+                    weighted_sum += val * weight;
+                }
+
+                result[i] = weighted_sum / total_weight;
+            }
+        }
+
+        Series::from_array(result)
+    }
+
+    /// Sign function (-1, 0, 1)
+    pub fn sign(&self) -> Series {
+        Series::from_array(self.data.mapv(|x| {
+            if x > 0.0 {
+                1.0
+            } else if x < 0.0 {
+                -1.0
+            } else {
+                0.0
+            }
+        }))
+    }
+
+    /// Power function (x^exp)
+    pub fn power(&self, exp: f64) -> Series {
+        Series::from_array(self.data.mapv(|x| x.powf(exp)))
+    }
+
+    /// Rolling sum (ts_sum)
+    pub fn ts_sum(&self, window: usize) -> Series {
+        let n = self.len();
+        let mut result = Array1::zeros(n);
+
+        for i in 0..n {
+            if i + 1 < window {
+                result[i] = f64::NAN;
+            } else {
+                let start = i + 1 - window;
+                let slice = self.data.slice(ndarray::s![start..=i]);
+                result[i] = slice.iter().sum();
+            }
+        }
+
+        Series::from_array(result)
+    }
+
+    /// Rolling max (ts_max)
+    pub fn ts_max(&self, window: usize) -> Series {
+        let n = self.len();
+        let mut result = Array1::zeros(n);
+
+        for i in 0..n {
+            if i + 1 < window {
+                result[i] = f64::NAN;
+            } else {
+                let start = i + 1 - window;
+                let slice = self.data.slice(ndarray::s![start..=i]);
+                result[i] = slice.iter().cloned().fold(f64::NAN, f64::max);
+            }
+        }
+
+        Series::from_array(result)
+    }
+
+    /// Rolling min (ts_min)
+    pub fn ts_min(&self, window: usize) -> Series {
+        let n = self.len();
+        let mut result = Array1::zeros(n);
+
+        for i in 0..n {
+            if i + 1 < window {
+                result[i] = f64::NAN;
+            } else {
+                let start = i + 1 - window;
+                let slice = self.data.slice(ndarray::s![start..=i]);
+                result[i] = slice.iter().cloned().fold(f64::NAN, f64::min);
+            }
+        }
+
+        Series::from_array(result)
+    }
 }
 
 // ============================================================================
@@ -443,6 +730,146 @@ fn evaluate_function_vectorized(name: &str, args: &[Expr], df: &DataFrame) -> Re
                 _ => return Err("ema span must be an integer literal".to_string()),
             };
             Ok(series.ema(span))
+        }
+        // Alpha101 Functions
+        "ts_rank" => {
+            if args.len() != 2 {
+                return Err("ts_rank function requires 2 arguments: expression and window".to_string());
+            }
+            let series = evaluate_expr_on_dataframe(&args[0], df)?;
+            let window = match &args[1] {
+                Expr::Literal(Literal::Integer(w)) => *w as usize,
+                _ => return Err("ts_rank window must be an integer literal".to_string()),
+            };
+            Ok(series.ts_rank(window))
+        }
+        "ts_argmax" => {
+            if args.len() != 2 {
+                return Err("ts_argmax function requires 2 arguments: expression and window".to_string());
+            }
+            let series = evaluate_expr_on_dataframe(&args[0], df)?;
+            let window = match &args[1] {
+                Expr::Literal(Literal::Integer(w)) => *w as usize,
+                _ => return Err("ts_argmax window must be an integer literal".to_string()),
+            };
+            Ok(series.ts_argmax(window))
+        }
+        "ts_argmin" => {
+            if args.len() != 2 {
+                return Err("ts_argmin function requires 2 arguments: expression and window".to_string());
+            }
+            let series = evaluate_expr_on_dataframe(&args[0], df)?;
+            let window = match &args[1] {
+                Expr::Literal(Literal::Integer(w)) => *w as usize,
+                _ => return Err("ts_argmin window must be an integer literal".to_string()),
+            };
+            Ok(series.ts_argmin(window))
+        }
+        "rank" | "cs_rank" => {
+            // Cross-sectional rank - uses single argument
+            if args.len() != 1 {
+                return Err("rank function requires 1 argument: expression".to_string());
+            }
+            let series = evaluate_expr_on_dataframe(&args[0], df)?;
+            Ok(series.cs_rank())
+        }
+        "ts_corr" => {
+            if args.len() != 3 {
+                return Err("ts_corr function requires 3 arguments: expr1, expr2, window".to_string());
+            }
+            let series1 = evaluate_expr_on_dataframe(&args[0], df)?;
+            let series2 = evaluate_expr_on_dataframe(&args[1], df)?;
+            let window = match &args[2] {
+                Expr::Literal(Literal::Integer(w)) => *w as usize,
+                _ => return Err("ts_corr window must be an integer literal".to_string()),
+            };
+            Ok(series1.ts_corr(&series2, window))
+        }
+        "ts_cov" => {
+            if args.len() != 3 {
+                return Err("ts_cov function requires 3 arguments: expr1, expr2, window".to_string());
+            }
+            let series1 = evaluate_expr_on_dataframe(&args[0], df)?;
+            let series2 = evaluate_expr_on_dataframe(&args[1], df)?;
+            let window = match &args[2] {
+                Expr::Literal(Literal::Integer(w)) => *w as usize,
+                _ => return Err("ts_cov window must be an integer literal".to_string()),
+            };
+            Ok(series1.ts_cov(&series2, window))
+        }
+        "scale" => {
+            if args.len() != 2 {
+                return Err("scale function requires 2 arguments: expression and window".to_string());
+            }
+            let series = evaluate_expr_on_dataframe(&args[0], df)?;
+            let window = match &args[1] {
+                Expr::Literal(Literal::Integer(w)) => *w as usize,
+                _ => return Err("scale window must be an integer literal".to_string()),
+            };
+            Ok(series.scale(window))
+        }
+        "decay_linear" => {
+            if args.len() != 2 {
+                return Err("decay_linear function requires 2 arguments: expression and periods".to_string());
+            }
+            let series = evaluate_expr_on_dataframe(&args[0], df)?;
+            let periods = match &args[1] {
+                Expr::Literal(Literal::Integer(p)) => *p as usize,
+                _ => return Err("decay_linear periods must be an integer literal".to_string()),
+            };
+            Ok(series.decay_linear(periods))
+        }
+        "sign" => {
+            if args.len() != 1 {
+                return Err("sign function requires 1 argument: expression".to_string());
+            }
+            let series = evaluate_expr_on_dataframe(&args[0], df)?;
+            Ok(series.sign())
+        }
+        "power" => {
+            if args.len() != 2 {
+                return Err("power function requires 2 arguments: expression and exponent".to_string());
+            }
+            let series = evaluate_expr_on_dataframe(&args[0], df)?;
+            let exp = match &args[1] {
+                Expr::Literal(Literal::Float(e)) => *e,
+                Expr::Literal(Literal::Integer(e)) => *e as f64,
+                _ => return Err("power exponent must be a numeric literal".to_string()),
+            };
+            Ok(series.power(exp))
+        }
+        "ts_sum" => {
+            if args.len() != 2 {
+                return Err("ts_sum function requires 2 arguments: expression and window".to_string());
+            }
+            let series = evaluate_expr_on_dataframe(&args[0], df)?;
+            let window = match &args[1] {
+                Expr::Literal(Literal::Integer(w)) => *w as usize,
+                _ => return Err("ts_sum window must be an integer literal".to_string()),
+            };
+            Ok(series.ts_sum(window))
+        }
+        "ts_max" => {
+            if args.len() != 2 {
+                return Err("ts_max function requires 2 arguments: expression and window".to_string());
+            }
+            let series = evaluate_expr_on_dataframe(&args[0], df)?;
+            let window = match &args[1] {
+                Expr::Literal(Literal::Integer(w)) => *w as usize,
+                _ => return Err("ts_max window must be an integer literal".to_string()),
+            };
+            Ok(series.ts_max(window))
+        }
+        "ts_min" => {
+            if args.len() != 2 {
+                return Err("ts_min function requires 2 arguments: expression and window".to_string());
+            }
+            let series = evaluate_expr_on_dataframe(&args[0], df)?;
+            let window = match &args[1] {
+                Expr::Literal(Literal::Integer(w)) => *w as usize,
+                _ => return Err("ts_min window must be an integer literal".to_string()),
+            };
+            Ok(series.ts_min(window))
         }
         _ => Err(format!("Unknown function in vectorized evaluator: {}", name)),
     }

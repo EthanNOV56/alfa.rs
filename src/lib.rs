@@ -1,4 +1,4 @@
-//! alpha-expr core library: high-performance factor backtesting and expression evaluation
+//! exprs core library: high-performance factor backtesting and expression evaluation
 //! Exposed as Python extension via PyO3
 
 // Core modules
@@ -819,6 +819,175 @@ fn rolling_std(expr: &PyExpr, window: usize) -> PyResult<PyExpr> {
 }
 
 // ============================================================================
+// Alpha101 Expression Functions
+// ============================================================================
+
+/// Time series rank - rank of the value in the last `window` time periods
+#[pyfunction]
+fn ts_rank(expr: &PyExpr, window: usize) -> PyResult<PyExpr> {
+    let ts_rank_expr = Expr::FunctionCall {
+        name: "ts_rank".to_string(),
+        args: vec![
+            expr.inner.clone(),
+            Expr::Literal(Literal::Integer(window as i64)),
+        ],
+    };
+    Ok(PyExpr { inner: ts_rank_expr })
+}
+
+/// Time series argmax - index of maximum value in the last `window` time periods
+#[pyfunction]
+fn ts_argmax(expr: &PyExpr, window: usize) -> PyResult<PyExpr> {
+    let ts_argmax_expr = Expr::FunctionCall {
+        name: "ts_argmax".to_string(),
+        args: vec![
+            expr.inner.clone(),
+            Expr::Literal(Literal::Integer(window as i64)),
+        ],
+    };
+    Ok(PyExpr { inner: ts_argmax_expr })
+}
+
+/// Time series argmin - index of minimum value in the last `window` time periods
+#[pyfunction]
+fn ts_argmin(expr: &PyExpr, window: usize) -> PyResult<PyExpr> {
+    let ts_argmin_expr = Expr::FunctionCall {
+        name: "ts_argmin".to_string(),
+        args: vec![
+            expr.inner.clone(),
+            Expr::Literal(Literal::Integer(window as i64)),
+        ],
+    };
+    Ok(PyExpr { inner: ts_argmin_expr })
+}
+
+/// Cross-sectional rank - rank of the value across assets at each time point
+#[pyfunction]
+fn rank(expr: &PyExpr) -> PyResult<PyExpr> {
+    let rank_expr = Expr::FunctionCall {
+        name: "rank".to_string(),
+        args: vec![expr.inner.clone()],
+    };
+    Ok(PyExpr { inner: rank_expr })
+}
+
+/// Time series correlation - rolling correlation between two series
+#[pyfunction]
+fn ts_corr(expr1: &PyExpr, expr2: &PyExpr, window: usize) -> PyResult<PyExpr> {
+    let ts_corr_expr = Expr::FunctionCall {
+        name: "ts_corr".to_string(),
+        args: vec![
+            expr1.inner.clone(),
+            expr2.inner.clone(),
+            Expr::Literal(Literal::Integer(window as i64)),
+        ],
+    };
+    Ok(PyExpr { inner: ts_corr_expr })
+}
+
+/// Time series covariance - rolling covariance between two series
+#[pyfunction]
+fn ts_cov(expr1: &PyExpr, expr2: &PyExpr, window: usize) -> PyResult<PyExpr> {
+    let ts_cov_expr = Expr::FunctionCall {
+        name: "ts_cov".to_string(),
+        args: vec![
+            expr1.inner.clone(),
+            expr2.inner.clone(),
+            Expr::Literal(Literal::Integer(window as i64)),
+        ],
+    };
+    Ok(PyExpr { inner: ts_cov_expr })
+}
+
+/// Scale - z-score normalization over `window` time periods
+#[pyfunction]
+fn scale(expr: &PyExpr, window: usize) -> PyResult<PyExpr> {
+    let scale_expr = Expr::FunctionCall {
+        name: "scale".to_string(),
+        args: vec![
+            expr.inner.clone(),
+            Expr::Literal(Literal::Integer(window as i64)),
+        ],
+    };
+    Ok(PyExpr { inner: scale_expr })
+}
+
+/// Linear decay weighted average - exponentially decaying weights
+#[pyfunction]
+fn decay_linear(expr: &PyExpr, periods: usize) -> PyResult<PyExpr> {
+    let decay_expr = Expr::FunctionCall {
+        name: "decay_linear".to_string(),
+        args: vec![
+            expr.inner.clone(),
+            Expr::Literal(Literal::Integer(periods as i64)),
+        ],
+    };
+    Ok(PyExpr { inner: decay_expr })
+}
+
+/// Sign function - returns -1, 0, or 1
+#[pyfunction]
+fn sign(expr: &PyExpr) -> PyResult<PyExpr> {
+    let sign_expr = Expr::FunctionCall {
+        name: "sign".to_string(),
+        args: vec![expr.inner.clone()],
+    };
+    Ok(PyExpr { inner: sign_expr })
+}
+
+/// Power function - raises expression to a power
+#[pyfunction]
+fn power(expr: &PyExpr, exponent: f64) -> PyResult<PyExpr> {
+    let power_expr = Expr::FunctionCall {
+        name: "power".to_string(),
+        args: vec![
+            expr.inner.clone(),
+            Expr::Literal(Literal::Float(exponent)),
+        ],
+    };
+    Ok(PyExpr { inner: power_expr })
+}
+
+/// Time series sum - rolling sum over `window` time periods
+#[pyfunction]
+fn ts_sum(expr: &PyExpr, window: usize) -> PyResult<PyExpr> {
+    let ts_sum_expr = Expr::FunctionCall {
+        name: "ts_sum".to_string(),
+        args: vec![
+            expr.inner.clone(),
+            Expr::Literal(Literal::Integer(window as i64)),
+        ],
+    };
+    Ok(PyExpr { inner: ts_sum_expr })
+}
+
+/// Time series max - rolling maximum over `window` time periods
+#[pyfunction]
+fn ts_max(expr: &PyExpr, window: usize) -> PyResult<PyExpr> {
+    let ts_max_expr = Expr::FunctionCall {
+        name: "ts_max".to_string(),
+        args: vec![
+            expr.inner.clone(),
+            Expr::Literal(Literal::Integer(window as i64)),
+        ],
+    };
+    Ok(PyExpr { inner: ts_max_expr })
+}
+
+/// Time series min - rolling minimum over `window` time periods
+#[pyfunction]
+fn ts_min(expr: &PyExpr, window: usize) -> PyResult<PyExpr> {
+    let ts_min_expr = Expr::FunctionCall {
+        name: "ts_min".to_string(),
+        args: vec![
+            expr.inner.clone(),
+            Expr::Literal(Literal::Integer(window as i64)),
+        ],
+    };
+    Ok(PyExpr { inner: ts_min_expr })
+}
+
+// ============================================================================
 // Main Python Module
 // ============================================================================
 
@@ -843,6 +1012,21 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cumsum, m)?)?;
     m.add_function(wrap_pyfunction!(cumprod, m)?)?;
     m.add_function(wrap_pyfunction!(rolling_std, m)?)?;
+
+    // Alpha101 expression functions
+    m.add_function(wrap_pyfunction!(ts_rank, m)?)?;
+    m.add_function(wrap_pyfunction!(ts_argmax, m)?)?;
+    m.add_function(wrap_pyfunction!(ts_argmin, m)?)?;
+    m.add_function(wrap_pyfunction!(rank, m)?)?;
+    m.add_function(wrap_pyfunction!(ts_corr, m)?)?;
+    m.add_function(wrap_pyfunction!(ts_cov, m)?)?;
+    m.add_function(wrap_pyfunction!(scale, m)?)?;
+    m.add_function(wrap_pyfunction!(decay_linear, m)?)?;
+    m.add_function(wrap_pyfunction!(sign, m)?)?;
+    m.add_function(wrap_pyfunction!(power, m)?)?;
+    m.add_function(wrap_pyfunction!(ts_sum, m)?)?;
+    m.add_function(wrap_pyfunction!(ts_max, m)?)?;
+    m.add_function(wrap_pyfunction!(ts_min, m)?)?;
 
     // Lazy evaluation system
     m.add_class::<PyLazyFrame>()?;
@@ -1687,9 +1871,9 @@ impl PyGpRecommendations {
     fn is_valid(&self) -> bool {
         self.inner.is_valid()
     }
-    
+
     fn __repr__(&self) -> String {
-        format!("GPRecommendations(functions={}, confidence={:.2})", 
+        format!("GPRecommendations(functions={}, confidence={:.2})",
                 self.inner.recommended_functions.len(), self.inner.confidence_score)
     }
 }

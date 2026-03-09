@@ -1,6 +1,6 @@
-# alpha-expr
+# exprs
 
-高性能因子表达式与回测框架，核心使用 Rust 实现，现已升级至 **v0.2.0**，新增智能因子挖掘与学习能力。
+高性能因子表达式与回测框架，核心使用 Rust + PyO3 实现，现已升级至 **v0.2.0**，新增智能因子挖掘与学习能力。
 
 ## 特性
 
@@ -25,23 +25,20 @@
 
 ```bash
 # 克隆仓库
-git clone https://github.com/yourusername/alpha-expr.git
-cd alpha-expr
+git clone https://github.com/EthanNOV56/exp.rs.git
+cd exp.rs
 
 # 安装 Rust 工具链（如未安装）
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-# 安装 Python 依赖
-pip install -e .[dev]
-
-# 构建 Rust 扩展
-maturin develop --release
+# 使用 maturin 开发模式构建
+maturin develop
 ```
 
 ### 使用 pip（未来发布）
 
 ```bash
-pip install alpha-expr
+pip install exprs
 ```
 
 ## 快速开始
@@ -51,7 +48,7 @@ pip install alpha-expr
 ```python
 import numpy as np
 import pandas as pd
-from alpha_expr import quantile_backtest, create_factor_tear_sheet
+from exprs import quantile_backtest, create_factor_tear_sheet
 
 # 生成示例数据
 n_days, n_assets = 100, 200

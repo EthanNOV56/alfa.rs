@@ -1,11 +1,11 @@
 """
-alpha-expr 基本使用示例
+exprs 基本使用示例
 展示如何使用量化回测功能
 """
 
 import numpy as np
 import pandas as pd
-from alpha_expr import (
+from exprs import (
     quantile_backtest,
     create_factor_tear_sheet,
     BacktestEngine,
@@ -13,7 +13,7 @@ from alpha_expr import (
 )
 
 print("=" * 60)
-print("alpha-expr 示例：量化因子回测")
+print("exprs 示例：量化因子回测")
 print("=" * 60)
 
 # 设置随机种子

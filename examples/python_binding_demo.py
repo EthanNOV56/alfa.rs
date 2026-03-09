@@ -1,23 +1,22 @@
 #!/usr/bin/env python3
 """
-Python binding demonstration for alpha-expr
+Python binding demonstration for exprs
 
 This example shows how to use the Python bindings for:
 1. Expression building and evaluation
 2. DataFrame operations
 3. Backtesting
-4. ClickHouse integration (if available)
 """
 
 import sys
 import numpy as np
 
-# Try to import the alpha_expr_py module
+# Try to import the exprs module
 try:
-    import alpha_expr_py as aexpr
-    print("✅ Successfully imported alpha_expr_py")
+    import exprs as aexpr
+    print("✅ Successfully imported exprs")
 except ImportError as e:
-    print(f"❌ Failed to import alpha_expr_py: {e}")
+    print(f"❌ Failed to import exprs: {e}")
     print("\nTry building the module first:")
     print("  maturin develop  # for development install")
     print("  or")

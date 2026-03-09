@@ -16,6 +16,171 @@ pub enum DataType {
     // TODO: Add more types as needed
 }
 
+/// Dimension types for financial expressions (for GP factor mining)
+/// Used to prevent generating invalid expressions like unnormalized price/volume
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Dimension {
+    /// Price dimension (close, open, high, low)
+    Price,
+    /// Return dimension (daily returns, log returns)
+    Return,
+    /// Volume dimension
+    Volume,
+    /// Amount dimension (trading amount)
+    Amount,
+    /// Ratio dimension (normalized/dimensionless)
+    Ratio,
+    /// No specific dimension
+    Dimensionless,
+    /// Unknown dimension (needs inference)
+    Unknown,
+}
+
+impl Dimension {
+    /// Check if two dimensions are compatible for binary operations
+    pub fn is_compatible_with(&self, other: &Dimension) -> bool {
+        match (self, other) {
+            // Same dimensions are always compatible
+            (d1, d2) if d1 == d2 => true,
+            // Return / Return = Ratio (e.g., return / return)
+            (Dimension::Return, Dimension::Return) => true,
+            // Volume / Volume = Ratio
+            (Dimension::Volume, Dimension::Volume) => true,
+            // Price / Price = Ratio
+            (Dimension::Price, Dimension::Price) => true,
+            // Return / Volume = Ratio
+            (Dimension::Return, Dimension::Volume) => true,
+            (Dimension::Volume, Dimension::Return) => true,
+            // Any / Ratio = Any (multiplying by ratio preserves dimension)
+            (_, Dimension::Ratio) => true,
+            (Dimension::Ratio, _) => true,
+            // Dimensionless can combine with anything
+            (Dimension::Dimensionless, _) => true,
+            (_, Dimension::Dimensionless) => true,
+            // Unknown is compatible with anything (needs inference)
+            (Dimension::Unknown, _) => true,
+            (_, Dimension::Unknown) => true,
+            // Otherwise incompatible
+            _ => false,
+        }
+    }
+
+    /// Get resulting dimension from binary operation
+    pub fn binary_result(&self, op: BinaryOp, other: &Dimension) -> Dimension {
+        match op {
+            BinaryOp::Add | BinaryOp::Subtract => {
+                // Addition/subtraction: dimensions must match
+                if self.is_compatible_with(other) {
+                    if *self == Dimension::Dimensionless || *other == Dimension::Dimensionless {
+                        return Dimension::Dimensionless;
+                    }
+                    if *self == *other {
+                        return self.clone();
+                    }
+                    // Mixed: return dimensionless (e.g., price - price)
+                    Dimension::Dimensionless
+                } else {
+                    Dimension::Unknown
+                }
+            }
+            BinaryOp::Multiply | BinaryOp::Divide => {
+                // Multiplication/division: dimensions combine
+                match (self, other) {
+                    (Dimension::Return, Dimension::Return) => Dimension::Ratio,
+                    (Dimension::Volume, Dimension::Volume) => Dimension::Ratio,
+                    (Dimension::Price, Dimension::Price) => Dimension::Ratio,
+                    (Dimension::Return, Dimension::Volume) => Dimension::Ratio,
+                    (Dimension::Volume, Dimension::Return) => Dimension::Ratio,
+                    (d, Dimension::Ratio) | (Dimension::Ratio, d) => d.clone(),
+                    (Dimension::Dimensionless, d) | (d, Dimension::Dimensionless) => d.clone(),
+                    (Dimension::Unknown, _) | (_, Dimension::Unknown) => Dimension::Unknown,
+                    _ => Dimension::Ratio, // Most multiplications result in ratio
+                }
+            }
+            BinaryOp::Modulo => Dimension::Dimensionless, // Modulo always dimensionless
+            BinaryOp::Equal | BinaryOp::NotEqual
+            | BinaryOp::GreaterThan | BinaryOp::GreaterThanOrEqual
+            | BinaryOp::LessThan | BinaryOp::LessThanOrEqual
+            | BinaryOp::And | BinaryOp::Or => Dimension::Dimensionless, // Comparison/logical result
+        }
+    }
+
+    /// Check if this dimension is valid for a factor output
+    pub fn is_valid_factor_dimension(&self) -> bool {
+        matches!(
+            self,
+            Dimension::Ratio | Dimension::Dimensionless | Dimension::Return
+        )
+    }
+}
+
+/// Wrapper for expressions with dimension information
+#[derive(Clone)]
+pub struct TypedExpr {
+    pub expr: Expr,
+    pub dimension: Dimension,
+}
+
+impl TypedExpr {
+    /// Create a new typed expression
+    pub fn new(expr: Expr, dimension: Dimension) -> Self {
+        Self { expr, dimension }
+    }
+
+    /// Infer dimension from expression
+    pub fn infer_dimension(expr: &Expr) -> Dimension {
+        match expr {
+            Expr::Literal(lit) => match lit {
+                Literal::Float(_) | Literal::Integer(_) => Dimension::Dimensionless,
+                Literal::String(_) => Dimension::Unknown,
+                Literal::Boolean(_) => Dimension::Dimensionless,
+                Literal::Null => Dimension::Unknown,
+            },
+            Expr::Column(name) => {
+                // Infer from column name
+                let lower = name.to_lowercase();
+                if lower.contains("return") || lower.contains("ret") {
+                    Dimension::Return
+                } else if lower.contains("volume") || lower.contains("vol") {
+                    Dimension::Volume
+                } else if lower.contains("amount") {
+                    Dimension::Amount
+                } else if lower.contains("price")
+                    || lower.contains("close")
+                    || lower.contains("open")
+                    || lower.contains("high")
+                    || lower.contains("low")
+                {
+                    Dimension::Price
+                } else {
+                    Dimension::Unknown
+                }
+            }
+            Expr::BinaryExpr { left, op, right } => {
+                let dim_left = Self::infer_dimension(left);
+                let dim_right = Self::infer_dimension(right);
+                dim_left.binary_result(*op, &dim_right)
+            }
+            Expr::UnaryExpr { expr, .. } => Self::infer_dimension(expr),
+            Expr::FunctionCall { name, .. } => {
+                // Most functions output ratio/dimensionless (rank, scale, etc.)
+                let lower = name.to_lowercase();
+                if lower.contains("rank") || lower.contains("scale") {
+                    Dimension::Ratio
+                } else if lower.contains("delay") || lower.contains("diff") {
+                    // These preserve dimension
+                    Dimension::Unknown
+                } else {
+                    Dimension::Dimensionless
+                }
+            }
+            Expr::Aggregate { .. } => Dimension::Dimensionless,
+            Expr::Conditional { .. } => Dimension::Unknown,
+            Expr::Cast { .. } => Dimension::Unknown,
+        }
+    }
+}
+
 /// An expression node in the computation graph
 #[derive(Clone, PartialEq)]
 pub enum Expr {

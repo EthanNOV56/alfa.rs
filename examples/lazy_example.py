@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Example of using the lazy evaluation system in alpha-expr.
+Example of using the lazy evaluation system in exprs.
 
 This demonstrates how to build factor expressions lazily with automatic
 optimization and efficient execution.
@@ -8,12 +8,12 @@ optimization and efficient execution.
 
 import numpy as np
 
-# Import alpha-expr
+# Import exprs
 try:
-    from alpha_expr_core import LazyFrame, Expr, rolling_window, expanding_window
-    print("Successfully imported alpha-expr lazy modules")
+    from exprs._core import LazyFrame, Expr, rolling_window, expanding_window
+    print("Successfully imported exprs lazy modules")
 except ImportError:
-    print("Warning: Could not import from alpha_expr_core. Building extension first...")
+    print("Warning: Could not import from exprs._core. Building extension first...")
     # Try to build the extension
     import subprocess
     import sys
@@ -33,7 +33,7 @@ except ImportError:
         sys.exit(1)
     
     print("Build successful, trying to import again...")
-    from alpha_expr_core import LazyFrame, Expr, rolling_window, expanding_window
+    from exprs._core import LazyFrame, Expr, rolling_window, expanding_window
 
 # Create sample market data
 np.random.seed(42)

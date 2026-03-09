@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Full workflow example for alpha-expr v0.2.0
+Full workflow example for exprs v0.2.0
 
 This demonstrates the complete factor mining pipeline:
 1. Create synthetic financial data
@@ -13,7 +13,7 @@ This demonstrates the complete factor mining pipeline:
 Requirements:
 - numpy
 - pandas (optional for data generation)
-- alpha-expr v0.2.0
+- exprs v0.2.0
 """
 
 import numpy as np
@@ -27,10 +27,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 try:
-    import alpha_expr as ae
-    print(f"✓ Imported alpha-expr v{ae.__version__}")
+    import exprs as ae
+    print(f"✓ Imported exprs v{ae.__version__}")
 except ImportError as e:
-    print(f"✗ Failed to import alpha-expr: {e}")
+    print(f"✗ Failed to import exprs: {e}")
     sys.exit(1)
 
 def create_synthetic_data(n_days=100, n_assets=50, seed=42):
@@ -100,8 +100,8 @@ def test_lazy_evaluation(data):
     
     try:
         # Create LazyFrame from data
-        import alpha_expr._core as _core
-        
+        import exprs._core as _core
+
         # Prepare data as dict of numpy arrays
         data_dict = {
             'close': data['close'],
@@ -184,7 +184,7 @@ def test_persistence_system():
     
     try:
         # Create temporary directory for testing
-        temp_dir = tempfile.mkdtemp(prefix="alpha_expr_test_")
+        temp_dir = tempfile.mkdtemp(prefix="exprs_test_")
         
         # Check if PersistenceManager is available
         if not hasattr(ae, 'PersistenceManager'):

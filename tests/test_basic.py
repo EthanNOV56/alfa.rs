@@ -1,10 +1,10 @@
 """
-alpha-expr 基本功能测试
+exprs 基本功能测试
 """
 
 import numpy as np
 import pytest
-from alpha_expr import quantile_backtest, compute_information_coefficient
+from exprs import quantile_backtest, compute_information_coefficient
 
 
 def test_quantile_backtest_basic():
