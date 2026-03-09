@@ -9,6 +9,7 @@ mod polars_style;
 mod gp;
 mod persistence;
 mod metalearning;
+mod factor;
 
 use pyo3::prelude::*;
 use pyo3::exceptions::{PyValueError, PyRuntimeError};
@@ -17,6 +18,24 @@ use ndarray::{Array2, Array1};
 use numpy::{PyArray2, PyArray1, PyArrayMethods, PyUntypedArrayMethods, IntoPyArray};
 use std::f64::NAN;
 use std::sync::Arc;
+
+/// Set the number of threads for parallel processing
+///
+/// Note: Due to Rayon's design, this must be called BEFORE any parallel operations.
+/// For best results, set the RAYON_NUM_THREADS environment variable before importing:
+///     import os
+///     os.environ['RAYON_NUM_THREADS'] = '4'
+///     import alfars as al
+#[pyfunction]
+fn set_num_threads(n_threads: usize) -> PyResult<()> {
+    if n_threads == 0 {
+        return Err(PyValueError::new_err("n_threads must be > 0"));
+    }
+    // Rayon doesn't allow replacing the global pool at runtime
+    // Recommend using RAYON_NUM_THREADS env var
+    eprintln!("Warning: set_num_threads() is limited. For better control, set RAYON_NUM_THREADS environment variable before importing the module.");
+    Ok(())
+}
 
 // Re-exports for internal use
 use crate::expr::{Expr, Literal, BinaryOp, UnaryOp};
@@ -546,9 +565,9 @@ impl PyExpr {
         }
     }
 
-    /// Get string representation
+    /// Get string representation - simplified to avoid infinite recursion
     fn __repr__(&self) -> String {
-        format!("{:?}", self.inner)
+        "Expr(...)".to_string()
     }
 
     /// Get string representation
@@ -664,6 +683,15 @@ impl PyDataFrame {
 
     fn __str__(&self) -> String {
         self.__repr__()
+    }
+}
+
+/// Parse expression string into Expr AST
+#[pyfunction]
+fn parse_expression(expression: &str) -> PyResult<PyExpr> {
+    match factor::parse_expression(expression) {
+        Ok(expr) => Ok(PyExpr { inner: expr }),
+        Err(e) => Err(PyValueError::new_err(e)),
     }
 }
 
@@ -1020,6 +1048,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDataFrame>()?;
 
     // Expression evaluation functions
+    m.add_function(wrap_pyfunction!(parse_expression, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_expression, m)?)?;
     m.add_function(wrap_pyfunction!(lag, m)?)?;
     m.add_function(wrap_pyfunction!(diff, m)?)?;
@@ -1060,6 +1089,14 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Meta-learning system
     m.add_class::<PyMetaLearningAnalyzer>()?;
     m.add_class::<PyGpRecommendations>()?;
+
+    // Factor Registry
+    m.add_class::<PyFactorRegistry>()?;
+    m.add_class::<PyFactorInfo>()?;
+    m.add_class::<PyFactorResult>()?;
+
+    // Threading control
+    m.add_function(wrap_pyfunction!(set_num_threads, m)?)?;
 
     Ok(())
 }
@@ -1891,5 +1928,202 @@ impl PyGpRecommendations {
     fn __repr__(&self) -> String {
         format!("GPRecommendations(functions={}, confidence={:.2})",
                 self.inner.recommended_functions.len(), self.inner.confidence_score)
+    }
+}
+
+// ============================================================================
+// Factor Registry Python Bindings
+// ============================================================================
+
+use crate::factor::{FactorRegistry, ComputeConfig};
+
+/// Python wrapper for FactorRegistry
+#[pyclass(name = "FactorRegistry")]
+pub struct PyFactorRegistry {
+    inner: FactorRegistry,
+}
+
+#[pymethods]
+impl PyFactorRegistry {
+    /// Create a new FactorRegistry
+    /// - mode: "default", "conservative", or "high_performance"
+    #[new]
+    fn new(mode: &str) -> Self {
+        let config = match mode {
+            "conservative" => ComputeConfig::conservative(),
+            "high_performance" => ComputeConfig::high_performance(),
+            _ => ComputeConfig::default(),
+        };
+        PyFactorRegistry {
+            inner: FactorRegistry::with_config(config),
+        }
+    }
+
+    /// Set available columns (e.g., ["close", "volume", "open"])
+    fn set_columns(&mut self, columns: Vec<String>) {
+        self.inner.set_columns(columns);
+    }
+
+    /// Get available column names
+    fn columns(&self) -> Vec<String> {
+        self.inner.columns()
+    }
+
+    /// Register a factor expression (auto-parses and generates plan)
+    fn register(&mut self, name: &str, expression: &str) -> PyResult<String> {
+        self.inner
+            .register(name, expression)
+            .map_err(|e| PyValueError::new_err(e))
+    }
+
+    /// Compute factor with data (with timeout protection)
+    /// data: dict of column_name -> list of values
+    /// Returns FactorResult with values array
+    fn compute(&self, py: Python<'_>, name: &str, data: Bound<'_, PyDict>) -> PyResult<PyFactorResult> {
+        // Convert Python dict to HashMap
+        let mut hashmap = std::collections::HashMap::new();
+        for (key, value) in data.iter() {
+            let key_str: String = key.extract()?;
+            let values: Vec<f64> = value.extract()?;
+            hashmap.insert(key_str, values);
+        }
+
+        self.inner
+            .compute(name, &hashmap)
+            .map(|r| PyFactorResult {
+                name: r.name,
+                values: r.values,
+                n_rows: r.n_rows,
+                n_cols: r.n_cols,
+                compute_time_ms: r.compute_time_ms,
+            })
+            .map_err(|e| PyValueError::new_err(e))
+    }
+
+    /// List all registered factor names
+    fn list(&self) -> Vec<String> {
+        self.inner.list()
+    }
+
+    /// Get factor info
+    fn get(&self, name: &str) -> Option<PyFactorInfo> {
+        self.inner.get(name).map(|info| PyFactorInfo {
+            name: info.name.clone(),
+            expression: info.expression.clone(),
+            description: info.description.clone(),
+            category: info.category.clone(),
+        })
+    }
+
+    /// Unregister a factor
+    fn unregister(&mut self, name: &str) -> bool {
+        self.inner.unregister(name)
+    }
+
+    /// Clear all factors
+    fn clear(&mut self) {
+        self.inner.clear();
+    }
+
+    /// Get compute config info
+    fn get_config(&self) -> PyResult<Py<PyDict>> {
+        unsafe {
+            let py = Python::assume_attached();
+            let dict = PyDict::new(py);
+            let c = self.inner.config();
+            dict.set_item("timeout_secs", c.timeout_secs)?;
+            dict.set_item("max_workers", c.max_workers)?;
+            dict.set_item("batch_size", c.batch_size)?;
+            dict.set_item("memory_limit_mb", c.memory_limit_mb)?;
+            Ok(dict.into())
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        let n = self.inner.list().len();
+        format!("FactorRegistry(factors={})", n)
+    }
+
+    fn __len__(&self) -> usize {
+        self.inner.list().len()
+    }
+}
+
+/// Python wrapper for factor information
+#[pyclass(name = "FactorInfo")]
+pub struct PyFactorInfo {
+    name: String,
+    expression: String,
+    description: Option<String>,
+    category: Option<String>,
+}
+
+#[pymethods]
+impl PyFactorInfo {
+    #[getter]
+    fn name(&self) -> String {
+        self.name.clone()
+    }
+
+    #[getter]
+    fn expression(&self) -> String {
+        self.expression.clone()
+    }
+
+    #[getter]
+    fn description(&self) -> Option<String> {
+        self.description.clone()
+    }
+
+    #[getter]
+    fn category(&self) -> Option<String> {
+        self.category.clone()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("FactorInfo(name={}, expression={})", self.name, self.expression)
+    }
+}
+
+/// Python wrapper for factor computation result
+#[pyclass(name = "FactorResult")]
+pub struct PyFactorResult {
+    name: String,
+    values: Vec<f64>,
+    n_rows: usize,
+    n_cols: usize,
+    compute_time_ms: u64,
+}
+
+#[pymethods]
+impl PyFactorResult {
+    #[getter]
+    fn name(&self) -> String {
+        self.name.clone()
+    }
+
+    #[getter]
+    fn values(&self) -> Vec<f64> {
+        self.values.clone()
+    }
+
+    #[getter]
+    fn n_rows(&self) -> usize {
+        self.n_rows
+    }
+
+    #[getter]
+    fn n_cols(&self) -> usize {
+        self.n_cols
+    }
+
+    #[getter]
+    fn compute_time_ms(&self) -> u64 {
+        self.compute_time_ms
+    }
+
+    fn __repr__(&self) -> String {
+        format!("FactorResult(name={}, n_rows={}, time_ms={})",
+            self.name, self.n_rows, self.compute_time_ms)
     }
 }

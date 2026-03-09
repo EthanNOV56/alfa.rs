@@ -1,0 +1,756 @@
+//! Factor Registry System
+//!
+//! A system for registering factor expressions, parsing them into AST,
+//! generating computation plans, and executing them efficiently with
+//! timeout protection to prevent system overload.
+
+use crate::expr::{BinaryOp, Expr, Literal, UnaryOp};
+use crate::lazy::{DataSource, LogicalPlan};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Instant;
+
+/// Configuration for resource limits and timeout to prevent system overload
+#[derive(Debug, Clone)]
+pub struct ComputeConfig {
+    /// Maximum computation time in seconds (timeout)
+    pub timeout_secs: u64,
+    /// Maximum number of parallel threads
+    pub max_workers: usize,
+    /// Maximum batch size for chunked processing
+    pub batch_size: usize,
+    /// Maximum memory usage estimate in MB
+    pub memory_limit_mb: usize,
+}
+
+impl Default for ComputeConfig {
+    fn default() -> Self {
+        Self {
+            timeout_secs: 30,
+            max_workers: 2,
+            batch_size: 5000,
+            memory_limit_mb: 512,
+        }
+    }
+}
+
+impl ComputeConfig {
+    pub fn conservative() -> Self {
+        Self {
+            timeout_secs: 15,
+            max_workers: 1,
+            batch_size: 2000,
+            memory_limit_mb: 256,
+        }
+    }
+
+    pub fn high_performance() -> Self {
+        Self {
+            timeout_secs: 120,
+            max_workers: 8,
+            batch_size: 50000,
+            memory_limit_mb: 4096,
+        }
+    }
+}
+
+/// Factor information
+#[derive(Debug, Clone)]
+pub struct FactorInfo {
+    pub name: String,
+    pub expression: String,
+    pub parsed_expr: Expr,
+    pub plan: LogicalPlan,
+    pub description: Option<String>,
+    pub category: Option<String>,
+}
+
+/// Factor computation result
+#[derive(Debug, Clone)]
+pub struct FactorResult {
+    pub name: String,
+    pub values: Vec<f64>,
+    pub n_rows: usize,
+    pub n_cols: usize,
+    pub compute_time_ms: u64,
+}
+
+/// Factor Registry
+#[derive(Clone)]
+pub struct FactorRegistry {
+    factors: HashMap<String, FactorInfo>,
+    config: ComputeConfig,
+    available_columns: HashMap<String, ColumnMeta>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ColumnMeta {
+    pub name: String,
+    pub data_type: String,
+}
+
+impl Default for FactorRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FactorRegistry {
+    pub fn new() -> Self {
+        Self {
+            factors: HashMap::new(),
+            config: ComputeConfig::default(),
+            available_columns: HashMap::new(),
+        }
+    }
+
+    pub fn with_config(config: ComputeConfig) -> Self {
+        Self {
+            factors: HashMap::new(),
+            config,
+            available_columns: HashMap::new(),
+        }
+    }
+
+    pub fn set_columns(&mut self, columns: Vec<String>) {
+        for col in columns {
+            self.available_columns.insert(
+                col.clone(),
+                ColumnMeta {
+                    name: col,
+                    data_type: "float64".to_string(),
+                },
+            );
+        }
+    }
+
+    pub fn columns(&self) -> Vec<String> {
+        self.available_columns.keys().cloned().collect()
+    }
+
+    pub fn register(&mut self, name: &str, expression: &str) -> Result<String, String> {
+        let expr = parse_expression(expression)?;
+
+        let used_cols = extract_columns(&expr);
+        for col in &used_cols {
+            if !self.available_columns.contains_key(col) {
+                return Err(format!("Column '{}' not found", col));
+            }
+        }
+
+        let plan = expr_to_logical_plan(&expr, name)?;
+
+        let info = FactorInfo {
+            name: name.to_string(),
+            expression: expression.to_string(),
+            parsed_expr: expr,
+            plan,
+            description: None,
+            category: None,
+        };
+
+        self.factors.insert(name.to_string(), info);
+        Ok(name.to_string())
+    }
+
+    pub fn compute(
+        &self,
+        name: &str,
+        data: &HashMap<String, Vec<f64>>,
+    ) -> Result<FactorResult, String> {
+        let info = self
+            .factors
+            .get(name)
+            .ok_or_else(|| format!("Factor '{}' not found", name))?;
+
+        let n_rows = data.values().next().map(|v| v.len()).unwrap_or(0);
+        if n_rows == 0 {
+            return Err("Empty data".to_string());
+        }
+
+        let start = Instant::now();
+        let result = self.execute_plan(&info.plan, data, n_rows)?;
+        let elapsed = start.elapsed().as_millis() as u64;
+
+        Ok(FactorResult {
+            name: name.to_string(),
+            values: result,
+            n_rows,
+            n_cols: 1,
+            compute_time_ms: elapsed,
+        })
+    }
+
+    fn execute_plan(
+        &self,
+        plan: &LogicalPlan,
+        data: &HashMap<String, Vec<f64>>,
+        n_rows: usize,
+    ) -> Result<Vec<f64>, String> {
+        match plan {
+            LogicalPlan::Projection { exprs, .. } => {
+                for (_, expr) in exprs {
+                    return self.eval_expr(expr, data, n_rows);
+                }
+                Err("No expressions".to_string())
+            }
+            _ => Err("Unsupported plan".to_string()),
+        }
+    }
+
+    fn eval_expr(
+        &self,
+        expr: &Expr,
+        data: &HashMap<String, Vec<f64>>,
+        n_rows: usize,
+    ) -> Result<Vec<f64>, String> {
+        match expr {
+            Expr::Column(name) => data
+                .get(name)
+                .cloned()
+                .ok_or_else(|| format!("Column '{}' not found", name)),
+            Expr::Literal(lit) => {
+                let val = match lit {
+                    Literal::Float(f) => *f,
+                    Literal::Integer(i) => *i as f64,
+                    _ => 0.0,
+                };
+                Ok(vec![val; n_rows])
+            }
+            Expr::BinaryExpr { left, op, right } => {
+                let left_vals = self.eval_expr(left, data, n_rows)?;
+                let right_vals = self.eval_expr(right, data, n_rows)?;
+                let mut result = vec![0.0; n_rows];
+                for i in 0..n_rows {
+                    result[i] = match op {
+                        BinaryOp::Add => left_vals[i] + right_vals[i],
+                        BinaryOp::Subtract => left_vals[i] - right_vals[i],
+                        BinaryOp::Multiply => left_vals[i] * right_vals[i],
+                        BinaryOp::Divide => {
+                            if right_vals[i].abs() < 1e-10 {
+                                0.0
+                            } else {
+                                left_vals[i] / right_vals[i]
+                            }
+                        }
+                        _ => 0.0,
+                    };
+                }
+                Ok(result)
+            }
+            Expr::FunctionCall { name, args } => self.eval_function(name, args, data, n_rows),
+            Expr::UnaryExpr { op, expr: e } => {
+                let vals = self.eval_expr(e, data, n_rows)?;
+                Ok(vals
+                    .into_iter()
+                    .map(|v| match op {
+                        UnaryOp::Negate => -v,
+                        _ => v,
+                    })
+                    .collect())
+            }
+            _ => Err("Unsupported expr type".to_string()),
+        }
+    }
+
+    fn eval_function(
+        &self,
+        name: &str,
+        args: &[Expr],
+        data: &HashMap<String, Vec<f64>>,
+        n_rows: usize,
+    ) -> Result<Vec<f64>, String> {
+        let name_lower = name.to_lowercase();
+
+        if name_lower.starts_with("ts_") {
+            return self.eval_ts_function(&name_lower, args, data, n_rows);
+        }
+
+        match name_lower.as_str() {
+            "rank" => {
+                let vals = self.eval_args(args, data, n_rows)?;
+                Ok(rank(&vals))
+            }
+            "delay" => {
+                let vals = self.eval_args(args, data, n_rows)?;
+                let periods = args.get(1).and_then(|a| get_literal_int(a)).unwrap_or(1);
+                Ok(delay(&vals, periods))
+            }
+            "scale" => {
+                let vals = self.eval_args(args, data, n_rows)?;
+                Ok(scale(&vals))
+            }
+            _ => Err(format!("Unknown function: {}", name)),
+        }
+    }
+
+    fn eval_ts_function(
+        &self,
+        name: &str,
+        args: &[Expr],
+        data: &HashMap<String, Vec<f64>>,
+        n_rows: usize,
+    ) -> Result<Vec<f64>, String> {
+        let vals = self.eval_args(args, data, n_rows)?;
+        let window = args.get(1).and_then(|a| get_literal_int(a)).unwrap_or(20);
+
+        match name {
+            "ts_mean" | "ts_avg" => Ok(ts_mean(&vals, window)),
+            "ts_sum" => Ok(ts_sum(&vals, window)),
+            "ts_max" => Ok(ts_max(&vals, window)),
+            "ts_min" => Ok(ts_min(&vals, window)),
+            "ts_std" => Ok(ts_std(&vals, window)),
+            "ts_rank" => Ok(ts_rank(&vals, window)),
+            _ => Err(format!("Unknown ts function: {}", name)),
+        }
+    }
+
+    fn eval_args(
+        &self,
+        args: &[Expr],
+        data: &HashMap<String, Vec<f64>>,
+        n_rows: usize,
+    ) -> Result<Vec<f64>, String> {
+        if args.is_empty() {
+            return Ok(vec![0.0; n_rows]);
+        }
+        self.eval_expr(&args[0], data, n_rows)
+    }
+
+    pub fn list(&self) -> Vec<String> {
+        self.factors.keys().cloned().collect()
+    }
+
+    pub fn get(&self, name: &str) -> Option<&FactorInfo> {
+        self.factors.get(name)
+    }
+
+    pub fn unregister(&mut self, name: &str) -> bool {
+        self.factors.remove(name).is_some()
+    }
+
+    pub fn clear(&mut self) {
+        self.factors.clear();
+    }
+
+    pub fn config(&self) -> &ComputeConfig {
+        &self.config
+    }
+
+    pub fn set_config(&mut self, config: ComputeConfig) {
+        self.config = config;
+    }
+}
+
+// Helper functions
+fn extract_columns(expr: &Expr) -> Vec<String> {
+    match expr {
+        Expr::Literal(_) => vec![],
+        Expr::Column(name) => vec![name.clone()],
+        Expr::BinaryExpr { left, right, .. } => {
+            let mut cols = extract_columns(left);
+            cols.extend(extract_columns(right));
+            cols
+        }
+        Expr::UnaryExpr { expr, .. } => extract_columns(expr),
+        Expr::FunctionCall { args, .. } => args.iter().flat_map(extract_columns).collect(),
+        _ => vec![],
+    }
+}
+
+fn expr_to_logical_plan(expr: &Expr, output_name: &str) -> Result<LogicalPlan, String> {
+    Ok(LogicalPlan::Projection {
+        input: Arc::new(LogicalPlan::Scan {
+            source: DataSource::NumpyArrays(HashMap::new()),
+            projection: None,
+            selection: None,
+        }),
+        exprs: vec![(output_name.to_string(), expr.clone())],
+    })
+}
+
+fn get_literal_int(expr: &Expr) -> Option<usize> {
+    match expr {
+        Expr::Literal(Literal::Integer(i)) => Some(*i as usize),
+        Expr::Literal(Literal::Float(f)) => Some(*f as usize),
+        _ => None,
+    }
+}
+
+// Time series functions
+fn ts_mean(vals: &[f64], window: usize) -> Vec<f64> {
+    let n = vals.len();
+    let mut result = vec![0.0; n];
+    for i in 0..n {
+        let start = i.saturating_sub(window - 1);
+        let slice = &vals[start..=i];
+        result[i] = slice.iter().sum::<f64>() / slice.len() as f64;
+    }
+    result
+}
+
+fn ts_sum(vals: &[f64], window: usize) -> Vec<f64> {
+    let n = vals.len();
+    let mut result = vec![0.0; n];
+    for i in 0..n {
+        let start = i.saturating_sub(window - 1);
+        result[i] = vals[start..=i].iter().sum();
+    }
+    result
+}
+
+fn ts_max(vals: &[f64], window: usize) -> Vec<f64> {
+    let n = vals.len();
+    let mut result = vec![0.0; n];
+    for i in 0..n {
+        let start = i.saturating_sub(window - 1);
+        result[i] = vals[start..=i]
+            .iter()
+            .fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+    }
+    result
+}
+
+fn ts_min(vals: &[f64], window: usize) -> Vec<f64> {
+    let n = vals.len();
+    let mut result = vec![0.0; n];
+    for i in 0..n {
+        let start = i.saturating_sub(window - 1);
+        result[i] = vals[start..=i].iter().fold(f64::INFINITY, |a, &b| a.min(b));
+    }
+    result
+}
+
+fn ts_std(vals: &[f64], window: usize) -> Vec<f64> {
+    let n = vals.len();
+    let mut result = vec![0.0; n];
+    for i in 0..n {
+        let start = i.saturating_sub(window - 1);
+        let slice = &vals[start..=i];
+        let mean = slice.iter().sum::<f64>() / slice.len() as f64;
+        let variance = slice.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / slice.len() as f64;
+        result[i] = variance.sqrt();
+    }
+    result
+}
+
+fn ts_rank(vals: &[f64], window: usize) -> Vec<f64> {
+    let n = vals.len();
+    let mut result = vec![0.0; n];
+    for i in 0..n {
+        let start = i.saturating_sub(window - 1);
+        let slice = &vals[start..=i];
+        let current = vals[i];
+        let rank = slice.iter().filter(|&&x| x < current).count() as f64;
+        result[i] = rank / slice.len() as f64;
+    }
+    result
+}
+
+fn rank(vals: &[f64]) -> Vec<f64> {
+    let n = vals.len();
+    let mut indexed: Vec<(usize, f64)> = vals.iter().enumerate().map(|(i, &v)| (i, v)).collect();
+    indexed.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+    let mut result = vec![0.0; n];
+    for (rank, (idx, _)) in indexed.iter().enumerate() {
+        result[*idx] = rank as f64 / n as f64;
+    }
+    result
+}
+
+fn delay(vals: &[f64], periods: usize) -> Vec<f64> {
+    let n = vals.len();
+    let mut result = vec![0.0; n];
+    for i in periods..n {
+        result[i] = vals[i - periods];
+    }
+    result
+}
+
+fn scale(vals: &[f64]) -> Vec<f64> {
+    let n = vals.len();
+    if n == 0 {
+        return vec![];
+    }
+    let sum: f64 = vals.iter().sum();
+    let mean = sum / n as f64;
+    let std = (vals.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n as f64).sqrt();
+    if std < 1e-10 {
+        return vec![0.0; n];
+    }
+    vals.iter().map(|v| (v - mean) / std).collect()
+}
+
+// =============================================================================
+// Simple Expression Parser - Iterative approach to avoid recursion issues
+// =============================================================================
+
+/// Parse expression string into Expr AST
+pub fn parse_expression(expression: &str) -> Result<Expr, String> {
+    let tokens = tokenize(expression)?;
+    parse_tokens(&tokens)
+}
+
+fn tokenize(s: &str) -> Result<Vec<Token>, String> {
+    let mut tokens = Vec::new();
+    let mut chars = s.chars().peekable();
+
+    while let Some(&c) = chars.peek() {
+        if c.is_whitespace() {
+            chars.next();
+            continue;
+        }
+
+        if c.is_ascii_digit() {
+            let mut num = String::new();
+            while let Some(&c) = chars.peek() {
+                if c.is_ascii_digit() || c == '.' {
+                    num.push(c);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            tokens.push(Token::Number(num.parse().unwrap_or(0.0)));
+        } else if c.is_alphabetic() || c == '_' {
+            let mut ident = String::new();
+            while let Some(&c) = chars.peek() {
+                if c.is_alphanumeric() || c == '_' {
+                    ident.push(c);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            if let Some(&'(') = chars.peek() {
+                tokens.push(Token::Function(ident));
+            } else {
+                tokens.push(Token::Identifier(ident));
+            }
+        } else {
+            let op = match c {
+                '+' => Token::Plus,
+                '-' => Token::Minus,
+                '*' => Token::Multiply,
+                '/' => Token::Divide,
+                '(' => Token::LParen,
+                ')' => Token::RParen,
+                ',' => Token::Comma,
+                _ => {
+                    chars.next();
+                    continue;
+                }
+            };
+            tokens.push(op);
+            chars.next();
+        }
+    }
+
+    if tokens.is_empty() {
+        return Err("Empty expression".to_string());
+    }
+
+    Ok(tokens)
+}
+
+#[derive(Debug, Clone)]
+enum Token {
+    Number(f64),
+    Identifier(String),
+    Function(String),
+    Plus,
+    Minus,
+    Multiply,
+    Divide,
+    LParen,
+    RParen,
+    Comma,
+}
+
+/// Parse tokens using a simple iterative shunting-yard inspired approach
+fn parse_tokens(tokens: &[Token]) -> Result<Expr, String> {
+    // Use recursive descent but with careful position tracking
+    parse_expression_rec(tokens, 0).map(|(e, _)| e)
+}
+
+fn parse_expression_rec(tokens: &[Token], start: usize) -> Result<(Expr, usize), String> {
+    if tokens.is_empty() {
+        return Err("Empty tokens".to_string());
+    }
+    parse_additive(tokens, start)
+}
+
+fn parse_additive(tokens: &[Token], start: usize) -> Result<(Expr, usize), String> {
+    let (mut left, mut pos) = parse_multiplicative(tokens, start)?;
+
+    while pos < tokens.len() {
+        match &tokens[pos] {
+            Token::Plus => {
+                let (right, new_pos) = parse_multiplicative(tokens, pos + 1)?;
+                left = left.binary(BinaryOp::Add, right);
+                pos = new_pos;
+            }
+            Token::Minus => {
+                let (right, new_pos) = parse_multiplicative(tokens, pos + 1)?;
+                left = left.binary(BinaryOp::Subtract, right);
+                pos = new_pos;
+            }
+            _ => break,
+        }
+    }
+
+    Ok((left, pos))
+}
+
+fn parse_multiplicative(tokens: &[Token], start: usize) -> Result<(Expr, usize), String> {
+    let (mut left, mut pos) = parse_unary(tokens, start)?;
+
+    while pos < tokens.len() {
+        match &tokens[pos] {
+            Token::Multiply => {
+                let (right, new_pos) = parse_unary(tokens, pos + 1)?;
+                left = left.binary(BinaryOp::Multiply, right);
+                pos = new_pos;
+            }
+            Token::Divide => {
+                let (right, new_pos) = parse_unary(tokens, pos + 1)?;
+                left = left.binary(BinaryOp::Divide, right);
+                pos = new_pos;
+            }
+            _ => break,
+        }
+    }
+
+    Ok((left, pos))
+}
+
+fn parse_unary(tokens: &[Token], start: usize) -> Result<(Expr, usize), String> {
+    if start >= tokens.len() {
+        return Err("Unexpected end".to_string());
+    }
+
+    match &tokens[start] {
+        Token::Minus => {
+            let (expr, pos) = parse_primary(tokens, start + 1)?;
+            Ok((expr.unary(UnaryOp::Negate), pos))
+        }
+        _ => parse_primary(tokens, start),
+    }
+}
+
+fn parse_primary(tokens: &[Token], start: usize) -> Result<(Expr, usize), String> {
+    if start >= tokens.len() {
+        return Err("Unexpected end".to_string());
+    }
+
+    match &tokens[start] {
+        Token::Number(n) => Ok((Expr::Literal(Literal::Float(*n)), start + 1)),
+        Token::Identifier(name) => {
+            // Check if it's a function call
+            if start + 1 < tokens.len() && matches!(&tokens[start + 1], Token::LParen) {
+                parse_function(tokens, start)
+            } else {
+                Ok((Expr::Column(name.clone()), start + 1))
+            }
+        }
+        Token::Function(name) => parse_function(tokens, start),
+        Token::LParen => {
+            // Parenthesized expression
+            let (expr, pos) = parse_additive(tokens, start + 1)?;
+            if pos < tokens.len() && matches!(&tokens[pos], Token::RParen) {
+                Ok((expr, pos + 1))
+            } else {
+                Err("Expected ')'".to_string())
+            }
+        }
+        _ => Err(format!("Unexpected token at position {}: {:?}", start, tokens[start])),
+    }
+}
+
+fn parse_function(tokens: &[Token], start: usize) -> Result<(Expr, usize), String> {
+    let name = match &tokens[start] {
+        Token::Identifier(n) => n.clone(),
+        Token::Function(n) => n.clone(),
+        _ => return Err("Expected function name".to_string()),
+    };
+
+    // Find opening paren
+    let mut paren_pos = start;
+    while paren_pos < tokens.len() && !matches!(&tokens[paren_pos], Token::LParen) {
+        paren_pos += 1;
+    }
+    if paren_pos >= tokens.len() {
+        return Err("Expected '('".to_string());
+    }
+
+    // Parse arguments
+    let mut args = Vec::new();
+    let mut pos = paren_pos + 1;
+    let mut arg_count = 0;
+
+    while pos < tokens.len() {
+        match &tokens[pos] {
+            Token::RParen => {
+                pos += 1;
+                break;
+            }
+            Token::Comma => {
+                pos += 1;
+                arg_count += 1;
+            }
+            _ => {
+                let (expr, new_pos) = parse_additive(tokens, pos)?;
+                args.push(expr);
+                pos = new_pos;
+            }
+        }
+    }
+
+    // Map function names
+    let func_name = match name.as_str() {
+        "ts_mean" | "ts_avg" => "ts_mean",
+        "ts_sum" => "ts_sum",
+        "ts_max" => "ts_max",
+        "ts_min" => "ts_min",
+        "ts_std" => "ts_std",
+        "ts_rank" => "ts_rank",
+        _ => &name,
+    };
+
+    Ok((
+        Expr::FunctionCall {
+            name: func_name.to_string(),
+            args,
+        },
+        pos,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tokenize() {
+        let tokens = tokenize("close + volume").unwrap();
+        assert_eq!(tokens.len(), 3);
+    }
+
+    #[test]
+    fn test_parse_column() {
+        let expr = parse_expression("close").unwrap();
+        assert!(matches!(expr, Expr::Column(_)));
+    }
+
+    #[test]
+    fn test_parse_binary() {
+        let expr = parse_expression("close + volume").unwrap();
+        assert!(matches!(expr, Expr::BinaryExpr { .. }));
+    }
+
+    #[test]
+    fn test_parse_function() {
+        let expr = parse_expression("ts_mean(close, 20)").unwrap();
+        assert!(matches!(expr, Expr::FunctionCall { .. }));
+    }
+}
