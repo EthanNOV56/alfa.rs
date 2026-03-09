@@ -10,7 +10,7 @@ def test_meta_learning_configurable_min_points():
     """Test that min_data_points is now configurable."""
     print("Testing MetaLearningAnalyzer configurable min_data_points...")
     
-    import alpha_expr as ae
+    import alfars as ae
     
     # Create analyzer
     analyzer = ae.MetaLearningAnalyzer()
@@ -36,7 +36,7 @@ def test_gp_recommendations_enhancements():
     """Test GPRecommendations enhancements."""
     print("\nTesting GPRecommendations enhancements...")
     
-    import alpha_expr as ae
+    import alfars as ae
     
     # Create a dummy analyzer to get recommendations
     analyzer = ae.MetaLearningAnalyzer()
@@ -66,7 +66,7 @@ def test_comprehensive_workflow():
     """Test a more comprehensive workflow."""
     print("\nTesting comprehensive workflow...")
     
-    import alpha_expr as ae
+    import alfars as ae
     import numpy as np
     import tempfile
     import shutil

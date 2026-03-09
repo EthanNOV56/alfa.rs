@@ -3,7 +3,7 @@
 //! This module provides functionality to save, load, and manage discovered factors,
 //! GP evolution history, and performance metrics across sessions.
 
-use crate::gp::{MultiObjectiveFitness, GPConfig};
+use crate::gp::{GPConfig, MultiObjectiveFitness};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -140,16 +140,16 @@ impl PersistenceManager {
     /// Create a new persistence manager
     pub fn new(base_dir: impl AsRef<Path>) -> std::io::Result<Self> {
         let base_dir = base_dir.as_ref().to_path_buf();
-        
+
         // Create directory structure
         fs::create_dir_all(&base_dir)?;
         fs::create_dir_all(base_dir.join("factors"))?;
         fs::create_dir_all(base_dir.join("history"))?;
         fs::create_dir_all(base_dir.join("cache"))?;
         fs::create_dir_all(base_dir.join("metalearning"))?;
-        
+
         let expr_cache_manager = ExpressionCacheManager::new(base_dir.join("cache"))?;
-        
+
         Ok(Self {
             base_dir,
             factor_cache: HashMap::new(),
@@ -157,42 +157,46 @@ impl PersistenceManager {
             expr_cache_manager,
         })
     }
-    
+
     /// Save a discovered factor
     pub fn save_factor(&mut self, factor: &FactorMetadata) -> std::io::Result<()> {
         let factor_path = self.base_dir.join("factors").join(&factor.id);
-        
+
         // Serialize to JSON
         let json = serde_json::to_string_pretty(factor)?;
         fs::write(factor_path.with_extension("json"), json)?;
-        
+
         // Update cache
         self.factor_cache.insert(factor.id.clone(), factor.clone());
-        
+
         Ok(())
     }
-    
+
     /// Load a factor by ID
     pub fn load_factor(&mut self, factor_id: &str) -> std::io::Result<Option<FactorMetadata>> {
         // Check cache first
         if let Some(factor) = self.factor_cache.get(factor_id) {
             return Ok(Some(factor.clone()));
         }
-        
-        let factor_path = self.base_dir.join("factors").join(factor_id).with_extension("json");
+
+        let factor_path = self
+            .base_dir
+            .join("factors")
+            .join(factor_id)
+            .with_extension("json");
         if !factor_path.exists() {
             return Ok(None);
         }
-        
+
         let json = fs::read_to_string(factor_path)?;
         let factor: FactorMetadata = serde_json::from_str(&json)?;
-        
+
         // Update cache
         self.factor_cache.insert(factor.id.clone(), factor.clone());
-        
+
         Ok(Some(factor))
     }
-    
+
     /// Search factors by criteria
     pub fn search_factors(
         &self,
@@ -201,7 +205,8 @@ impl PersistenceManager {
         max_complexity: Option<f64>,
         tags: &[String],
     ) -> Vec<FactorMetadata> {
-        self.factor_cache.values()
+        self.factor_cache
+            .values()
             .filter(|factor| {
                 // Filter by IC
                 if let Some(min) = min_ic {
@@ -209,21 +214,21 @@ impl PersistenceManager {
                         return false;
                     }
                 }
-                
+
                 // Filter by IR
                 if let Some(min) = min_ir {
                     if factor.metrics.ic_ir.abs() < min.abs() {
                         return false;
                     }
                 }
-                
+
                 // Filter by complexity
                 if let Some(max) = max_complexity {
                     if factor.metrics.complexity_penalty > max {
                         return false;
                     }
                 }
-                
+
                 // Filter by tags
                 if !tags.is_empty() {
                     let has_all_tags = tags.iter().all(|tag| factor.tags.contains(tag));
@@ -231,84 +236,90 @@ impl PersistenceManager {
                         return false;
                     }
                 }
-                
+
                 true
             })
             .cloned()
             .collect()
     }
-    
+
     /// Save GP history record
     pub fn save_gp_history(&mut self, record: &GPHistoryRecord) -> std::io::Result<()> {
         let history_path = self.base_dir.join("history").join(&record.run_id);
-        
+
         // Serialize to JSON
         let json = serde_json::to_string_pretty(record)?;
         fs::write(history_path.with_extension("json"), json)?;
-        
+
         // Update cache
-        self.history_cache.insert(record.run_id.clone(), record.clone());
-        
+        self.history_cache
+            .insert(record.run_id.clone(), record.clone());
+
         Ok(())
     }
-    
+
     /// Load GP history by run ID
     pub fn load_gp_history(&mut self, run_id: &str) -> std::io::Result<Option<GPHistoryRecord>> {
         // Check cache first
         if let Some(record) = self.history_cache.get(run_id) {
             return Ok(Some(record.clone()));
         }
-        
-        let history_path = self.base_dir.join("history").join(run_id).with_extension("json");
+
+        let history_path = self
+            .base_dir
+            .join("history")
+            .join(run_id)
+            .with_extension("json");
         if !history_path.exists() {
             return Ok(None);
         }
-        
+
         let json = fs::read_to_string(history_path)?;
         let record: GPHistoryRecord = serde_json::from_str(&json)?;
-        
+
         // Update cache
-        self.history_cache.insert(record.run_id.clone(), record.clone());
-        
+        self.history_cache
+            .insert(record.run_id.clone(), record.clone());
+
         Ok(Some(record))
     }
-    
+
     /// Get expression cache manager
     pub fn expr_cache(&self) -> &ExpressionCacheManager {
         &self.expr_cache_manager
     }
-    
+
     /// Get expression cache manager (mutable)
     pub fn expr_cache_mut(&mut self) -> &mut ExpressionCacheManager {
         &mut self.expr_cache_manager
     }
-    
+
     /// Generate a unique factor ID
     pub fn generate_factor_id(&self, expr: &str) -> String {
-        use sha2::{Sha256, Digest};
-        
+        use sha2::{Digest, Sha256};
+
         // Create hash from expression
         let mut hasher = Sha256::new();
         hasher.update(expr.as_bytes());
         let result = hasher.finalize();
-        
+
         // Convert to hex string
         let hash = format!("{:x}", result);
-        
+
         // Take first 16 characters for ID
         format!("factor_{}", &hash[..16])
     }
-    
+
     /// Generate a unique run ID
     pub fn generate_run_id(&self) -> String {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        
+
         format!("run_{}", timestamp)
     }
-    
+
     /// Get current timestamp
     pub fn current_timestamp() -> u64 {
         SystemTime::now()
@@ -316,20 +327,20 @@ impl PersistenceManager {
             .unwrap_or_default()
             .as_secs()
     }
-    
+
     /// Load all factors from disk (for initialization)
     pub fn load_all_factors(&mut self) -> std::io::Result<usize> {
         let factors_dir = self.base_dir.join("factors");
-        
+
         if !factors_dir.exists() {
             return Ok(0);
         }
-        
+
         let mut count = 0;
         for entry in fs::read_dir(factors_dir)? {
             let entry = entry?;
             let path = entry.path();
-            
+
             if path.extension().and_then(|s| s.to_str()) == Some("json") {
                 let json = fs::read_to_string(&path)?;
                 if let Ok(factor) = serde_json::from_str::<FactorMetadata>(&json) {
@@ -338,23 +349,23 @@ impl PersistenceManager {
                 }
             }
         }
-        
+
         Ok(count)
     }
-    
+
     /// Load all GP history from disk (for initialization)
     pub fn load_all_history(&mut self) -> std::io::Result<usize> {
         let history_dir = self.base_dir.join("history");
-        
+
         if !history_dir.exists() {
             return Ok(0);
         }
-        
+
         let mut count = 0;
         for entry in fs::read_dir(history_dir)? {
             let entry = entry?;
             let path = entry.path();
-            
+
             if path.extension().and_then(|s| s.to_str()) == Some("json") {
                 let json = fs::read_to_string(&path)?;
                 if let Ok(record) = serde_json::from_str::<GPHistoryRecord>(&json) {
@@ -363,26 +374,26 @@ impl PersistenceManager {
                 }
             }
         }
-        
+
         Ok(count)
     }
-    
+
     /// Get all loaded factors
     pub fn get_all_factors(&self) -> Vec<FactorMetadata> {
         self.factor_cache.values().cloned().collect()
     }
-    
+
     /// Get all loaded GP history records
     pub fn get_all_history(&self) -> Vec<GPHistoryRecord> {
         self.history_cache.values().cloned().collect()
     }
-    
+
     /// Clear all in-memory data (but not disk)
     pub fn clear_memory(&mut self) {
         self.factor_cache.clear();
         self.history_cache.clear();
     }
-    
+
     /// Get cache statistics
     pub fn get_cache_stats(&self) -> std::io::Result<CacheStats> {
         self.expr_cache_manager.get_stats()
@@ -400,19 +411,19 @@ impl ExpressionCacheManager {
     /// Create a new expression cache manager
     pub fn new(cache_dir: PathBuf) -> std::io::Result<Self> {
         fs::create_dir_all(&cache_dir)?;
-        
+
         Ok(Self {
             cache_dir,
             max_cache_size: 1000, // Default: 1000 expressions
             current_size: 0,
         })
     }
-    
+
     /// Set maximum cache size
     pub fn set_max_size(&mut self, max_size: usize) {
         self.max_cache_size = max_size;
     }
-    
+
     /// Save expression evaluation result
     pub fn save_expression(
         &mut self,
@@ -424,7 +435,7 @@ impl ExpressionCacheManager {
         // Generate cache key
         let cache_key = self.generate_cache_key(expr);
         let cache_path = self.cache_dir.join(&cache_key);
-        
+
         // Create cache entry
         let entry = ExpressionCacheEntry {
             expression: expr.to_string(),
@@ -437,68 +448,68 @@ impl ExpressionCacheManager {
                 .as_secs(),
             access_count: 1,
         };
-        
+
         // Serialize and save
         let json = serde_json::to_string(&entry)?;
         fs::write(cache_path.with_extension("json"), json)?;
-        
+
         // Update size tracking
         self.current_size += 1;
-        
+
         // Check if we need to evict old entries
         if self.current_size > self.max_cache_size {
             self.evict_old_entries()?;
         }
-        
+
         Ok(())
     }
-    
+
     /// Load expression evaluation result
     pub fn load_expression(&mut self, expr: &str) -> std::io::Result<Option<ExpressionCacheEntry>> {
         let cache_key = self.generate_cache_key(expr);
         let cache_path = self.cache_dir.join(cache_key).with_extension("json");
-        
+
         if !cache_path.exists() {
             return Ok(None);
         }
-        
+
         let json = fs::read_to_string(&cache_path)?;
         let mut entry: ExpressionCacheEntry = serde_json::from_str(&json)?;
-        
+
         // Update access metadata
         entry.last_accessed = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
         entry.access_count += 1;
-        
+
         // Save updated metadata
         let updated_json = serde_json::to_string(&entry)?;
         fs::write(cache_path, updated_json)?;
-        
+
         Ok(Some(entry))
     }
-    
+
     /// Generate cache key from expression
     fn generate_cache_key(&self, expr: &str) -> String {
-        use sha2::{Sha256, Digest};
-        
+        use sha2::{Digest, Sha256};
+
         let mut hasher = Sha256::new();
         hasher.update(expr.as_bytes());
         let result = hasher.finalize();
-        
+
         format!("{:x}", result)
     }
-    
+
     /// Evict old cache entries based on LRU policy
     fn evict_old_entries(&mut self) -> std::io::Result<()> {
         let mut entries = Vec::new();
-        
+
         // Collect all cache entries
         for entry in fs::read_dir(&self.cache_dir)? {
             let entry = entry?;
             let path = entry.path();
-            
+
             if path.extension().and_then(|s| s.to_str()) == Some("json") {
                 if let Ok(json) = fs::read_to_string(&path) {
                     if let Ok(cache_entry) = serde_json::from_str::<ExpressionCacheEntry>(&json) {
@@ -507,10 +518,10 @@ impl ExpressionCacheManager {
                 }
             }
         }
-        
+
         // Sort by last_accessed (oldest first)
         entries.sort_by(|a, b| a.1.last_accessed.cmp(&b.1.last_accessed));
-        
+
         // Remove oldest entries until we're under limit
         let entries_to_remove = self.current_size.saturating_sub(self.max_cache_size);
         for i in 0..entries_to_remove {
@@ -519,46 +530,46 @@ impl ExpressionCacheManager {
                 fs::remove_file(path)?;
             }
         }
-        
+
         self.current_size = self.max_cache_size.min(entries.len() - entries_to_remove);
-        
+
         Ok(())
     }
-    
+
     /// Clear entire cache
     pub fn clear_cache(&mut self) -> std::io::Result<()> {
         for entry in fs::read_dir(&self.cache_dir)? {
             let entry = entry?;
             let path = entry.path();
-            
+
             if path.is_file() {
                 fs::remove_file(path)?;
             }
         }
-        
+
         self.current_size = 0;
-        
+
         Ok(())
     }
-    
+
     /// Get cache statistics
     pub fn get_stats(&self) -> std::io::Result<CacheStats> {
         let mut total_size = 0;
         let mut total_entries = 0;
         let mut avg_access_count = 0.0;
-        
+
         for entry in fs::read_dir(&self.cache_dir)? {
             let entry = entry?;
             let path = entry.path();
-            
+
             if path.extension().and_then(|s| s.to_str()) == Some("json") {
                 total_entries += 1;
-                
+
                 // Get file size
                 if let Ok(metadata) = fs::metadata(&path) {
                     total_size += metadata.len();
                 }
-                
+
                 // Get access count (if we can read the file)
                 if let Ok(json) = fs::read_to_string(&path) {
                     if let Ok(cache_entry) = serde_json::from_str::<ExpressionCacheEntry>(&json) {
@@ -567,11 +578,11 @@ impl ExpressionCacheManager {
                 }
             }
         }
-        
+
         if total_entries > 0 {
             avg_access_count /= total_entries as f64;
         }
-        
+
         Ok(CacheStats {
             total_entries,
             total_size_bytes: total_size,
@@ -600,7 +611,7 @@ pub fn create_factor_metadata(
 ) -> FactorMetadata {
     let timestamp = PersistenceManager::current_timestamp();
     let id = format!("factor_{}", timestamp); // Will be replaced by proper ID
-    
+
     FactorMetadata {
         id,
         expression: expr.to_string(),
@@ -633,7 +644,7 @@ pub fn create_gp_history_record(
     population_stats: Vec<PopulationStats>,
 ) -> GPHistoryRecord {
     let start_time = PersistenceManager::current_timestamp();
-    
+
     GPHistoryRecord {
         run_id: format!("run_{}", start_time),
         start_time,
@@ -651,7 +662,7 @@ pub fn create_gp_history_record(
 mod tests {
     use super::*;
     use tempfile::tempdir;
-    
+
     #[test]
     fn test_factor_metadata_creation() {
         let fitness = MultiObjectiveFitness {
@@ -661,7 +672,7 @@ mod tests {
             complexity_penalty: 0.05,
             combined_score: 0.8,
         };
-        
+
         let metadata = create_factor_metadata(
             "close / open - 1.0",
             &fitness,
@@ -669,17 +680,17 @@ mod tests {
             100,
             252,
         );
-        
+
         assert_eq!(metadata.metrics.ic_mean, 0.15);
         assert_eq!(metadata.metrics.ic_ir, 2.5);
         assert_eq!(metadata.expression, "close / open - 1.0");
     }
-    
+
     #[test]
     fn test_persistence_manager_basic() {
         let temp_dir = tempdir().unwrap();
         let mut manager = PersistenceManager::new(temp_dir.path()).unwrap();
-        
+
         let fitness = MultiObjectiveFitness {
             ic_score: 0.1,
             ir_score: 1.5,
@@ -687,7 +698,7 @@ mod tests {
             complexity_penalty: 0.03,
             combined_score: 0.7,
         };
-        
+
         let metadata = create_factor_metadata(
             "high - low",
             &fitness,
@@ -695,10 +706,10 @@ mod tests {
             50,
             200,
         );
-        
+
         // Test saving
         manager.save_factor(&metadata).unwrap();
-        
+
         // Test loading
         let loaded = manager.load_factor(&metadata.id).unwrap();
         assert!(loaded.is_some());
@@ -706,13 +717,13 @@ mod tests {
         assert_eq!(loaded.expression, "high - low");
         assert_eq!(loaded.metrics.ic_mean, 0.1);
     }
-    
+
     #[test]
     fn test_expression_cache() {
         let temp_dir = tempdir().unwrap();
         let cache_dir = temp_dir.path().join("cache");
         let mut cache_manager = ExpressionCacheManager::new(cache_dir).unwrap();
-        
+
         let metrics = PerformanceMetrics {
             ic_mean: 0.12,
             ic_ir: 1.8,
@@ -724,11 +735,13 @@ mod tests {
             n_days: 252,
             custom_metrics: HashMap::new(),
         };
-        
+
         // Test saving
         let expr = "close * volume";
-        cache_manager.save_expression(expr, (10, 20), None, &metrics).unwrap();
-        
+        cache_manager
+            .save_expression(expr, (10, 20), None, &metrics)
+            .unwrap();
+
         // Test loading
         let loaded = cache_manager.load_expression(expr).unwrap();
         assert!(loaded.is_some());
@@ -737,12 +750,12 @@ mod tests {
         assert_eq!(loaded.metrics.ic_mean, 0.12);
         assert_eq!(loaded.access_count, 2); // 1 from save, 1 from load
     }
-    
+
     #[test]
     fn test_search_factors() {
         let temp_dir = tempdir().unwrap();
         let mut manager = PersistenceManager::new(temp_dir.path()).unwrap();
-        
+
         // Create test factors
         let mut factor1 = create_factor_metadata(
             "factor1",
@@ -759,7 +772,7 @@ mod tests {
         );
         factor1.tags = vec!["momentum".to_string(), "high_ic".to_string()];
         manager.factor_cache.insert(factor1.id.clone(), factor1);
-        
+
         let mut factor2 = create_factor_metadata(
             "factor2",
             &MultiObjectiveFitness {
@@ -775,12 +788,12 @@ mod tests {
         );
         factor2.tags = vec!["value".to_string()];
         manager.factor_cache.insert(factor2.id.clone(), factor2);
-        
+
         // Search by IC
         let high_ic_factors = manager.search_factors(Some(0.1), None, None, &[]);
         assert_eq!(high_ic_factors.len(), 1);
         assert!(high_ic_factors[0].metrics.ic_mean >= 0.1);
-        
+
         // Search by tag
         let momentum_factors = manager.search_factors(None, None, None, &["momentum".to_string()]);
         assert_eq!(momentum_factors.len(), 1);
