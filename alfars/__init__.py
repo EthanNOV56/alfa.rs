@@ -61,12 +61,14 @@ try:
         ts_argmax,
         ts_argmin,
         ts_corr,
+        ts_count,
         ts_cov,
         ts_max,
         ts_min,
         # Alpha101 functions
         ts_rank,
         ts_sum,
+        ts_count,
     )
     HAS_RUST_EXT = True
     # Create aliases for internal use

@@ -451,17 +451,56 @@ impl Series {
     }
 
     /// Rolling sum (ts_sum)
+    /// window=0 means expanding window (from start to current)
     pub fn ts_sum(&self, window: usize) -> Series {
         let n = self.len();
         let mut result = Array1::zeros(n);
 
-        for i in 0..n {
-            if i + 1 < window {
-                result[i] = f64::NAN;
-            } else {
-                let start = i + 1 - window;
-                let slice = self.data.slice(ndarray::s![start..=i]);
-                result[i] = slice.iter().sum();
+        if window == 0 {
+            // Expanding window: sum from start to current
+            let mut cumsum = 0.0;
+            for i in 0..n {
+                cumsum += self.data[i];
+                result[i] = cumsum;
+            }
+        } else {
+            // Rolling window
+            for i in 0..n {
+                if i + 1 < window {
+                    result[i] = f64::NAN;
+                } else {
+                    let start = i + 1 - window;
+                    let slice = self.data.slice(ndarray::s![start..=i]);
+                    result[i] = slice.iter().sum();
+                }
+            }
+        }
+
+        Series::from_array(result)
+    }
+
+    /// Rolling count (ts_count)
+    /// window=0 means expanding window (count from start to current)
+    pub fn ts_count(&self, window: usize) -> Series {
+        let n = self.len();
+        let mut result = Array1::zeros(n);
+
+        if window == 0 {
+            // Expanding window: count from start to current
+            for i in 0..n {
+                result[i] = (i + 1) as f64;
+            }
+        } else {
+            // Rolling window: count non-NaN values
+            for i in 0..n {
+                if i + 1 < window {
+                    result[i] = f64::NAN;
+                } else {
+                    let start = i + 1 - window;
+                    let slice = self.data.slice(ndarray::s![start..=i]);
+                    let count = slice.iter().filter(|x| !x.is_nan()).count();
+                    result[i] = count as f64;
+                }
             }
         }
 
@@ -848,6 +887,17 @@ fn evaluate_function_vectorized(name: &str, args: &[Expr], df: &DataFrame) -> Re
                 _ => return Err("ts_sum window must be an integer literal".to_string()),
             };
             Ok(series.ts_sum(window))
+        }
+        "ts_count" => {
+            if args.len() != 2 {
+                return Err("ts_count function requires 2 arguments: expression and window".to_string());
+            }
+            let series = evaluate_expr_on_dataframe(&args[0], df)?;
+            let window = match &args[1] {
+                Expr::Literal(Literal::Integer(w)) => *w as usize,
+                _ => return Err("ts_count window must be an integer literal".to_string()),
+            };
+            Ok(series.ts_count(window))
         }
         "ts_max" => {
             if args.len() != 2 {

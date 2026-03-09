@@ -949,6 +949,7 @@ fn power(expr: &PyExpr, exponent: f64) -> PyResult<PyExpr> {
 }
 
 /// Time series sum - rolling sum over `window` time periods
+/// window=0 means expanding window (cumulative sum from start to current)
 #[pyfunction]
 fn ts_sum(expr: &PyExpr, window: usize) -> PyResult<PyExpr> {
     let ts_sum_expr = Expr::FunctionCall {
@@ -959,6 +960,20 @@ fn ts_sum(expr: &PyExpr, window: usize) -> PyResult<PyExpr> {
         ],
     };
     Ok(PyExpr { inner: ts_sum_expr })
+}
+
+/// Time series count - rolling count over `window` time periods
+/// window=0 means expanding window (cumulative count from start)
+#[pyfunction]
+fn ts_count(expr: &PyExpr, window: usize) -> PyResult<PyExpr> {
+    let ts_count_expr = Expr::FunctionCall {
+        name: "ts_count".to_string(),
+        args: vec![
+            expr.inner.clone(),
+            Expr::Literal(Literal::Integer(window as i64)),
+        ],
+    };
+    Ok(PyExpr { inner: ts_count_expr })
 }
 
 /// Time series max - rolling maximum over `window` time periods
@@ -1025,6 +1040,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sign, m)?)?;
     m.add_function(wrap_pyfunction!(power, m)?)?;
     m.add_function(wrap_pyfunction!(ts_sum, m)?)?;
+    m.add_function(wrap_pyfunction!(ts_count, m)?)?;
     m.add_function(wrap_pyfunction!(ts_max, m)?)?;
     m.add_function(wrap_pyfunction!(ts_min, m)?)?;
 
