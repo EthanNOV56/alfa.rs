@@ -319,6 +319,64 @@ impl FactorRegistry {
                 let periods = args.get(1).and_then(|a| get_literal_int(a)).unwrap_or(1);
                 Ok(ts_delta(&vals, periods))
             }
+            "if" => {
+                // IF(cond, true_val, false_val) - ternary operator
+                // If cond > 0, return true_val, else return false_val
+                if args.len() != 3 {
+                    return Err("IF requires 3 arguments: IF(condition, true_value, false_value)".to_string());
+                }
+                let cond = self.eval_expr(&args[0], data, n_rows)?;
+                let true_val = self.eval_expr(&args[1], data, n_rows)?;
+                let false_val = self.eval_expr(&args[2], data, n_rows)?;
+
+                let result: Vec<f64> = cond.iter()
+                    .zip(true_val.iter())
+                    .zip(false_val.iter())
+                    .map(|((&c, &t), &f)| if c > 0.0 { t } else { f })
+                    .collect();
+                Ok(result)
+            }
+            // Comparison functions that return 1.0 (true) or 0.0 (false)
+            "gt" | "greater" | "greater_than" => {
+                if args.len() != 2 {
+                    return Err("GT requires 2 arguments: GT(a, b)".to_string());
+                }
+                let a = self.eval_expr(&args[0], data, n_rows)?;
+                let b = self.eval_expr(&args[1], data, n_rows)?;
+                Ok(a.iter().zip(b.iter()).map(|(&x, &y)| if x > y { 1.0 } else { 0.0 }).collect())
+            }
+            "lt" | "less" | "less_than" => {
+                if args.len() != 2 {
+                    return Err("LT requires 2 arguments: LT(a, b)".to_string());
+                }
+                let a = self.eval_expr(&args[0], data, n_rows)?;
+                let b = self.eval_expr(&args[1], data, n_rows)?;
+                Ok(a.iter().zip(b.iter()).map(|(&x, &y)| if x < y { 1.0 } else { 0.0 }).collect())
+            }
+            "gte" | "greater_equal" => {
+                if args.len() != 2 {
+                    return Err("GTE requires 2 arguments: GTE(a, b)".to_string());
+                }
+                let a = self.eval_expr(&args[0], data, n_rows)?;
+                let b = self.eval_expr(&args[1], data, n_rows)?;
+                Ok(a.iter().zip(b.iter()).map(|(&x, &y)| if x >= y { 1.0 } else { 0.0 }).collect())
+            }
+            "lte" | "less_equal" => {
+                if args.len() != 2 {
+                    return Err("LTE requires 2 arguments: LTE(a, b)".to_string());
+                }
+                let a = self.eval_expr(&args[0], data, n_rows)?;
+                let b = self.eval_expr(&args[1], data, n_rows)?;
+                Ok(a.iter().zip(b.iter()).map(|(&x, &y)| if x <= y { 1.0 } else { 0.0 }).collect())
+            }
+            "eq" | "equal" => {
+                if args.len() != 2 {
+                    return Err("EQ requires 2 arguments: EQ(a, b)".to_string());
+                }
+                let a = self.eval_expr(&args[0], data, n_rows)?;
+                let b = self.eval_expr(&args[1], data, n_rows)?;
+                Ok(a.iter().zip(b.iter()).map(|(&x, &y)| if (x - y).abs() < 1e-10 { 1.0 } else { 0.0 }).collect())
+            }
             "vwap" => {
                 // VWAP = amount / volume
                 // This requires both amount and volume columns
