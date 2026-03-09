@@ -13,10 +13,10 @@ import numpy as np
 
 # Try to import the exprs module
 try:
-    import exprs as aexpr
+    import alfars as aexpr
     print("✅ Successfully imported exprs")
 except ImportError as e:
-    print(f"❌ Failed to import exprs: {e}")
+    print(f"❌ Failed to import alfars: {e}")
     print("\nTry building the module first:")
     print("  maturin develop  # for development install")
     print("  or")

@@ -5,7 +5,7 @@ exprs 基本使用示例
 
 import numpy as np
 import pandas as pd
-from exprs import (
+from alfars import (
     quantile_backtest,
     create_factor_tear_sheet,
     BacktestEngine,

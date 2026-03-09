@@ -1,4 +1,4 @@
-# exprs
+# alfars
 
 高性能因子表达式与回测框架，核心使用 Rust + PyO3 实现，现已升级至 **v0.2.0**，新增智能因子挖掘与学习能力。
 
@@ -21,6 +21,13 @@
 
 ## 安装
 
+### 系统要求
+
+- **Rust**: 1.70+ (安装: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`)
+- **Python**: 3.8+
+- **pip**: 最新版
+- **C编译器**: gcc/clang (Rust 需要)
+
 ### 从源码安装（推荐）
 
 ```bash
@@ -35,11 +42,113 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 maturin develop
 ```
 
+### 使用 uv（推荐）
+
+```bash
+# 使用 uv 安装依赖并构建
+uv pip install -e .
+maturin develop --release
+```
+
 ### 使用 pip（未来发布）
 
 ```bash
-pip install exprs
+pip install alfars
 ```
+
+## 开发环境设置
+
+```bash
+# 安装所有开发工具
+pip install -e .[dev]
+pip install maturin
+
+# 构建并安装开发版本
+maturin develop
+
+# 调试模式（更快构建）
+maturin develop
+
+# 发布模式（优化性能）
+maturin develop --release
+
+# 运行测试
+pytest tests/
+
+# 运行示例
+python examples/basic_usage.py
+```
+
+### 常见问题
+
+#### 1. 导入错误：找不到模块 `_core`
+
+```
+ImportError: cannot import name '_core' from 'alfars'
+```
+
+**解决方案**：
+```bash
+# 确保已构建 Rust 扩展
+maturin develop --release
+```
+
+#### 2. Rust 编译错误
+
+**解决方案**：
+```bash
+# 更新 Rust 工具链
+rustup update
+
+# 清理并重新构建
+cargo clean
+maturin develop --release
+```
+
+#### 3. Python 版本不兼容
+
+**解决方案**：
+```bash
+# 使用正确的 Python 版本
+python3.10 -m pip install -e .[dev]
+
+# 或者创建虚拟环境
+python -m venv venv
+source venv/bin/activate
+pip install -e .[dev]
+```
+
+#### 4. 缺少系统依赖
+
+**Ubuntu/Debian**:
+```bash
+sudo apt-get install python3-dev build-essential
+```
+
+**macOS**:
+```bash
+xcode-select --install
+brew install python3
+```
+
+### 性能优化
+
+#### 构建选项
+
+```bash
+# 最大优化（推荐生产环境）
+RUSTFLAGS="-C target-cpu=native" maturin develop --release
+
+# 启用并行计算
+export RAYON_NUM_THREADS=4  # 使用4个线程
+```
+
+#### 内存优化
+
+Rust 实现已针对内存效率进行优化：
+- 使用 `ndarray` 进行零拷贝操作
+- 避免不必要的内存分配
+- 并行处理每日数据
 
 ## 快速开始
 
@@ -48,7 +157,7 @@ pip install exprs
 ```python
 import numpy as np
 import pandas as pd
-from exprs import quantile_backtest, create_factor_tear_sheet
+from alfars import quantile_backtest, create_factor_tear_sheet
 
 # 生成示例数据
 n_days, n_assets = 100, 200
@@ -80,7 +189,7 @@ for i, mean_return in enumerate(result.group_returns.mean(axis=0)):
 
 ```python
 import pandas as pd
-from alpha_expr import factor_returns, create_factor_tear_sheet
+from alfars import factor_returns, create_factor_tear_sheet
 
 # 准备 MultiIndex 数据
 dates = pd.date_range("2023-01-01", periods=100, freq="B")
@@ -118,7 +227,7 @@ create_factor_tear_sheet(factor_data, returns_data)
 ### 高级用法
 
 ```python
-from alpha_expr import BacktestEngine
+from alfars import BacktestEngine
 
 # 使用引擎接口（更多控制）
 engine = BacktestEngine(
@@ -144,7 +253,7 @@ print(result.summary())
 ### 表达式系统
 
 ```python
-from alpha_expr import Expr, LazyFrame, DataFrame, Series
+from alfars import Expr, LazyFrame, DataFrame, Series
 
 # 创建自定义因子表达式
 expr = (Expr.col("close") - Expr.col("open")) / Expr.col("open")
@@ -171,7 +280,7 @@ print(f"Computed factor shape: {result['custom_factor'].shape}")
 ### 遗传规划因子挖掘
 
 ```python
-from alpha_expr import GpEngine
+from alfars import GpEngine
 
 # 创建GP引擎
 gp = GpEngine(
@@ -207,7 +316,7 @@ for i, (expr_str, fitness) in enumerate(factors[:3]):
 ### 持久化存储与因子库管理
 
 ```python
-from alpha_expr import PersistenceManager, FactorMetadata
+from alfars import PersistenceManager, FactorMetadata
 
 # 创建因子库
 db = PersistenceManager("./factor_library")
@@ -244,7 +353,7 @@ print(f"Cache stats: {dict(stats)}")
 ### 元学习智能推荐
 
 ```python
-from alpha_expr import MetaLearningAnalyzer, GPRecommendations
+from alfars import MetaLearningAnalyzer, GPRecommendations
 
 # 创建元学习分析器
 analyzer = MetaLearningAnalyzer()
@@ -673,39 +782,78 @@ window_spec = expanding_window(min_periods=10)    # 扩展窗口
 ### 项目结构 (v0.2.0)
 
 ```
-alpha-expr/
+alfars/
 ├── Cargo.toml                    # Rust 项目配置
 ├── pyproject.toml                # Python 项目配置
 ├── src/
 │   ├── lib.rs                    # Rust 核心实现和Python绑定
-│   ├── backtest.rs               # 回测引擎实现
 │   ├── expr.rs                   # 表达式系统
+│   ├── expr_optimizer.rs         # 表达式优化
 │   ├── lazy.rs                   # 惰性求值引擎
 │   ├── gp.rs                     # 遗传规划模块
 │   ├── persistence.rs            # 持久化存储模块
 │   ├── metalearning.rs           # 元学习系统
-│   └── ga.rs                     # 遗传算法基础
-├── alpha_expr/
+│   └── polars_style.rs          # DataFrame兼容层
+├── alfars/                        # Python 包
 │   ├── __init__.py               # Python 主模块
-│   ├── _core.cpython-*.so        # Rust 扩展模块
-│   └── _fallback.py              # Python 回退实现
+│   └── _core.cpython-*.so       # Rust 扩展模块
 ├── examples/
-│   ├── basic_backtest.py         # 基础回测示例
-│   ├── expression_system.py      # 表达式系统示例
-│   ├── lazy_evaluation.py        # 惰性求值示例
-│   ├── gp_factor_mining.py       # GP因子挖掘示例
-│   ├── persistence_demo.py       # 持久化存储示例
-│   ├── metalearning_workflow.py  # 元学习工作流示例
-│   └── full_workflow_example.py  # 完整工作流示例
+│   ├── basic_usage.py            # 基础用法示例
+│   ├── alpha101_expr.py          # Alpha101表达式示例
+│   ├── alpha101_test.py          # Alpha101测试示例
+│   ├── lazy_example.py           # 惰性求值示例
+│   ├── full_workflow_example.py  # 完整工作流示例
+│   └── python_binding_demo.py    # Python绑定演示
 ├── tests/                        # 测试文件
-├── benchmarks/                   # 性能测试
-└── memory/                       # 运行时记忆文件
+├── CLAUDE.md                     # Claude Code开发指南
+└── README.md                     # 项目文档
+```
+
+### 构建与发布
+
+#### 手动构建
+
+```bash
+# 仅构建 Rust 库
+cargo build --release
+
+# 生成 Python 扩展
+maturin build --release
+
+# 直接安装
+maturin install
+```
+
+#### 测试
+
+```bash
+# 运行所有测试
+pytest tests/
+
+# 运行特定测试
+pytest tests/test_basic.py::test_quantile_backtest_basic
+
+# 带覆盖率报告
+pytest --cov=alfars tests/
+```
+
+#### 发布
+
+```bash
+# 构建 wheel 包
+maturin build --release
+
+# 构建源分发
+python -m build
+
+# 上传到 PyPI
+twine upload target/wheels/*
 ```
 
 ### 模块架构
 
 ```
-alpha-expr v0.2.0 架构
+alfars v0.2.0 架构
 ├── 核心层 (Rust)
 │   ├── 回测引擎 (backtest)      # 分位数分组、多空组合、IC计算
 │   ├── 表达式系统 (expr)        # 表达式树构建、求值、优化
@@ -742,7 +890,7 @@ cd docs && make html
 ### 添加新功能
 
 1. 在 `src/lib.rs` 中添加 Rust 实现
-2. 在 `alpha_expr/__init__.py` 中添加 Python 接口
+2. 在 `alfars/__init__.py` 中添加 Python 接口
 3. 在 `tests/` 中添加单元测试
 4. 在 `examples/` 中添加使用示例
 

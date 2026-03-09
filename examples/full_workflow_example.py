@@ -27,10 +27,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 try:
-    import exprs as ae
+    import alfars as ae
     print(f"✓ Imported exprs v{ae.__version__}")
 except ImportError as e:
-    print(f"✗ Failed to import exprs: {e}")
+    print(f"✗ Failed to import alfars: {e}")
     sys.exit(1)
 
 def create_synthetic_data(n_days=100, n_assets=50, seed=42):
@@ -100,7 +100,7 @@ def test_lazy_evaluation(data):
     
     try:
         # Create LazyFrame from data
-        import exprs._core as _core
+        import alfars._core as _core
 
         # Prepare data as dict of numpy arrays
         data_dict = {

@@ -3,13 +3,13 @@ requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "exprs"
+name = "alfars"
 version = "0.2.0"
 description = "High-performance factor expression and backtesting library (Rust + PyO3)"
 readme = "README.md"
 requires-python = ">=3.8"
 license = {text = "MIT"}
-authors = [{name = "tip", email = "tip@example.com"}]
+authors = [{name = "EthanNOV56", email = "yichen_1226@163.com"}]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Financial and Insurance Industry",
@@ -34,9 +34,12 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/EthanNOV56/exp.rs"
-Repository = "https://github.com/EthanNOV56/exp.rs"
+Homepage = "https://github.com/EthanNOV56/alfa.rs"
+Repository = "https://github.com/EthanNOV56/alfa.rs"
+
+[project.aliases]
+alfars = "alfars"
 
 [tool.maturin]
-module-name = "exprs._core"
+module-name = "alfars._core"
 features = ["pyo3/extension-module"]

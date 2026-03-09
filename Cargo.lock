@@ -16,6 +16,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "alfars"
+version = "0.2.0"
+dependencies = [
+ "ahash",
+ "bincode",
+ "itertools",
+ "lru",
+ "lz4",
+ "ndarray",
+ "numpy",
+ "pyo3",
+ "pyo3-build-config",
+ "rand",
+ "rayon",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "uuid",
+]
+
+[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -164,28 +186,6 @@ checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
  "windows-sys",
-]
-
-[[package]]
-name = "exprs"
-version = "0.2.0"
-dependencies = [
- "ahash",
- "bincode",
- "itertools",
- "lru",
- "lz4",
- "ndarray",
- "numpy",
- "pyo3",
- "pyo3-build-config",
- "rand",
- "rayon",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "uuid",
 ]
 
 [[package]]

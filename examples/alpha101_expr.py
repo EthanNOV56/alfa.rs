@@ -7,8 +7,8 @@ using the exprs expression system with the newly added functions.
 """
 
 import numpy as np
-import exprs as ae
-from exprs import Expr, lag, diff, rolling_mean, ts_rank, ts_argmax, ts_argmin, rank, ts_corr, scale, decay_linear, sign, power
+import alfars as ae
+from alfars import Expr, lag, diff, rolling_mean, ts_rank, ts_argmax, ts_argmin, rank, ts_corr, scale, decay_linear, sign, power
 
 
 def create_sample_data(n_days: int = 100, n_assets: int = 50) -> dict:

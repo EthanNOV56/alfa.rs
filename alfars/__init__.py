@@ -1,5 +1,5 @@
 """
-exprs: High-performance factor expression and backtesting library
+alfars: High-performance factor expression and backtesting library
 
 This library provides:
 - Quantile grouping backtest (qcut N groups)
@@ -8,55 +8,65 @@ This library provides:
 - Factor performance analysis
 
 The core implementation is in Rust (via PyO3) for maximum performance.
+
+Usage:
+    import alfars as al
+    # or
+    import alfars
 """
 
-from typing import Optional, Tuple, Dict, Union, Any
+from typing import Any, Dict, Optional, Tuple, Union
+
 import numpy as np
 import pandas as pd
 
+# Package metadata
+__version__ = "0.2.0"
+__author__ = "EthanNOV56"
+
 try:
     from ._core import (
-        PyBacktestEngine,
-        quantile_backtest,
-        compute_ic,
+        DataFrame,
         # Expression system
         Expr,
-        Series,
-        DataFrame,
+        FactorMetadata,
+        # Genetic Programming
+        GpEngine,
+        GPHistoryRecord,
+        GPRecommendations,
         # Lazy evaluation
         LazyFrame,
-        rolling_window,
+        # Meta-learning system
+        MetaLearningAnalyzer,
+        # Persistence system
+        PersistenceManager,
+        PyBacktestEngine,
+        Series,
+        compute_ic,
+        cumprod,
+        cumsum,
+        decay_linear,
+        diff,
+        evaluate_expression,
         expanding_window,
         # Expression functions
         lag,
-        diff,
+        power,
+        quantile_backtest,
+        rank,
         rolling_mean,
-        cumsum,
-        cumprod,
-        evaluate_expression,
-        # Alpha101 functions
-        ts_rank,
+        rolling_window,
+        scale,
+        sign,
         ts_argmax,
         ts_argmin,
-        rank,
         ts_corr,
         ts_cov,
-        scale,
-        decay_linear,
-        sign,
-        power,
-        ts_sum,
         ts_max,
         ts_min,
-        # Genetic Programming
-        GpEngine,
-        # Persistence system
-        PersistenceManager,
-        FactorMetadata,
-        GPHistoryRecord,
-        # Meta-learning system
-        MetaLearningAnalyzer,
-        GPRecommendations,
+        # Alpha101 functions
+        ts_rank,
+        ts_sum,
     )
     HAS_RUST_EXT = True
     # Create aliases for internal use
@@ -68,84 +78,86 @@ except ImportError:
     from ._fallback import (
         PyBacktestEngine,
         PyBacktestResult,
-        quantile_backtest as _quantile_backtest,
+    )
+    from ._fallback import (
         compute_ic as _compute_ic,
+    )
+    from ._fallback import (
+        quantile_backtest as _quantile_backtest,
     )
     # Create simple stubs for new functionality when Rust extension is missing
     class Expr:
         """Stub Expr class for fallback mode."""
         pass
-    
+
     class Series:
         """Stub Series class for fallback mode."""
         pass
-    
+
     class DataFrame:
         """Stub DataFrame class for fallback mode."""
         pass
-    
+
     class LazyFrame:
         """Stub LazyFrame class for fallback mode."""
         pass
-    
+
     # GP system stubs
     class GpEngine:
         """Stub GpEngine class for fallback mode."""
         pass
-    
+
     class PersistenceManager:
         """Stub PersistenceManager class for fallback mode."""
         pass
-    
+
     class FactorMetadata:
         """Stub FactorMetadata class for fallback mode."""
         pass
-    
+
     class GPHistoryRecord:
         """Stub GPHistoryRecord class for fallback mode."""
         pass
-    
+
     class MetaLearningAnalyzer:
         """Stub MetaLearningAnalyzer class for fallback mode."""
         pass
-    
+
     class GPRecommendations:
         """Stub GPRecommendations class for fallback mode."""
         pass
-    
+
     def rolling_window(*args, **kwargs):
         """Stub function for fallback mode."""
         return {}
-    
+
     def expanding_window(*args, **kwargs):
         """Stub function for fallback mode."""
         return {}
-    
+
     def lag(*args, **kwargs):
         """Stub function for fallback mode."""
         return Expr()
-    
+
     def diff(*args, **kwargs):
         """Stub function for fallback mode."""
         return Expr()
-    
+
     def rolling_mean(*args, **kwargs):
         """Stub function for fallback mode."""
         return Expr()
-    
+
     def cumsum(*args, **kwargs):
         """Stub function for fallback mode."""
         return Expr()
-    
+
     def cumprod(*args, **kwargs):
         """Stub function for fallback mode."""
         return Expr()
-    
+
     def evaluate_expression(*args, **kwargs):
         """Stub function for fallback mode."""
         return np.array([])
-
-__version__ = "0.2.0"
 __all__ = [
     # Core backtesting
     "factor_returns",
@@ -457,7 +469,7 @@ class Dimension:
 
 class BacktestEngine:
     """High-performance backtest engine with Rust core."""
-    
+
     def __init__(
         self,
         factor: np.ndarray,
@@ -471,7 +483,7 @@ class BacktestEngine:
     ):
         """
         Initialize backtest engine.
-        
+
         Parameters
         ----------
         factor : np.ndarray
@@ -496,14 +508,14 @@ class BacktestEngine:
                 "Rust extension not available. Please install with: "
                 "pip install -e .[dev] or maturin develop"
             )
-        
+
         self._engine = PyBacktestEngine(
             factor, returns, quantiles, weight_method,
             long_top_n, short_top_n, commission_rate, weights
         )
         self.factor_shape = factor.shape
         self.returns_shape = returns.shape
-        
+
     def run(self) -> "BacktestResult":
         """Run the backtest."""
         rust_result = self._engine.run()
@@ -512,7 +524,7 @@ class BacktestEngine:
 
 class BacktestResult:
     """Backtest result container."""
-    
+
     def __init__(
         self,
         group_returns: np.ndarray,
@@ -530,7 +542,7 @@ class BacktestResult:
         self.ic_series = ic_series
         self.ic_mean = ic_mean
         self.ic_ir = ic_ir
-    
+
     @classmethod
     def from_rust_result(cls, rust_result: Any) -> "BacktestResult":
         """Create from Rust result object."""
@@ -543,7 +555,7 @@ class BacktestResult:
             ic_mean=rust_result.ic_mean,
             ic_ir=rust_result.ic_ir,
         )
-    
+
     def to_dict(self) -> Dict[str, Union[np.ndarray, float]]:
         """Convert to dictionary."""
         return {
@@ -555,7 +567,7 @@ class BacktestResult:
             "ic_mean": self.ic_mean,
             "ic_ir": self.ic_ir,
         }
-    
+
     def summary(self) -> str:
         """Generate summary text."""
         return f"""Backtest Summary
@@ -570,7 +582,7 @@ IC IR: {self.ic_ir:.4f}
 Group Mean Returns:
 {self._format_group_returns()}
 """
-    
+
     def _format_group_returns(self) -> str:
         """Format group returns for display."""
         group_means = self.group_returns.mean(axis=0)
@@ -592,7 +604,7 @@ def factor_returns(
 ) -> Dict[str, Union[pd.DataFrame, pd.Series]]:
     """
     Compute factor portfolio returns (alphalens-like interface).
-    
+
     Parameters
     ----------
     factor : pd.Series
@@ -611,7 +623,7 @@ def factor_returns(
         Grouping variable (e.g., industry classification)
     zero_aware : bool, default False
         Treat positive and negative factors separately
-    
+
     Returns
     -------
     dict
@@ -620,14 +632,14 @@ def factor_returns(
     # Convert to numpy arrays for Rust processing
     factor_df = factor.unstack()
     returns_df = forward_returns.unstack()
-    
+
     # Align dates and assets
     common_dates = factor_df.index.intersection(returns_df.index)
     common_assets = factor_df.columns.intersection(returns_df.columns)
-    
+
     factor_array = factor_df.loc[common_dates, common_assets].values
     returns_array = returns_df.loc[common_dates, common_assets].values
-    
+
     # Run backtest using Rust engine
     result = quantile_backtest(
         factor=factor_array,
@@ -639,14 +651,14 @@ def factor_returns(
         commission_rate=0.0,
         weights=None,
     )
-    
+
     # Convert results back to pandas
     factor_returns_df = pd.DataFrame(
         result.group_returns,
         index=common_dates[:result.group_returns.shape[0]],
         columns=[f"Q{i+1}" for i in range(quantiles)]
     )
-    
+
     # Create factor quantiles series
     # Note: This is a simplified version
     factor_quantiles = pd.Series(
@@ -654,7 +666,7 @@ def factor_returns(
         data=np.nan,
         name="factor_quantile"
     )
-    
+
     return {
         "factor_returns": factor_returns_df,
         "factor_quantiles": factor_quantiles,
@@ -674,7 +686,7 @@ def quantile_backtest(
 ) -> BacktestResult:
     """
     Run quantile backtest (direct numpy interface).
-    
+
     Parameters
     ----------
     factor : np.ndarray
@@ -693,7 +705,7 @@ def quantile_backtest(
         One-way commission rate
     weights : np.ndarray, optional
         External weights for weighted method
-    
+
     Returns
     -------
     BacktestResult
@@ -706,7 +718,7 @@ def quantile_backtest(
             factor, returns, quantiles, weight_method,
             long_top_n, short_top_n, commission_rate, weights
         )
-    
+
     rust_result = _quantile_backtest(
         factor, returns, quantiles, weight_method,
         long_top_n, short_top_n, commission_rate, weights
@@ -720,14 +732,14 @@ def compute_information_coefficient(
 ) -> Tuple[float, float]:
     """
     Compute information coefficient (IC) statistics.
-    
+
     Parameters
     ----------
     factor : np.ndarray
         Factor values, shape (n_days, n_assets)
     returns : np.ndarray
         Forward returns, shape (n_days, n_assets)
-    
+
     Returns
     -------
     tuple
@@ -737,7 +749,7 @@ def compute_information_coefficient(
         # Fallback
         from ._fallback import compute_ic
         return compute_ic(factor, returns)
-    
+
     return _compute_ic(factor, returns)
 
 
@@ -752,7 +764,7 @@ def create_factor_tear_sheet(
 ) -> None:
     """
     Create factor tear sheet (alphalens-like).
-    
+
     Parameters
     ----------
     factor : pd.Series
@@ -772,43 +784,43 @@ def create_factor_tear_sheet(
     """
     print("Factor Tear Sheet")
     print("=" * 50)
-    
+
     # Compute factor returns
     results = factor_returns(
         factor, forward_returns, quantiles=quantiles,
         periods=periods, **kwargs
     )
-    
+
     # Compute IC
     factor_df = factor.unstack()
     returns_df = forward_returns.unstack()
     common_dates = factor_df.index.intersection(returns_df.index)
     common_assets = factor_df.columns.intersection(returns_df.columns)
-    
+
     factor_array = factor_df.loc[common_dates, common_assets].values
     returns_array = returns_df.loc[common_dates, common_assets].values
-    
+
     ic_mean, ic_ir = compute_information_coefficient(factor_array, returns_array)
-    
+
     print(f"\nFactor Statistics:")
     print(f"  Number of observations: {len(factor.dropna())}")
     print(f"  Quantiles: {quantiles}")
     print(f"  Periods: {periods}")
-    
+
     print(f"\nIC Statistics:")
     print(f"  Mean IC: {ic_mean:.4f}")
     print(f"  IC IR: {ic_ir:.4f}")
-    
+
     print(f"\nQuantile Returns (mean):")
     factor_returns_df = results["factor_returns"]
     for col in factor_returns_df.columns:
         mean_return = factor_returns_df[col].mean()
         print(f"  {col}: {mean_return:.6%}")
-    
+
     # Try to import matplotlib for plotting
     try:
         import matplotlib.pyplot as plt
-        
+
         # Plot cumulative returns by quantile
         cum_returns = (1 + factor_returns_df).cumprod() - 1
         cum_returns.plot(title="Cumulative Returns by Quantile")
@@ -817,6 +829,6 @@ def create_factor_tear_sheet(
         plt.legend(title="Quantile")
         plt.grid(True, alpha=0.3)
         plt.show()
-        
+
     except ImportError:
         print("\n(Install matplotlib for visualizations)")
