@@ -11,10 +11,10 @@ mod persistence;
 mod metalearning;
 
 use pyo3::prelude::*;
-use pyo3::exceptions::PyValueError;
-use pyo3::types::PyDict;
+use pyo3::exceptions::{PyValueError, PyRuntimeError};
+use pyo3::types::{PyDict, PyList, PyTuple};
 use ndarray::{Array2, Array1};
-use numpy::{PyArray2, PyArray1, IntoPyArray};
+use numpy::{PyArray2, PyArray1, PyArrayMethods, PyUntypedArrayMethods, IntoPyArray};
 use std::f64::NAN;
 use std::sync::Arc;
 
@@ -606,13 +606,13 @@ pub struct PyDataFrame {
 #[pymethods]
 impl PyDataFrame {
     #[new]
-    fn new(columns: Option<&PyDict>) -> PyResult<Self> {
+    fn new(py: Python<'_>, columns: Option<Bound<'_, PyDict>>) -> PyResult<Self> {
         if let Some(cols) = columns {
             let mut inner_columns = std::collections::HashMap::new();
-            
+
             for (key, value) in cols.iter() {
-                let col_name = key.extract::<String>()?;
-                
+                let col_name: String = key.extract()?;
+
                 if let Ok(py_series) = value.extract::<PySeries>() {
                     inner_columns.insert(col_name, py_series.inner.clone());
                 } else if let Ok(list) = value.extract::<Vec<f64>>() {
@@ -623,7 +623,7 @@ impl PyDataFrame {
                     ));
                 }
             }
-            
+
             // Use from_series_map which returns Result
             match DataFrame::from_series_map(inner_columns) {
                 Ok(df) => Ok(PyDataFrame { inner: df }),
@@ -670,33 +670,33 @@ impl PyDataFrame {
 /// Evaluate expression on multi-asset data (returns factor matrix)
 #[pyfunction]
 fn evaluate_expression(
+    py: Python<'_>,
     expr: &PyExpr,
-    data: &PyDict,
+    data: Bound<'_, PyDict>,
     n_days: usize,
     n_assets: usize,
 ) -> PyResult<Py<PyArray2<f64>>> {
     use numpy::PyArray2;
-    
-    Python::with_gil(|py| {
-        // Validate input dimensions
-        let mut column_arrays = std::collections::HashMap::new();
-        
-        for (key, value) in data.iter() {
-            let col_name = key.extract::<String>()?;
-            
-            // Try to extract as numpy array
-            if let Ok(arr) = value.extract::<&PyArray2<f64>>() {
-                let array = arr.readonly();
-                let shape = array.shape();
-                if shape[0] != n_days || shape[1] != n_assets {
-                    return Err(PyValueError::new_err(
-                        format!("Column '{}' has shape {:?}, expected ({}, {})", 
-                               col_name, shape, n_days, n_assets)
-                    ));
-                }
-                column_arrays.insert(col_name, array.as_array().to_owned());
-            } else {
+
+    // Validate input dimensions
+    let mut column_arrays = std::collections::HashMap::new();
+
+    for (key, value) in data.iter() {
+        let col_name: String = key.extract()?;
+
+        // Try to extract as numpy array
+        if let Ok(arr) = value.extract::<Bound<'_, PyArray2<f64>>>() {
+            let array = arr.readonly();
+            let shape = array.shape();
+            if shape[0] != n_days || shape[1] != n_assets {
                 return Err(PyValueError::new_err(
+                    format!("Column '{}' has shape {:?}, expected ({}, {})",
+                           col_name, shape, n_days, n_assets)
+                ));
+            }
+            column_arrays.insert(col_name, array.as_array().to_owned());
+        } else {
+            return Err(PyValueError::new_err(
                     format!("Column '{}' must be a 2D numpy array", col_name)
                 ));
             }
@@ -744,7 +744,6 @@ fn evaluate_expression(
         }
         
         Ok(result.into_pyarray(py).into())
-    })
 }
 
 /// Create a lag expression
@@ -825,17 +824,17 @@ fn rolling_std(expr: &PyExpr, window: usize) -> PyResult<PyExpr> {
 
 // PyO3 bindings
 #[pymodule]
-fn _core(_py: Python, m: &PyModule) -> PyResult<()> {
+fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Backtest functionality
     m.add_class::<PyBacktestEngine>()?;
     m.add_function(wrap_pyfunction!(quantile_backtest, m)?)?;
     m.add_function(wrap_pyfunction!(compute_ic, m)?)?;
-    
+
     // Expression system
     m.add_class::<PyExpr>()?;
     m.add_class::<PySeries>()?;
     m.add_class::<PyDataFrame>()?;
-    
+
     // Expression evaluation functions
     m.add_function(wrap_pyfunction!(evaluate_expression, m)?)?;
     m.add_function(wrap_pyfunction!(lag, m)?)?;
@@ -844,24 +843,24 @@ fn _core(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cumsum, m)?)?;
     m.add_function(wrap_pyfunction!(cumprod, m)?)?;
     m.add_function(wrap_pyfunction!(rolling_std, m)?)?;
-    
+
     // Lazy evaluation system
     m.add_class::<PyLazyFrame>()?;
     m.add_function(wrap_pyfunction!(rolling_window, m)?)?;
     m.add_function(wrap_pyfunction!(expanding_window, m)?)?;
-    
+
     // Genetic Programming system
     m.add_class::<PyGpEngine>()?;
-    
+
     // Persistence system
     m.add_class::<PyPersistenceManager>()?;
     m.add_class::<PyFactorMetadata>()?;
     m.add_class::<PyGpHistoryRecord>()?;
-    
+
     // Meta-learning system
     m.add_class::<PyMetaLearningAnalyzer>()?;
     m.add_class::<PyGpRecommendations>()?;
-    
+
     Ok(())
 }
 
@@ -875,19 +874,20 @@ struct PyBacktestEngine {
 impl PyBacktestEngine {
     #[new]
     fn new(
-        factor: &PyArray2<f64>,
-        returns: &PyArray2<f64>,
+        py: Python<'_>,
+        factor: Bound<'_, PyArray2<f64>>,
+        returns: Bound<'_, PyArray2<f64>>,
         quantiles: usize,
         weight_method: &str,
         long_top_n: usize,
         short_top_n: usize,
         commission_rate: f64,
-        weights: Option<&PyArray2<f64>>,
+        weights: Option<Bound<'_, PyArray2<f64>>>,
     ) -> PyResult<Self> {
         let factor_array = factor.readonly().as_array().to_owned();
         let returns_array = returns.readonly().as_array().to_owned();
         let weights_array = weights.map(|w| w.readonly().as_array().to_owned());
-        
+
         let wmethod = match weight_method {
             "equal" => WeightMethod::Equal,
             "weighted" => WeightMethod::Weighted,
@@ -895,7 +895,7 @@ impl PyBacktestEngine {
                 "weight_method must be 'equal' or 'weighted'"
             )),
         };
-        
+
         let engine = BacktestEngine::new(
             factor_array,
             returns_array,
@@ -906,10 +906,10 @@ impl PyBacktestEngine {
             commission_rate,
             weights_array,
         );
-        
+
         Ok(Self { engine })
     }
-    
+
     fn run(&self) -> PyResult<PyBacktestResult> {
         match self.engine.run() {
             Ok(result) => Ok(PyBacktestResult::from(result)),
@@ -939,7 +939,7 @@ struct PyBacktestResult {
 
 impl From<BacktestResult> for PyBacktestResult {
     fn from(result: BacktestResult) -> Self {
-        Python::with_gil(|py| {
+        pyo3::Python::try_attach(|py| {
             Self {
                 group_returns: result.group_returns.into_pyarray(py).into(),
                 group_cum_returns: result.group_cum_returns.into_pyarray(py).into(),
@@ -949,24 +949,26 @@ impl From<BacktestResult> for PyBacktestResult {
                 ic_mean: result.ic_mean,
                 ic_ir: result.ic_ir,
             }
-        })
+        }).unwrap()
     }
 }
 
 /// Standalone quantile backtest function (Python interface)
 #[pyfunction]
 fn quantile_backtest(
-    factor: &PyArray2<f64>,
-    returns: &PyArray2<f64>,
+    py: Python<'_>,
+    factor: Bound<'_, PyArray2<f64>>,
+    returns: Bound<'_, PyArray2<f64>>,
     quantiles: usize,
     weight_method: &str,
     long_top_n: usize,
     short_top_n: usize,
     commission_rate: f64,
-    weights: Option<&PyArray2<f64>>,
+    weights: Option<Bound<'_, PyArray2<f64>>>,
 ) -> PyResult<PyBacktestResult> {
     let engine = PyBacktestEngine::new(
-        factor, returns, quantiles, weight_method, 
+        py,
+        factor, returns, quantiles, weight_method,
         long_top_n, short_top_n, commission_rate, weights
     )?;
     engine.run()
@@ -975,8 +977,9 @@ fn quantile_backtest(
 /// Standalone IC computation (Python interface)
 #[pyfunction]
 fn compute_ic(
-    factor: &PyArray2<f64>,
-    returns: &PyArray2<f64>,
+    py: Python<'_>,
+    factor: Bound<'_, PyArray2<f64>>,
+    returns: Bound<'_, PyArray2<f64>>,
 ) -> PyResult<(f64, f64)> {
     let factor_guard = factor.readonly();
     let factor_array = factor_guard.as_array();
@@ -1046,15 +1049,15 @@ pub struct PyLazyFrame {
 impl PyLazyFrame {
     /// Create a new LazyFrame from numpy arrays
     #[staticmethod]
-    fn scan(data: &PyDict) -> PyResult<Self> {
+    fn scan(py: Python<'_>, data: Bound<'_, PyDict>) -> PyResult<Self> {
         use numpy::PyArray2;
-        
+
         let mut arrays = std::collections::HashMap::new();
-        
+
         for (key, value) in data.iter() {
-            let col_name = key.extract::<String>()?;
-            
-            if let Ok(arr) = value.extract::<&PyArray2<f64>>() {
+            let col_name: String = key.extract()?;
+
+            if let Ok(arr) = value.extract::<Bound<'_, PyArray2<f64>>>() {
                 let array = arr.readonly().as_array().to_owned();
                 arrays.insert(col_name, array);
             } else {
@@ -1063,30 +1066,33 @@ impl PyLazyFrame {
                 ));
             }
         }
-        
+
         let source = DataSource::NumpyArrays(arrays);
         let lazy_frame = LazyFrame::scan(source);
-        
+
         Ok(PyLazyFrame {
             inner: Some(lazy_frame),
         })
     }
     
     /// Add new columns to the LazyFrame
-    fn with_columns(&self, exprs: Vec<(&str, PyExpr)>) -> PyResult<Self> {
+    fn with_columns(&self, py: Python<'_>, exprs: Bound<'_, PyList>) -> PyResult<Self> {
         let Some(ref inner) = self.inner else {
             return Err(PyValueError::new_err("LazyFrame is already consumed"));
         };
-        
+
         // Convert Python expressions to Rust expressions
-        let rust_exprs: Vec<(String, Expr)> = exprs
-            .into_iter()
-            .map(|(name, expr)| (name.to_string(), expr.inner))
-            .collect();
-        
+        let mut rust_exprs = Vec::new();
+        for item in exprs.iter() {
+            let tuple = item.downcast::<PyTuple>()?;
+            let name: String = tuple.get_item(0)?.extract()?;
+            let py_expr: PyExpr = tuple.get_item(1)?.extract()?;
+            rust_exprs.push((name, py_expr.inner));
+        }
+
         // Create new LazyFrame with columns added
         let new_lazy_frame = inner.clone().with_columns(rust_exprs);
-        
+
         Ok(PyLazyFrame {
             inner: Some(new_lazy_frame),
         })
@@ -1126,8 +1132,8 @@ impl PyLazyFrame {
         let Some(lazy_frame) = self.inner.take() else {
             return Err(PyValueError::new_err("LazyFrame is already consumed"));
         };
-        
-        Python::with_gil(|py| {
+
+        pyo3::Python::try_attach(|py| {
             match lazy_frame.collect() {
                 Ok(result) => {
                     let dict = PyDict::new(py);
@@ -1139,7 +1145,7 @@ impl PyLazyFrame {
                 }
                 Err(e) => Err(PyValueError::new_err(e)),
             }
-        })
+        }).ok_or_else(|| PyRuntimeError::new_err("Failed to attach to Python"))?
     }
     
     /// Explain the logical plan
@@ -1168,26 +1174,26 @@ impl PyLazyFrame {
 /// Create a rolling window specification for lazy evaluation
 #[pyfunction]
 fn rolling_window(size: usize, min_periods: Option<usize>) -> PyResult<Py<PyDict>> {
-    Python::with_gil(|py| {
+    pyo3::Python::try_attach(|py| {
         let window_spec = crate::lazy::rolling_window(size, min_periods);
         let dict = PyDict::new(py);
         dict.set_item("kind", "rolling")?;
         dict.set_item("size", size)?;
         dict.set_item("min_periods", min_periods.unwrap_or(1))?;
         Ok(dict.into())
-    })
+    }).ok_or_else(|| PyRuntimeError::new_err("Failed to attach to Python"))?
 }
 
 /// Create an expanding window specification for lazy evaluation
 #[pyfunction]
 fn expanding_window(min_periods: Option<usize>) -> PyResult<Py<PyDict>> {
-    Python::with_gil(|py| {
+    pyo3::Python::try_attach(|py| {
         let window_spec = crate::lazy::expanding_window(min_periods);
         let dict = PyDict::new(py);
         dict.set_item("kind", "expanding")?;
         dict.set_item("min_periods", min_periods.unwrap_or(1))?;
         Ok(dict.into())
-    })
+    }).ok_or_else(|| PyRuntimeError::new_err("Failed to attach to Python"))?
 }
 
 // ============================================================================
@@ -1252,72 +1258,72 @@ impl PyGpEngine {
     }
     
     /// Set available columns (variables) for expression generation
-    fn set_columns(&mut self, columns: Vec<&str>) {
+    fn set_columns(&mut self, py: Python<'_>, columns: Bound<'_, PyList>) {
         // Update terminals with column variables
         let mut new_terminals = vec![
             Terminal::Ephemeral,
             Terminal::Constant(1.0),
             Terminal::Constant(2.0),
         ];
-        
-        for col in columns {
-            new_terminals.push(Terminal::Variable(col.to_string()));
+
+        for item in columns.iter() {
+            let col: String = item.extract().unwrap_or_default();
+            new_terminals.push(Terminal::Variable(col));
         }
-        
+
         self.terminals = new_terminals;
     }
     
     /// Run genetic programming for factor mining
     fn mine_factors(
         &mut self,
-        data: &PyDict,
-        returns: &PyArray2<f64>,
+        py: Python<'_>,
+        data: Bound<'_, PyDict>,
+        returns: Bound<'_, PyArray2<f64>>,
         num_factors: usize,
     ) -> PyResult<Vec<(String, f64)>> {
         use numpy::PyArray2;
-        
-        Python::with_gil(|py| {
-            // Extract data arrays
-            let mut data_arrays = HashMap::new();
-            
-            for (key, value) in data.iter() {
-                let col_name = key.extract::<String>()?;
-                
-                if let Ok(arr) = value.extract::<&PyArray2<f64>>() {
-                    let array = arr.readonly().as_array().to_owned();
-                    data_arrays.insert(col_name, array);
-                } else {
-                    return Err(PyValueError::new_err(
-                        format!("Column '{}' must be a 2D numpy array", col_name)
-                    ));
-                }
+
+        // Extract data arrays
+        let mut data_arrays = HashMap::new();
+
+        for (key, value) in data.iter() {
+            let col_name: String = key.extract()?;
+
+            if let Ok(arr) = value.extract::<Bound<'_, PyArray2<f64>>>() {
+                let array = arr.readonly().as_array().to_owned();
+                data_arrays.insert(col_name, array);
+            } else {
+                return Err(PyValueError::new_err(
+                    format!("Column '{}' must be a 2D numpy array", col_name)
+                ));
             }
-            
-            // Extract returns array
-            let returns_array = returns.readonly().as_array().to_owned();
-            
-            // Create fitness evaluator
-            let evaluator = BacktestFitnessEvaluator::new(data_arrays, returns_array);
-            
-            // Run GP multiple times to get multiple factors
-            let mut results = Vec::new();
-            
-            for _ in 0..num_factors {
-                let (best_expr, best_fitness) = run_gp(
-                    &self.config,
-                    &evaluator,
-                    self.terminals.clone(),
-                    self.functions.clone(),
-                    &mut self.rng,
-                );
-                
-                // Convert expression to string representation
-                let expr_str = format!("{:?}", best_expr);
-                results.push((expr_str, best_fitness));
-            }
-            
-            Ok(results)
-        })
+        }
+
+        // Extract returns array
+        let returns_array = returns.readonly().as_array().to_owned();
+
+        // Create fitness evaluator
+        let evaluator = BacktestFitnessEvaluator::new(data_arrays, returns_array);
+
+        // Run GP multiple times to get multiple factors
+        let mut results = Vec::new();
+
+        for _ in 0..num_factors {
+            let (best_expr, best_fitness) = run_gp(
+                &self.config,
+                &evaluator,
+                self.terminals.clone(),
+                self.functions.clone(),
+                &mut self.rng,
+            );
+
+            // Convert expression to string representation
+            let expr_str = format!("{:?}", best_expr);
+            results.push((expr_str, best_fitness));
+        }
+
+        Ok(results)
     }
     
     /// Run a simple test to verify GP functionality
@@ -1432,9 +1438,10 @@ impl PyPersistenceManager {
     }
     
     /// Get cache statistics
-    fn cache_stats(&self) -> PyResult<Py<PyDict>> {
+    fn cache_stats(&self) -> PyResult<Py<PyAny>> {
         use crate::persistence::CacheStats;
-        Python::with_gil(|py| {
+        unsafe {
+            let py = Python::assume_attached();
             match self.inner.get_cache_stats() {
                 Ok(stats) => {
                     let dict = PyDict::new(py);
@@ -1442,11 +1449,11 @@ impl PyPersistenceManager {
                     dict.set_item("total_size_bytes", stats.total_size_bytes)?;
                     dict.set_item("avg_access_count", stats.avg_access_count)?;
                     dict.set_item("max_size", stats.max_size)?;
-                    Ok(dict.into_py(py))
+                    Ok(dict.into())
                 }
                 Err(e) => Err(PyValueError::new_err(format!("Failed to get cache stats: {}", e))),
             }
-        })
+        }
     }
     
     fn __repr__(&self) -> String {
@@ -1473,16 +1480,17 @@ impl PyFactorMetadata {
     }
     
     #[getter]
-    fn metrics(&self) -> PyResult<Py<PyDict>> {
-        Python::with_gil(|py| {
+    fn metrics(&self) -> PyResult<Py<PyAny>> {
+        unsafe {
+            let py = Python::assume_attached();
             let dict = PyDict::new(py);
             dict.set_item("ic_mean", self.inner.metrics.ic_mean)?;
             dict.set_item("ic_ir", self.inner.metrics.ic_ir)?;
             dict.set_item("turnover", self.inner.metrics.turnover)?;
             dict.set_item("complexity_penalty", self.inner.metrics.complexity_penalty)?;
             dict.set_item("combined_score", self.inner.metrics.combined_score)?;
-            Ok(dict.into_py(py))
-        })
+            Ok(dict.into())
+        }
     }
     
     #[getter]
@@ -1514,8 +1522,9 @@ impl PyGpHistoryRecord {
     }
     
     #[getter]
-    fn config(&self) -> PyResult<Py<PyDict>> {
-        Python::with_gil(|py| {
+    fn config(&self) -> PyResult<Py<PyAny>> {
+        unsafe {
+            let py = Python::assume_attached();
             let dict = PyDict::new(py);
             dict.set_item("population_size", self.inner.config.population_size)?;
             dict.set_item("max_generations", self.inner.config.max_generations)?;
@@ -1523,8 +1532,8 @@ impl PyGpHistoryRecord {
             dict.set_item("crossover_prob", self.inner.config.crossover_prob)?;
             dict.set_item("mutation_prob", self.inner.config.mutation_prob)?;
             dict.set_item("max_depth", self.inner.config.max_depth)?;
-            Ok(dict.into_py(py))
-        })
+            Ok(dict.into())
+        }
     }
     
     fn __repr__(&self) -> String {
@@ -1659,8 +1668,9 @@ impl PyGpRecommendations {
     }
     
     /// Convert recommendations to a GPConfig (using midpoint of ranges)
-    fn to_gp_config(&self) -> PyResult<Py<PyDict>> {
-        Python::with_gil(|py| {
+    fn to_gp_config(&self) -> PyResult<Py<PyAny>> {
+        unsafe {
+            let py = Python::assume_attached();
             let config = self.inner.to_gp_config();
             let dict = PyDict::new(py);
             dict.set_item("population_size", config.population_size)?;
@@ -1669,8 +1679,8 @@ impl PyGpRecommendations {
             dict.set_item("crossover_prob", config.crossover_prob)?;
             dict.set_item("mutation_prob", config.mutation_prob)?;
             dict.set_item("max_depth", config.max_depth)?;
-            Ok(dict.into_py(py))
-        })
+            Ok(dict.into())
+        }
     }
     
     /// Check if recommendations are valid
