@@ -35,3 +35,6 @@ dist/
 build/
 *.egg-info/
 .eggs/
+
+/priv-md
+DEVELOPMENT.md
