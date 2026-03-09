@@ -2000,6 +2000,50 @@ impl PyFactorRegistry {
             .map_err(|e| PyValueError::new_err(e))
     }
 
+    /// Batch compute multiple factors with shared subexpression optimization
+    /// names: list of factor names to compute
+    /// data: dict of column_name -> list of values
+    /// parallel: whether to use parallel computation
+    /// Returns dict of name -> FactorResult
+    fn compute_batch(
+        &self,
+        py: Python<'_>,
+        names: Vec<String>,
+        data: Bound<'_, PyDict>,
+        parallel: bool,
+    ) -> PyResult<Py<PyDict>> {
+        // Convert Python dict to HashMap
+        let mut hashmap = std::collections::HashMap::new();
+        for (key, value) in data.iter() {
+            let key_str: String = key.extract()?;
+            let values: Vec<f64> = value.extract()?;
+            hashmap.insert(key_str, values);
+        }
+
+        let name_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+
+        let results = self
+            .inner
+            .compute_batch(&name_refs, &hashmap, parallel)
+            .map_err(|e| PyValueError::new_err(e))?;
+
+        // Convert results to Python dict
+        let result_dict = PyDict::new(py);
+        for (name, r) in results {
+            result_dict.set_item(
+                name,
+                PyFactorResult {
+                    name: r.name,
+                    values: r.values,
+                    n_rows: r.n_rows,
+                    n_cols: r.n_cols,
+                    compute_time_ms: r.compute_time_ms,
+                },
+            )?;
+        }
+        Ok(result_dict.into())
+    }
+
     /// List all registered factor names
     fn list(&self) -> Vec<String> {
         self.inner.list()

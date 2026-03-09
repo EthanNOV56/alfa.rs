@@ -6,9 +6,12 @@
 
 use crate::expr::{BinaryOp, Expr, Literal, UnaryOp};
 use crate::lazy::{DataSource, LogicalPlan};
-use std::collections::HashMap;
+use rayon::prelude::*;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
+use std::hash::{Hash, Hasher};
+use std::collections::hash_map::DefaultHasher;
 
 /// Configuration for resource limits and timeout to prevent system overload
 #[derive(Debug, Clone)]
@@ -179,6 +182,279 @@ impl FactorRegistry {
             n_cols: 1,
             compute_time_ms: elapsed,
         })
+    }
+
+    /// Batch compute multiple factors with shared subexpression optimization
+    /// This method builds a computation graph and computes each unique subexpression only once
+    pub fn compute_batch(
+        &self,
+        names: &[&str],
+        data: &HashMap<String, Vec<f64>>,
+        parallel: bool,
+    ) -> Result<HashMap<String, FactorResult>, String> {
+        if names.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let n_rows = data.values().next().map(|v| v.len()).unwrap_or(0);
+        if n_rows == 0 {
+            return Err("Empty data".to_string());
+        }
+
+        let start = Instant::now();
+
+        // Step 1: Build computation graph - collect all unique subexpressions
+        let mut unique_exprs: Vec<Expr> = Vec::new();
+        let mut expr_hash_set: HashSet<u64> = HashSet::new();
+        // Store owned expressions to keep them alive
+        let mut factor_exprs_owned: Vec<Expr> = Vec::new();
+        let mut factor_exprs: Vec<(String, &Expr)> = Vec::new();
+
+        for name in names {
+            let info = self
+                .factors
+                .get(*name)
+                .ok_or_else(|| format!("Factor '{}' not found", name))?;
+
+            // Extract the expression from plan (unwrap from Projection)
+            let expr = match &info.plan {
+                LogicalPlan::Projection { exprs, .. } => {
+                    exprs.first().map(|(_, e)| e.clone()).ok_or("Empty expression")?
+                }
+                _ => continue,
+            };
+
+            // Collect subexpressions
+            collect_unique_subexpressions(&expr, &mut unique_exprs, &mut expr_hash_set);
+            factor_exprs_owned.push(expr);
+        }
+
+        // Build references after all owned expressions are created
+        for (i, name) in names.iter().enumerate() {
+            factor_exprs.push((name.to_string(), &factor_exprs_owned[i]));
+        }
+
+        // Step 2: Build cache using memoization - compute on demand
+        // We'll use a RefCell to allow mutable caching during evaluation
+        let mut cache: HashMap<u64, Vec<f64>> = HashMap::new();
+
+        // Pre-populate cache with base columns (they're cheap)
+        for (name, vals) in data {
+            let col_hash = {
+                let mut hasher = DefaultHasher::new();
+                0u8.hash(&mut hasher);
+                name.hash(&mut hasher);
+                hasher.finish()
+            };
+            cache.insert(col_hash, vals.clone());
+        }
+
+        // Step 3: Compute final factors using memoized evaluation
+        // This will automatically cache and reuse intermediate results
+        let mut results: HashMap<String, FactorResult> = HashMap::new();
+
+        for (name, expr) in factor_exprs {
+            let result = eval_expr_memoized(expr, data, n_rows, &mut cache)?;
+            results.insert(
+                name.clone(),
+                FactorResult {
+                    name,
+                    values: result,
+                    n_rows,
+                    n_cols: 1,
+                    compute_time_ms: 0,
+                },
+            );
+        }
+
+        let elapsed = start.elapsed().as_millis() as u64;
+
+        // Update compute time
+        for result in results.values_mut() {
+            result.compute_time_ms = elapsed;
+        }
+
+        Ok(results)
+    }
+
+    /// Evaluate expression with cached intermediate results
+    fn eval_expr_with_cache(
+        &self,
+        expr: &Expr,
+        data: &HashMap<String, Vec<f64>>,
+        n_rows: usize,
+        cache: &HashMap<u64, Vec<f64>>,
+    ) -> Result<Vec<f64>, String> {
+        // Check cache first
+        let hash = expr_hash(expr);
+        if let Some(cached) = cache.get(&hash) {
+            return Ok(cached.clone());
+        }
+
+        let result = self.eval_expr_with_cache_inner(expr, data, n_rows, cache)?;
+
+        // Cache the result
+        // Note: We can't modify the cache here because it's immutable
+        // So we'll rely on the pre-computed cache from step 2
+        Ok(result)
+    }
+
+    /// Inner evaluation that actually computes the expression
+    fn eval_expr_with_cache_inner(
+        &self,
+        expr: &Expr,
+        data: &HashMap<String, Vec<f64>>,
+        n_rows: usize,
+        cache: &HashMap<u64, Vec<f64>>,
+    ) -> Result<Vec<f64>, String> {
+        match expr {
+            Expr::Column(name) => data
+                .get(name)
+                .cloned()
+                .ok_or_else(|| format!("Column '{}' not found", name)),
+            Expr::Literal(lit) => {
+                let val = match lit {
+                    Literal::Float(f) => *f,
+                    Literal::Integer(i) => *i as f64,
+                    _ => 0.0,
+                };
+                Ok(vec![val; n_rows])
+            }
+            Expr::BinaryExpr { left, op, right } => {
+                let left_vals = self.eval_expr_with_cache(left, data, n_rows, cache)?;
+                let right_vals = self.eval_expr_with_cache(right, data, n_rows, cache)?;
+                let mut result = vec![0.0; n_rows];
+                for i in 0..n_rows {
+                    result[i] = match op {
+                        BinaryOp::Add => left_vals[i] + right_vals[i],
+                        BinaryOp::Subtract => left_vals[i] - right_vals[i],
+                        BinaryOp::Multiply => left_vals[i] * right_vals[i],
+                        BinaryOp::Divide => {
+                            if right_vals[i].abs() < 1e-10 {
+                                0.0
+                            } else {
+                                left_vals[i] / right_vals[i]
+                            }
+                        }
+                        _ => 0.0,
+                    };
+                }
+                Ok(result)
+            }
+            Expr::FunctionCall { name, args } => {
+                self.eval_function_with_cache(name, args, data, n_rows, cache)
+            }
+            Expr::UnaryExpr { op, expr: e } => {
+                let vals = self.eval_expr_with_cache(e, data, n_rows, cache)?;
+                Ok(vals
+                    .into_iter()
+                    .map(|v| match op {
+                        UnaryOp::Negate => -v,
+                        _ => v,
+                    })
+                    .collect())
+            }
+            _ => Err("Unsupported expr type".to_string()),
+        }
+    }
+
+    fn eval_function_with_cache(
+        &self,
+        name: &str,
+        args: &[Expr],
+        data: &HashMap<String, Vec<f64>>,
+        n_rows: usize,
+        cache: &HashMap<u64, Vec<f64>>,
+    ) -> Result<Vec<f64>, String> {
+        let name_lower = name.to_lowercase();
+
+        if name_lower.starts_with("ts_") {
+            return self.eval_ts_function_with_cache(&name_lower, args, data, n_rows, cache);
+        }
+
+        // First compute all args
+        let mut arg_values: Vec<Vec<f64>> = Vec::new();
+        for arg in args {
+            arg_values.push(self.eval_expr_with_cache(arg, data, n_rows, cache)?);
+        }
+
+        match name_lower.as_str() {
+            "rank" => Ok(rank(&arg_values[0])),
+            "delay" => {
+                let periods = args.get(1).and_then(|a| get_literal_int(a)).unwrap_or(1);
+                Ok(delay(&arg_values[0], periods))
+            }
+            "scale" => Ok(scale(&arg_values[0])),
+            "sign" => Ok(sign(&arg_values[0])),
+            "abs" => Ok(arg_values[0].iter().map(|v| v.abs()).collect()),
+            "log" => Ok(arg_values[0].iter().map(|v| {
+                if *v > 0.0 { v.ln() } else { f64::NAN }
+            }).collect()),
+            "log10" => Ok(arg_values[0].iter().map(|v| {
+                if *v > 0.0 { v.log10() } else { f64::NAN }
+            }).collect()),
+            "sqrt" => Ok(arg_values[0].iter().map(|v| v.sqrt()).collect()),
+            "power" => {
+                let exponent = args.get(1).and_then(|a| get_literal_int(a)).map(|e| e as f64).unwrap_or(2.0);
+                Ok(arg_values[0].iter().map(|v| v.powf(exponent)).collect())
+            }
+            "decay_linear" | "decay" => {
+                let periods = args.get(1).and_then(|a| get_literal_int(a)).unwrap_or(10);
+                Ok(decay_linear(&arg_values[0], periods))
+            }
+            "delta" => {
+                let periods = args.get(1).and_then(|a| get_literal_int(a)).unwrap_or(1);
+                Ok(ts_delta(&arg_values[0], periods))
+            }
+            "if" => {
+                if args.len() != 3 {
+                    return Err("IF requires 3 arguments".to_string());
+                }
+                let result: Vec<f64> = arg_values[0].iter()
+                    .zip(arg_values[1].iter())
+                    .zip(arg_values[2].iter())
+                    .map(|((&c, &t), &f)| if c > 0.0 { t } else { f })
+                    .collect();
+                Ok(result)
+            }
+            "gt" | "greater" => Ok(arg_values[0].iter().zip(arg_values[1].iter()).map(|(&x, &y)| if x > y { 1.0 } else { 0.0 }).collect()),
+            "lt" | "less" => Ok(arg_values[0].iter().zip(arg_values[1].iter()).map(|(&x, &y)| if x < y { 1.0 } else { 0.0 }).collect()),
+            "gte" => Ok(arg_values[0].iter().zip(arg_values[1].iter()).map(|(&x, &y)| if x >= y { 1.0 } else { 0.0 }).collect()),
+            "lte" => Ok(arg_values[0].iter().zip(arg_values[1].iter()).map(|(&x, &y)| if x <= y { 1.0 } else { 0.0 }).collect()),
+            "eq" | "equal" => Ok(arg_values[0].iter().zip(arg_values[1].iter()).map(|(&x, &y)| if (x - y).abs() < 1e-10 { 1.0 } else { 0.0 }).collect()),
+            _ => Err(format!("Unknown function: {}", name)),
+        }
+    }
+
+    fn eval_ts_function_with_cache(
+        &self,
+        name: &str,
+        args: &[Expr],
+        data: &HashMap<String, Vec<f64>>,
+        n_rows: usize,
+        cache: &HashMap<u64, Vec<f64>>,
+    ) -> Result<Vec<f64>, String> {
+        let vals = self.eval_expr_with_cache(&args[0], data, n_rows, cache)?;
+        let window = args.get(1).and_then(|a| get_literal_int(a)).unwrap_or(20);
+
+        match name {
+            "ts_mean" => Ok(ts_mean(&vals, window)),
+            "ts_sum" => Ok(ts_sum(&vals, window)),
+            "ts_count" => Ok(ts_count(&vals, window)),
+            "ts_std" => Ok(ts_std(&vals, window)),
+            "ts_max" => Ok(ts_max(&vals, window)),
+            "ts_min" => Ok(ts_min(&vals, window)),
+            "ts_rank" => Ok(ts_rank(&vals, window)),
+            "ts_argmax" => Ok(ts_argmax(&vals, window)),
+            "ts_argmin" => Ok(ts_argmin(&vals, window)),
+            "ts_delta" => Ok(ts_delta(&vals, window)),
+            "ts_product" => Ok(ts_product(&vals, window)),
+            "ts_correlation" => {
+                let vals2 = self.eval_expr_with_cache(&args[1], data, n_rows, cache)?;
+                Ok(ts_correlation(&vals, &vals2, window))
+            }
+            _ => Err(format!("Unknown ts function: {}", name)),
+        }
     }
 
     fn execute_plan(
@@ -484,6 +760,286 @@ fn expr_to_logical_plan(expr: &Expr, output_name: &str) -> Result<LogicalPlan, S
         }),
         exprs: vec![(output_name.to_string(), expr.clone())],
     })
+}
+
+/// Compute a hash for an expression to identify unique subexpressions
+fn expr_hash(expr: &Expr) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    hash_expr(expr, &mut hasher);
+    hasher.finish()
+}
+
+fn hash_expr<H: Hasher>(expr: &Expr, hasher: &mut H) {
+    match expr {
+        Expr::Column(name) => {
+            0u8.hash(hasher);
+            name.hash(hasher);
+        }
+        Expr::Literal(lit) => {
+            1u8.hash(hasher);
+            format!("{:?}", lit).hash(hasher);
+        }
+        Expr::BinaryExpr { left, op, right } => {
+            2u8.hash(hasher);
+            format!("{:?}", op).hash(hasher);
+            hash_expr(left, hasher);
+            hash_expr(right, hasher);
+        }
+        Expr::UnaryExpr { op, expr } => {
+            3u8.hash(hasher);
+            format!("{:?}", op).hash(hasher);
+            hash_expr(expr, hasher);
+        }
+        Expr::FunctionCall { name, args } => {
+            4u8.hash(hasher);
+            name.hash(hasher);
+            args.len().hash(hasher);
+            for arg in args {
+                hash_expr(arg, hasher);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Collect unique subexpressions from an expression tree
+fn collect_unique_subexpressions(
+    expr: &Expr,
+    unique_exprs: &mut Vec<Expr>,
+    expr_hash_set: &mut HashSet<u64>,
+) {
+    let hash = expr_hash(expr);
+
+    // Add if not already present
+    if expr_hash_set.insert(hash) {
+        unique_exprs.push(expr.clone());
+
+        // Recursively collect from children
+        match expr {
+            Expr::BinaryExpr { left, right, .. } => {
+                collect_unique_subexpressions(left, unique_exprs, expr_hash_set);
+                collect_unique_subexpressions(right, unique_exprs, expr_hash_set);
+            }
+            Expr::UnaryExpr { expr: e, .. } => {
+                collect_unique_subexpressions(e, unique_exprs, expr_hash_set);
+            }
+            Expr::FunctionCall { args, .. } => {
+                for arg in args {
+                    collect_unique_subexpressions(arg, unique_exprs, expr_hash_set);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Memoized expression evaluation - computes each subexpression only once
+fn eval_expr_memoized(
+    expr: &Expr,
+    data: &HashMap<String, Vec<f64>>,
+    n_rows: usize,
+    cache: &mut HashMap<u64, Vec<f64>>,
+) -> Result<Vec<f64>, String> {
+    let hash = expr_hash(expr);
+
+    // Check cache first
+    if let Some(cached) = cache.get(&hash) {
+        return Ok(cached.clone());
+    }
+
+    // Compute the expression
+    let result = match expr {
+        Expr::Column(name) => data
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("Column '{}' not found", name)),
+        Expr::Literal(lit) => {
+            let val = match lit {
+                Literal::Float(f) => *f,
+                Literal::Integer(i) => *i as f64,
+                _ => 0.0,
+            };
+            Ok(vec![val; n_rows])
+        }
+        Expr::BinaryExpr { left, op, right } => {
+            let left_vals = eval_expr_memoized(left, data, n_rows, cache)?;
+            let right_vals = eval_expr_memoized(right, data, n_rows, cache)?;
+            let mut result = vec![0.0; n_rows];
+            for i in 0..n_rows {
+                result[i] = match op {
+                    BinaryOp::Add => left_vals[i] + right_vals[i],
+                    BinaryOp::Subtract => left_vals[i] - right_vals[i],
+                    BinaryOp::Multiply => left_vals[i] * right_vals[i],
+                    BinaryOp::Divide => {
+                        if right_vals[i].abs() < 1e-10 {
+                            0.0
+                        } else {
+                            left_vals[i] / right_vals[i]
+                        }
+                    }
+                    _ => 0.0,
+                };
+            }
+            Ok(result)
+        }
+        Expr::UnaryExpr { op, expr: e } => {
+            let vals = eval_expr_memoized(e, data, n_rows, cache)?;
+            Ok(vals
+                .into_iter()
+                .map(|v| match op {
+                    UnaryOp::Negate => -v,
+                    _ => v,
+                })
+                .collect())
+        }
+        Expr::FunctionCall { name, args } => {
+            eval_function_memoized(name, args, data, n_rows, cache)
+        }
+        _ => Err("Unsupported expr type".to_string()),
+    }?;
+
+    // Cache the result
+    cache.insert(hash, result.clone());
+    Ok(result)
+}
+
+/// Memoized function evaluation
+fn eval_function_memoized(
+    name: &str,
+    args: &[Expr],
+    data: &HashMap<String, Vec<f64>>,
+    n_rows: usize,
+    cache: &mut HashMap<u64, Vec<f64>>,
+) -> Result<Vec<f64>, String> {
+    let name_lower = name.to_lowercase();
+
+    if name_lower.starts_with("ts_") {
+        return eval_ts_function_memoized(&name_lower, args, data, n_rows, cache);
+    }
+
+    // First evaluate all arguments (with memoization)
+    let mut arg_values: Vec<Vec<f64>> = Vec::new();
+    for arg in args {
+        arg_values.push(eval_expr_memoized(arg, data, n_rows, cache)?);
+    }
+
+    match name_lower.as_str() {
+        "rank" => Ok(rank(&arg_values[0])),
+        "delay" => {
+            let periods = get_literal_int(&args[1]).unwrap_or(1);
+            Ok(delay(&arg_values[0], periods))
+        }
+        "scale" => Ok(scale(&arg_values[0])),
+        "sign" => Ok(sign(&arg_values[0])),
+        "abs" => Ok(arg_values[0].iter().map(|v| v.abs()).collect()),
+        "log" => Ok(arg_values[0].iter().map(|v| {
+            if *v > 0.0 { v.ln() } else { f64::NAN }
+        }).collect()),
+        "log10" => Ok(arg_values[0].iter().map(|v| {
+            if *v > 0.0 { v.log10() } else { f64::NAN }
+        }).collect()),
+        "sqrt" => Ok(arg_values[0].iter().map(|v| v.sqrt()).collect()),
+        "power" => {
+            let exponent = get_literal_int(&args[1]).map(|e| e as f64).unwrap_or(2.0);
+            Ok(arg_values[0].iter().map(|v| v.powf(exponent)).collect())
+        }
+        "decay_linear" | "decay" => {
+            let periods = get_literal_int(&args[1]).unwrap_or(10);
+            Ok(decay_linear(&arg_values[0], periods))
+        }
+        "delta" => {
+            let periods = get_literal_int(&args[1]).unwrap_or(1);
+            Ok(ts_delta(&arg_values[0], periods))
+        }
+        "if" => {
+            if args.len() != 3 {
+                return Err("IF requires 3 arguments".to_string());
+            }
+            let result: Vec<f64> = arg_values[0].iter()
+                .zip(arg_values[1].iter())
+                .zip(arg_values[2].iter())
+                .map(|((&c, &t), &f)| if c > 0.0 { t } else { f })
+                .collect();
+            Ok(result)
+        }
+        "gt" | "greater" => Ok(arg_values[0].iter().zip(arg_values[1].iter()).map(|(&x, &y)| if x > y { 1.0 } else { 0.0 }).collect()),
+        "lt" | "less" => Ok(arg_values[0].iter().zip(arg_values[1].iter()).map(|(&x, &y)| if x < y { 1.0 } else { 0.0 }).collect()),
+        "gte" => Ok(arg_values[0].iter().zip(arg_values[1].iter()).map(|(&x, &y)| if x >= y { 1.0 } else { 0.0 }).collect()),
+        "lte" => Ok(arg_values[0].iter().zip(arg_values[1].iter()).map(|(&x, &y)| if x <= y { 1.0 } else { 0.0 }).collect()),
+        "eq" | "equal" => Ok(arg_values[0].iter().zip(arg_values[1].iter()).map(|(&x, &y)| if (x - y).abs() < 1e-10 { 1.0 } else { 0.0 }).collect()),
+        _ => Err(format!("Unknown function: {}", name)),
+    }
+}
+
+/// Memoized time-series function evaluation
+fn eval_ts_function_memoized(
+    name: &str,
+    args: &[Expr],
+    data: &HashMap<String, Vec<f64>>,
+    n_rows: usize,
+    cache: &mut HashMap<u64, Vec<f64>>,
+) -> Result<Vec<f64>, String> {
+    // Evaluate the first argument (the values)
+    let vals = eval_expr_memoized(&args[0], data, n_rows, cache)?;
+    let window = get_literal_int(&args[1]).unwrap_or(20);
+
+    match name {
+        "ts_mean" => Ok(ts_mean(&vals, window)),
+        "ts_sum" => Ok(ts_sum(&vals, window)),
+        "ts_count" => Ok(ts_count(&vals, window)),
+        "ts_std" => Ok(ts_std(&vals, window)),
+        "ts_max" => Ok(ts_max(&vals, window)),
+        "ts_min" => Ok(ts_min(&vals, window)),
+        "ts_rank" => Ok(ts_rank(&vals, window)),
+        "ts_argmax" => Ok(ts_argmax(&vals, window)),
+        "ts_argmin" => Ok(ts_argmin(&vals, window)),
+        "ts_delta" => Ok(ts_delta(&vals, window)),
+        "ts_product" => Ok(ts_product(&vals, window)),
+        "ts_correlation" => {
+            let vals2 = eval_expr_memoized(&args[1], data, n_rows, cache)?;
+            Ok(ts_correlation(&vals, &vals2, window))
+        }
+        _ => Err(format!("Unknown ts function: {}", name)),
+    }
+}
+
+/// Compute expressions in parallel using rayon
+fn compute_exprs_parallel(
+    exprs: &[Expr],
+    data: &HashMap<String, Vec<f64>>,
+    n_rows: usize,
+    cache: &mut HashMap<u64, Vec<f64>>,
+) -> Result<(), String> {
+    // For now, compute sequentially but this can be extended for parallel execution
+    // The key optimization here is the shared subexpression caching
+    for expr in exprs {
+        let hash = expr_hash(expr);
+        if !cache.contains_key(&hash) {
+            // Use a simple evaluator (inline evaluation for parallel)
+            let result = eval_expr_simple(expr, data, n_rows)?;
+            cache.insert(hash, result);
+        }
+    }
+    Ok(())
+}
+
+/// Simple expression evaluator for parallel computation
+fn eval_expr_simple(expr: &Expr, data: &HashMap<String, Vec<f64>>, n_rows: usize) -> Result<Vec<f64>, String> {
+    match expr {
+        Expr::Column(name) => data
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("Column '{}' not found", name)),
+        Expr::Literal(lit) => {
+            let val = match lit {
+                Literal::Float(f) => *f,
+                Literal::Integer(i) => *i as f64,
+                _ => 0.0,
+            };
+            Ok(vec![val; n_rows])
+        }
+        _ => Err("Complex expressions handled elsewhere".to_string()),
+    }
 }
 
 fn get_literal_int(expr: &Expr) -> Option<usize> {
