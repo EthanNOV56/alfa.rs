@@ -415,6 +415,27 @@ impl FactorRegistry {
             "scale" => Ok(scale(&arg_values[0])),
             "sign" => Ok(sign(&arg_values[0])),
             "abs" => Ok(arg_values[0].iter().map(|v| v.abs()).collect()),
+            // Element-wise min of two series
+            "min" => {
+                if arg_values.len() >= 2 {
+                    Ok(arg_values[0].iter().zip(arg_values[1].iter()).map(|(&a, &b)| a.min(b)).collect())
+                } else {
+                    Ok(arg_values[0].clone())
+                }
+            }
+            // Element-wise max of two series
+            "max" => {
+                if arg_values.len() >= 2 {
+                    Ok(arg_values[0].iter().zip(arg_values[1].iter()).map(|(&a, &b)| a.max(b)).collect())
+                } else {
+                    Ok(arg_values[0].clone())
+                }
+            }
+            // Sum of all elements in a series
+            "sum" => {
+                let total: f64 = arg_values[0].iter().sum();
+                Ok(arg_values[0].iter().map(|_| total).collect())
+            }
             "log" => Ok(arg_values[0].iter().map(|v| {
                 if *v > 0.0 { v.ln() } else { f64::NAN }
             }).collect()),
@@ -481,6 +502,27 @@ impl FactorRegistry {
                 let vals2 = self.eval_expr_with_cache(&args[1], data, n_rows, cache)?;
                 Ok(ts_correlation(&vals, &vals2, window))
             }
+            "ts_cov" => {
+                let vals2 = self.eval_expr_with_cache(&args[1], data, n_rows, cache)?;
+                Ok(ts_cov(&vals, &vals2, window))
+            }
+            "ts_covariance" => {
+                let vals2 = self.eval_expr_with_cache(&args[1], data, n_rows, cache)?;
+                Ok(ts_cov(&vals, &vals2, window))
+            }
+            "sma" => {
+                // sma(vals, n, m) - exponential weighted moving average
+                // alpha = m/n, so we need two parameters
+                // arg[0] = values, arg[1] = n, arg[2] = m
+                let n = window; // default 20
+                let m = args.get(2).and_then(|a| get_literal_int(a)).unwrap_or(2);
+                let alpha = m as f64 / n as f64;
+                let alpha = if alpha > 0.0 && alpha <= 1.0 { alpha } else { 0.5 };
+                Ok(sma(&vals, alpha))
+            }
+            "lowday" => Ok(lowday(&vals, window)),
+            "highday" => Ok(highday(&vals, window)),
+            "wma" => Ok(wma(&vals, window)),
             _ => Err(format!("Unknown ts function: {}", name)),
         }
     }
@@ -591,6 +633,34 @@ impl FactorRegistry {
             "abs" => {
                 let vals = self.eval_args(args, data, n_rows)?;
                 Ok(vals.iter().map(|v| v.abs()).collect())
+            }
+            // Element-wise min of two series: min(a, b)
+            "min" => {
+                if args.len() >= 2 {
+                    let vals1 = self.eval_expr(&args[0], data, n_rows)?;
+                    let vals2 = self.eval_expr(&args[1], data, n_rows)?;
+                    Ok(vals1.iter().zip(vals2.iter()).map(|(&a, &b)| a.min(b)).collect())
+                } else {
+                    let vals = self.eval_args(args, data, n_rows)?;
+                    Ok(vals)
+                }
+            }
+            // Element-wise max of two series: max(a, b)
+            "max" => {
+                if args.len() >= 2 {
+                    let vals1 = self.eval_expr(&args[0], data, n_rows)?;
+                    let vals2 = self.eval_expr(&args[1], data, n_rows)?;
+                    Ok(vals1.iter().zip(vals2.iter()).map(|(&a, &b)| a.max(b)).collect())
+                } else {
+                    let vals = self.eval_args(args, data, n_rows)?;
+                    Ok(vals)
+                }
+            }
+            // Sum of all elements in a series: sum(a)
+            "sum" => {
+                let vals = self.eval_args(args, data, n_rows)?;
+                let total: f64 = vals.iter().sum();
+                Ok(vals.iter().map(|_| total).collect())
             }
             "log" => {
                 let vals = self.eval_args(args, data, n_rows)?;
@@ -720,8 +790,28 @@ impl FactorRegistry {
                 };
                 Ok(ts_correlation(&vals, &vals2, window))
             }
+            "ts_covariance" | "ts_cov" => {
+                let vals2 = if args.len() > 1 {
+                    self.eval_expr(&args[1], data, n_rows)?
+                } else {
+                    vals.clone()
+                };
+                Ok(ts_cov(&vals, &vals2, window))
+            }
+            "sma" => {
+                // sma(vals, n, m) - exponential weighted moving average
+                // alpha = m/n
+                let n = window;
+                let m = args.get(2).and_then(|a| get_literal_int(a)).unwrap_or(2);
+                let alpha = m as f64 / n as f64;
+                let alpha = if alpha > 0.0 && alpha <= 1.0 { alpha } else { 0.5 };
+                Ok(sma(&vals, alpha))
+            }
             "ts_delta" | "delta" => Ok(ts_delta(&vals, window)),
             "ts_product" | "product" => Ok(ts_product(&vals, window)),
+            "lowday" => Ok(lowday(&vals, window)),
+            "highday" => Ok(highday(&vals, window)),
+            "wma" => Ok(wma(&vals, window)),
             _ => Err(format!("Unknown ts function: {}", name)),
         }
     }
@@ -960,6 +1050,27 @@ fn eval_function_memoized(
         "scale" => Ok(scale(&arg_values[0])),
         "sign" => Ok(sign(&arg_values[0])),
         "abs" => Ok(arg_values[0].iter().map(|v| v.abs()).collect()),
+        // Element-wise min of two series: min(a, b)
+        "min" => {
+            if args.len() >= 2 {
+                Ok(arg_values[0].iter().zip(arg_values[1].iter()).map(|(&a, &b)| a.min(b)).collect())
+            } else {
+                Ok(arg_values[0].clone())
+            }
+        }
+        // Element-wise max of two series: max(a, b)
+        "max" => {
+            if args.len() >= 2 {
+                Ok(arg_values[0].iter().zip(arg_values[1].iter()).map(|(&a, &b)| a.max(b)).collect())
+            } else {
+                Ok(arg_values[0].clone())
+            }
+        }
+        // Sum of all elements in a series: sum(a)
+        "sum" => {
+            let total: f64 = arg_values[0].iter().sum();
+            Ok(arg_values[0].iter().map(|_| total).collect())
+        }
         "log" => Ok(arg_values[0].iter().map(|v| {
             if *v > 0.0 { v.ln() } else { f64::NAN }
         }).collect()),
@@ -1009,7 +1120,7 @@ fn eval_ts_function_memoized(
 ) -> Result<Vec<f64>, String> {
     // Evaluate the first argument (the values)
     let vals = eval_expr_memoized(&args[0], data, n_rows, cache)?;
-    let window = get_literal_int(&args[1]).unwrap_or(20);
+    let window = args.get(1).and_then(|a| get_literal_int(a)).unwrap_or(20);
 
     match name {
         "ts_mean" => Ok(ts_mean(&vals, window)),
@@ -1027,6 +1138,24 @@ fn eval_ts_function_memoized(
             let vals2 = eval_expr_memoized(&args[1], data, n_rows, cache)?;
             Ok(ts_correlation(&vals, &vals2, window))
         }
+        "ts_cov" => {
+            let vals2 = eval_expr_memoized(&args[1], data, n_rows, cache)?;
+            Ok(ts_cov(&vals, &vals2, window))
+        }
+        "ts_covariance" => {
+            let vals2 = eval_expr_memoized(&args[1], data, n_rows, cache)?;
+            Ok(ts_cov(&vals, &vals2, window))
+        }
+        "sma" => {
+            let n = window; // default 20
+            let m = args.get(2).and_then(|a| get_literal_int(a)).unwrap_or(2);
+            let alpha = m as f64 / n as f64;
+            let alpha = if alpha > 0.0 && alpha <= 1.0 { alpha } else { 0.5 };
+            Ok(sma(&vals, alpha))
+        }
+        "lowday" => Ok(lowday(&vals, window)),
+        "highday" => Ok(highday(&vals, window)),
+        "wma" => Ok(wma(&vals, window)),
         _ => Err(format!("Unknown ts function: {}", name)),
     }
 }
@@ -1250,6 +1379,142 @@ fn ts_correlation(vals1: &[f64], vals2: &[f64], window: usize) -> Vec<f64> {
         } else {
             result[i] = 0.0;
         }
+    }
+    result
+}
+
+// Rolling covariance between two series
+fn ts_cov(vals1: &[f64], vals2: &[f64], window: usize) -> Vec<f64> {
+    let n = vals1.len();
+    let mut result = vec![0.0; n];
+
+    for i in 0..n {
+        let start = i.saturating_sub(window - 1);
+        let slice1 = &vals1[start..=i];
+        let slice2 = &vals2[start..=i];
+
+        let len = slice1.len();
+        if len < 2 {
+            result[i] = 0.0;
+            continue;
+        }
+
+        let mean1: f64 = slice1.iter().sum::<f64>() / len as f64;
+        let mean2: f64 = slice2.iter().sum::<f64>() / len as f64;
+
+        let mut cov = 0.0;
+        for j in 0..len {
+            let d1 = slice1[j] - mean1;
+            let d2 = slice2[j] - mean2;
+            cov += d1 * d2;
+        }
+        result[i] = cov / (len - 1) as f64;  // Sample covariance
+    }
+    result
+}
+
+// Exponential weighted moving average (EMA/SMA)
+// alpha: smoothing factor (0 < alpha <= 1)
+fn sma(vals: &[f64], alpha: f64) -> Vec<f64> {
+    let n = vals.len();
+    let mut result = vec![0.0; n];
+    if n == 0 {
+        return result;
+    }
+
+    // Initialize with first value
+    result[0] = vals[0];
+
+    for i in 1..n {
+        result[i] = alpha * vals[i] + (1.0 - alpha) * result[i - 1];
+    }
+    result
+}
+
+// Days since minimum value in window
+fn lowday(vals: &[f64], window: usize) -> Vec<f64> {
+    let n = vals.len();
+    let mut result = vec![0.0; n];
+
+    for i in 0..n {
+        let start = i.saturating_sub(window - 1);
+        let slice = &vals[start..=i];
+
+        if slice.is_empty() {
+            result[i] = 0.0;
+            continue;
+        }
+
+        // Find position of minimum (from start of window)
+        let min_pos = slice.iter().enumerate().min_by(|(_, a), (_, b)| {
+            a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+        }).map(|(idx, _)| idx).unwrap_or(0);
+
+        // Days since low = position from end
+        result[i] = (slice.len() - 1 - min_pos) as f64;
+    }
+    result
+}
+
+// Days since maximum value in window
+fn highday(vals: &[f64], window: usize) -> Vec<f64> {
+    let n = vals.len();
+    let mut result = vec![0.0; n];
+
+    for i in 0..n {
+        let start = i.saturating_sub(window - 1);
+        let slice = &vals[start..=i];
+
+        if slice.is_empty() {
+            result[i] = 0.0;
+            continue;
+        }
+
+        // Find position of maximum (from start of window)
+        let max_pos = slice.iter().enumerate().max_by(|(_, a), (_, b)| {
+            a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+        }).map(|(idx, _)| idx).unwrap_or(0);
+
+        // Days since high = position from end
+        result[i] = (slice.len() - 1 - max_pos) as f64;
+    }
+    result
+}
+
+// Weighted moving average
+fn wma(vals: &[f64], window: usize) -> Vec<f64> {
+    let n = vals.len();
+    let mut result = vec![0.0; n];
+
+    if window == 0 {
+        return result;
+    }
+
+    for i in 0..n {
+        let start = i.saturating_sub(window - 1);
+        let slice = &vals[start..=i];
+        let len = slice.len();
+
+        if len == 0 {
+            result[i] = 0.0;
+            continue;
+        }
+
+        // Weights: 0.9^(len-1), 0.9^(len-2), ..., 0.9^0
+        let mut sum_weighted = 0.0;
+        let mut sum_weights = 0.0;
+
+        for (j, &val) in slice.iter().enumerate() {
+            let weight = (0.9_f64).powi((len - 1 - j) as i32);
+            sum_weighted += val * weight;
+            sum_weights += weight;
+        }
+
+        result[i] = if sum_weights > 0.0 {
+            sum_weighted / sum_weights
+        } else {
+            0.0
+        };
     }
     result
 }
