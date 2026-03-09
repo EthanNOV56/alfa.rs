@@ -1,6 +1,6 @@
 [package]
 name = "alfars"
-version = "0.2.6"
+version = "0.2.7"
 edition = "2024"
 description = "High-performance factor expression and backtesting library (Rust + PyO3)"
 authors = ["EthanNOV56 <yichen_1226@163.com>"]
