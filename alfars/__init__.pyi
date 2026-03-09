@@ -495,6 +495,35 @@ class FactorRegistry:
         """
         ...
 
+    def compute_batch(
+        self,
+        names: List[str],
+        data: Dict[str, Union[npt.NDArray, List[float]]],
+        parallel: bool = False,
+    ) -> Dict[str, FactorResult]:
+        """
+        Batch compute multiple factors with shared subexpression optimization.
+
+        This method is more efficient than computing factors individually because
+        it caches and reuses intermediate results (e.g., ts_mean(close, 20) is
+        computed only once even if used by multiple factors).
+
+        Parameters
+        ----------
+        names : list of str
+            List of factor names to compute
+        data : dict
+            Dictionary of column_name -> numpy array or list
+        parallel : bool
+            Whether to use parallel computation (default: False)
+
+        Returns
+        -------
+        dict
+            Dictionary mapping factor name -> FactorResult
+        """
+        ...
+
     def list(self) -> List[str]:
         """List all registered factor names."""
         ...
