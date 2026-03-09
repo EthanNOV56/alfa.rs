@@ -349,9 +349,10 @@ impl FactorRegistry {
             "ts_std" | "ts_stddev" => Ok(ts_std(&vals, window)),
             "ts_rank" => Ok(ts_rank(&vals, window)),
             "ts_correlation" | "ts_corr" => {
-                // Need two columns for correlation
+                // ts_correlation(expr1, expr2, window) - need two expressions and window
+                // args[0] = expr1, args[1] = expr2, args[2] = window (optional)
                 let vals2 = if args.len() > 1 {
-                    self.eval_args(&args[1..], data, n_rows)?
+                    self.eval_expr(&args[1], data, n_rows)?
                 } else {
                     vals.clone()
                 };
@@ -742,7 +743,20 @@ fn tokenize(s: &str) -> Result<Vec<Token>, String> {
         if c.is_ascii_digit() {
             let mut num = String::new();
             while let Some(&c) = chars.peek() {
-                if c.is_ascii_digit() || c == '.' {
+                if c.is_ascii_digit() || c == '.' || c == 'e' || c == 'E' || c == '+' || c == '-' {
+                    // Handle scientific notation: 1e-10, 1.5e+5, etc.
+                    if c == 'e' || c == 'E' {
+                        num.push(c);
+                        chars.next();
+                        // After 'e' or 'E', can have + or -
+                        if let Some(&next_c) = chars.peek() {
+                            if next_c == '+' || next_c == '-' {
+                                num.push(next_c);
+                                chars.next();
+                            }
+                        }
+                        continue;
+                    }
                     num.push(c);
                     chars.next();
                 } else {
