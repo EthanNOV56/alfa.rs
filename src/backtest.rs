@@ -201,7 +201,7 @@ impl BacktestEngine {
 
     /// Run the backtest and return enhanced results
     pub fn run(&self) -> Result<BacktestResult, String> {
-        let (n_days, n_assets) = self.factor.dim();
+        let (n_days, _n_assets) = self.factor.dim();
 
         // Compute quantile groups
         let group_labels = self.compute_quantile_groups()?;
@@ -411,7 +411,7 @@ impl BacktestEngine {
     fn apply_fees(
         &self,
         long_short_returns: &Array1<f64>,
-        group_returns: &Array2<f64>,
+        _group_returns: &Array2<f64>,
     ) -> Array1<f64> {
         let commission_rate = self.fee_config.commission_rate;
         let min_commission = self.fee_config.min_commission;
@@ -549,7 +549,7 @@ impl BacktestEngine {
         (1.0 + total_return).powf(1.0 / years) - 1.0
     }
 
-    fn compute_sharpe_ratio(&self, returns: &Array1<f64>, n_days: usize) -> f64 {
+    fn compute_sharpe_ratio(&self, returns: &Array1<f64>, _n_days: usize) -> f64 {
         let valid_returns: Vec<f64> = returns.iter().filter(|&&r| !r.is_nan()).cloned().collect();
 
         if valid_returns.len() < 2 {
@@ -564,7 +564,7 @@ impl BacktestEngine {
         }
 
         // Annualize: assume 252 trading days
-        let annualized_std = std * (252.0_f64).sqrt();
+        let _annualized_std = std * (252.0_f64).sqrt();
         mean / std * (252.0_f64).sqrt()
     }
 

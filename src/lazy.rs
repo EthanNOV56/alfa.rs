@@ -888,7 +888,7 @@ impl LazyExecutor {
         &mut self,
         left: &Arc<LogicalPlan>,
         right: &Arc<LogicalPlan>,
-        on: &[String],
+        _on: &[String],
         how: JoinType,
     ) -> Result<HashMap<String, Array2<f64>>, String> {
         // Execute both input plans

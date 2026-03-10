@@ -2,6 +2,7 @@
 //! Exposed as Python extension via PyO3
 
 // Core modules (public for binary usage)
+pub mod al_parser;
 pub mod backtest;
 pub mod expr;
 pub mod expr_optimizer;
@@ -12,12 +13,11 @@ pub mod metalearning;
 pub mod persistence;
 pub mod polars_style;
 
-use ndarray::{Array1, Array2};
+use ndarray::Array2;
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyArrayMethods, PyUntypedArrayMethods};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
-use std::f64::NAN;
 use std::sync::Arc;
 
 /// Set the number of threads for parallel processing
@@ -331,7 +331,7 @@ pub struct PyDataFrame {
 #[pymethods]
 impl PyDataFrame {
     #[new]
-    fn new(py: Python<'_>, columns: Option<Bound<'_, PyDict>>) -> PyResult<Self> {
+    fn new(_py: Python<'_>, columns: Option<Bound<'_, PyDict>>) -> PyResult<Self> {
         if let Some(cols) = columns {
             let mut inner_columns = std::collections::HashMap::new();
 
@@ -403,6 +403,7 @@ fn parse_expression(expression: &str) -> PyResult<PyExpr> {
 }
 
 /// Evaluate expression on multi-asset data (returns factor matrix)
+#[allow(unused_imports)]
 #[pyfunction]
 fn evaluate_expression(
     py: Python<'_>,
@@ -807,6 +808,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPersistenceManager>()?;
     m.add_class::<PyFactorMetadata>()?;
     m.add_class::<PyGpHistoryRecord>()?;
+    m.add_class::<PyAlFactor>()?;
+    m.add_function(wrap_pyfunction!(load_al_factors, m)?)?;
 
     // Meta-learning system
     m.add_class::<PyMetaLearningAnalyzer>()?;
@@ -952,7 +955,7 @@ struct PyBacktestEngine {
 impl PyBacktestEngine {
     #[new]
     fn new(
-        py: Python<'_>,
+        _py: Python<'_>,
         factor: Bound<'_, PyArray2<f64>>,
         returns: Bound<'_, PyArray2<f64>>,
         quantiles: usize,
@@ -1090,7 +1093,7 @@ fn quantile_backtest(
 /// Standalone IC computation (Python interface)
 #[pyfunction]
 fn compute_ic(
-    py: Python<'_>,
+    _py: Python<'_>,
     factor: Bound<'_, PyArray2<f64>>,
     returns: Bound<'_, PyArray2<f64>>,
 ) -> PyResult<(f64, f64)> {
@@ -1166,7 +1169,7 @@ pub struct PyLazyFrame {
 impl PyLazyFrame {
     /// Create a new LazyFrame from numpy arrays
     #[staticmethod]
-    fn scan(py: Python<'_>, data: Bound<'_, PyDict>) -> PyResult<Self> {
+    fn scan(_py: Python<'_>, data: Bound<'_, PyDict>) -> PyResult<Self> {
         use numpy::PyArray2;
 
         let mut arrays = std::collections::HashMap::new();
@@ -1194,7 +1197,7 @@ impl PyLazyFrame {
     }
 
     /// Add new columns to the LazyFrame
-    fn with_columns(&self, py: Python<'_>, exprs: Bound<'_, PyList>) -> PyResult<Self> {
+    fn with_columns(&self, _py: Python<'_>, exprs: Bound<'_, PyList>) -> PyResult<Self> {
         let Some(ref inner) = self.inner else {
             return Err(PyValueError::new_err("LazyFrame is already consumed"));
         };
@@ -1294,7 +1297,7 @@ impl PyLazyFrame {
 #[pyfunction]
 fn rolling_window(size: usize, min_periods: Option<usize>) -> PyResult<Py<PyDict>> {
     pyo3::Python::try_attach(|py| {
-        let window_spec = crate::lazy::rolling_window(size, min_periods);
+        let _window_spec = crate::lazy::rolling_window(size, min_periods);
         let dict = PyDict::new(py);
         dict.set_item("kind", "rolling")?;
         dict.set_item("size", size)?;
@@ -1308,7 +1311,7 @@ fn rolling_window(size: usize, min_periods: Option<usize>) -> PyResult<Py<PyDict
 #[pyfunction]
 fn expanding_window(min_periods: Option<usize>) -> PyResult<Py<PyDict>> {
     pyo3::Python::try_attach(|py| {
-        let window_spec = crate::lazy::expanding_window(min_periods);
+        let _window_spec = crate::lazy::expanding_window(min_periods);
         let dict = PyDict::new(py);
         dict.set_item("kind", "expanding")?;
         dict.set_item("min_periods", min_periods.unwrap_or(1))?;
@@ -1392,7 +1395,7 @@ impl PyGpEngine {
     #[pyo3(signature = (columns, allow_ephemeral = None))]
     fn set_columns(
         &mut self,
-        py: Python<'_>,
+        _py: Python<'_>,
         columns: Bound<'_, PyList>,
         allow_ephemeral: Option<bool>,
     ) {
@@ -1417,7 +1420,7 @@ impl PyGpEngine {
     /// Run genetic programming for factor mining (backward compatible)
     fn mine_factors(
         &mut self,
-        py: Python<'_>,
+        _py: Python<'_>,
         data: Bound<'_, PyDict>,
         returns: Bound<'_, PyArray2<f64>>,
         num_factors: usize,
@@ -1468,7 +1471,7 @@ impl PyGpEngine {
         // Run GP multiple times to get multiple factors
         let mut results = Vec::new();
 
-        for i in 0..num_factors {
+        for _i in 0..num_factors {
             let (best_expr, best_fitness) = run_gp(
                 &self.config,
                 &evaluator,
@@ -1495,7 +1498,7 @@ impl PyGpEngine {
     /// Run genetic programming with train/test/validation split
     fn mine_factors_with_split(
         &mut self,
-        py: Python<'_>,
+        _py: Python<'_>,
         data: Bound<'_, PyDict>,
         returns: Bound<'_, PyArray2<f64>>,
         num_factors: usize,
@@ -1580,7 +1583,7 @@ impl PyGpEngine {
         // Run GP multiple times to get multiple factors
         let mut results = Vec::new();
 
-        for i in 0..num_factors {
+        for _i in 0..num_factors {
             let (best_expr, best_fitness) = run_gp(
                 &self.config,
                 &evaluator,
@@ -1682,7 +1685,7 @@ impl PyGpEngine {
 // ============================================================================
 
 use crate::metalearning::{GPRecommendations, MetaLearningAnalyzer};
-use crate::persistence::{FactorMetadata, GPHistoryRecord, PersistenceManager};
+use crate::persistence::{AlFactor, AlParser, FactorMetadata, GPHistoryRecord, PersistenceManager};
 
 /// Python-exposed Persistence Manager for factor storage and retrieval
 #[pyclass(name = "PersistenceManager")]
@@ -1778,7 +1781,6 @@ impl PyPersistenceManager {
 
     /// Get cache statistics
     fn cache_stats(&self) -> PyResult<Py<PyAny>> {
-        use crate::persistence::CacheStats;
         unsafe {
             let py = Python::assume_attached();
             match self.inner.get_cache_stats() {
@@ -1803,6 +1805,124 @@ impl PyPersistenceManager {
             "PersistenceManager({} factors loaded)",
             self.inner.get_all_factors().len()
         )
+    }
+
+    /// Load factors from .al files in ~/.alfars/ directory
+    fn load_from_al(&mut self) -> PyResult<Vec<PyAlFactor>> {
+        match self.inner.load_from_al() {
+            Ok(factors) => Ok(factors
+                .into_iter()
+                .map(|f| PyAlFactor { inner: f })
+                .collect()),
+            Err(e) => Err(PyValueError::new_err(format!(
+                "Failed to load .al files: {}",
+                e
+            ))),
+        }
+    }
+
+    /// Save a factor to .al file in ~/.alfars/ directory
+    fn save_to_al(&self, factor: &PyAlFactor, filename: Option<String>) -> PyResult<String> {
+        match self.inner.save_to_al(&factor.inner, filename.as_deref()) {
+            Ok(path) => Ok(path.to_string_lossy().to_string()),
+            Err(e) => Err(PyValueError::new_err(format!(
+                "Failed to save .al file: {}",
+                e
+            ))),
+        }
+    }
+}
+
+/// Python wrapper for AlFactor (.al file format)
+#[pyclass(name = "AlFactor")]
+pub struct PyAlFactor {
+    inner: AlFactor,
+}
+
+#[pymethods]
+impl PyAlFactor {
+    #[new]
+    fn new(
+        name: String,
+        expression: String,
+        description: String,
+        dimension: String,
+        tags: Vec<String>,
+    ) -> Self {
+        PyAlFactor {
+            inner: AlFactor {
+                name,
+                expression,
+                description,
+                dimension,
+                tags,
+                readonly: false,
+            },
+        }
+    }
+
+    #[getter]
+    fn name(&self) -> String {
+        self.inner.name.clone()
+    }
+
+    #[getter]
+    fn expression(&self) -> String {
+        self.inner.expression.clone()
+    }
+
+    #[getter]
+    fn description(&self) -> String {
+        self.inner.description.clone()
+    }
+
+    #[getter]
+    fn dimension(&self) -> String {
+        self.inner.dimension.clone()
+    }
+
+    #[getter]
+    fn tags(&self) -> Vec<String> {
+        self.inner.tags.clone()
+    }
+
+    #[getter]
+    fn readonly(&self) -> bool {
+        self.inner.readonly
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "AlFactor(name={}, expression={})",
+            self.inner.name, self.inner.expression
+        )
+    }
+
+    /// Save factor to .al file in default directory (~/.alfars/)
+    #[pyo3(signature = (filename = None))]
+    fn save_to_al(&self, filename: Option<String>) -> PyResult<String> {
+        match AlParser::save_to_default_dir(&self.inner, filename.as_deref()) {
+            Ok(path) => Ok(path.to_string_lossy().to_string()),
+            Err(e) => Err(PyValueError::new_err(format!(
+                "Failed to save .al file: {}",
+                e
+            ))),
+        }
+    }
+}
+
+/// Load all factors from default directory (~/.alfars/)
+#[pyfunction]
+fn load_al_factors() -> PyResult<Vec<PyAlFactor>> {
+    match AlParser::load_from_default_dir() {
+        Ok(factors) => Ok(factors
+            .into_iter()
+            .map(|f| PyAlFactor { inner: f })
+            .collect()),
+        Err(e) => Err(PyValueError::new_err(format!(
+            "Failed to load .al files: {}",
+            e
+        ))),
     }
 }
 
@@ -2111,7 +2231,7 @@ impl PyFactorRegistry {
     /// Returns FactorResult with values array
     fn compute(
         &self,
-        py: Python<'_>,
+        _py: Python<'_>,
         name: &str,
         data: Bound<'_, PyDict>,
     ) -> PyResult<PyFactorResult> {

@@ -1,5 +1,9 @@
 # alfars
 
+<p align="center">
+  <img src="assets/logo.png" alt="alfars" width="200"/>
+</p>
+
 High-performance factor expression and backtesting framework with Rust core and Python bindings.
 
 [![Rust](https://github.com/EthanNOV56/alfa.rs/actions/workflows/rust.yml/badge.svg)](https://github.com/EthanNOV56/alfa.rs/actions)
@@ -15,7 +19,7 @@ High-performance factor expression and backtesting framework with Rust core and 
 - **Alphalens Compatibility**: Similar API design for easy migration
 - **Extensible**: Modular design with custom weights, grouping, and commission models
 
-### Intelligent Factor Mining (v0.3.0)
+### Intelligent Factor Mining (v0.4.0)
 - **Expression System**: AST-based expression builder for custom factor computation
 - **Lazy Evaluation**: Polars-style delayed computation with query optimization
 - **Genetic Programming**: Auto-discover high-performance factor expressions
@@ -23,10 +27,11 @@ High-performance factor expression and backtesting framework with Rust core and 
 - **Persistence**: Factor library management with search, caching, and versioning
 - **Meta-Learning**: Intelligent GP parameter recommendations based on historical data
 
-### Interactive Lab (v0.3.0)
+### Interactive Lab (v0.4.0)
 - **One-Command Launch**: `alfars lab` starts all services automatically
 - **Visual Backtest**: Interactive charts for NAV, IC, and quantile returns
 - **Browser-based**: Access via http://localhost:5173
+- **ClickHouse Support**: Connect to ClickHouse for historical market data
 
 ## Installation
 
@@ -43,9 +48,12 @@ High-performance factor expression and backtesting framework with Rust core and 
 git clone https://github.com/EthanNOV56/alfa.rs.git
 cd alfa.rs
 
-# Build and install with uv (recommended)
+# Option 1: Full installation with Python bindings
 uv pip install -e .
 maturin develop --release
+
+# Option 2: Rust-only server (no Python extension needed)
+cargo build --release --bin alfars-server
 ```
 
 ### Using pip (future releases)
@@ -86,16 +94,15 @@ print(f"IC IR: {result.ic_ir:.4f}")
 ### Start Interactive Lab
 
 ```bash
-# Start the lab environment (auto-opens browser)
+# Option 1: Python FastAPI server (requires maturin develop first)
 uv run python -m alfars.lab
-# or
-alfars-lab
+
+# Option 2: Rust HTTP server (recommended - no Python dependency)
+cargo run --release --bin alfars-server   # Start Rust backend (port 8000)
+cd frontend && npm run dev                 # Start frontend (port 5173)
 ```
 
-This starts:
-- Backend API server (port 8000)
-- Frontend dev server (port 5173)
-- Opens browser at http://localhost:5173
+Then open http://localhost:5173 in your browser.
 
 ### Genetic Programming Factor Mining
 
@@ -183,13 +190,15 @@ alfars/
 │   ├── backtest.rs        # Backtest engine
 │   ├── persistence.rs     # Factor storage
 │   ├── metalearning.rs    # Meta-learning
-│   └── factor.rs          # Factor registry
+│   ├── factor.rs          # Factor registry
+│   ├── bin/server.rs      # Rust HTTP server
+│   └── al_parser.rs       # Alpha file parser
 ├── alfars/                # Python package
 │   ├── __init__.py
-│   ├── lab.py             # Interactive lab
+│   ├── lab.py             # Interactive lab launcher
 │   └── server.py          # FastAPI server
-├── frontend/              # Interactive UI (Vite + React)
-├── examples/              # Usage examples
+├── frontend/              # Interactive UI (Vite + TypeScript)
+├── assets/                # Static assets (logo, etc.)
 └── tests/                 # Test suite
 ```
 
@@ -209,11 +218,13 @@ maturin build --release
 
 ## Version History
 
-### v0.3.0 (Current)
+### v0.4.0 (Current)
 - **Interactive Lab**: One-command `alfars lab` for visual factor research
 - **GP Parallelization**: Rayon-based parallel fitness evaluation
 - **Improved GP Engine**: Bug fixes for IC calculation, cumulative returns
 - **Dimension System**: Type-safe factor expressions
+- **ClickHouse Integration**: Direct database connectivity for historical data
+- **Rust HTTP Server**: Standalone server without Python dependency
 
 ### v0.2.0
 - Expression system with AST-based builder

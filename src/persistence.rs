@@ -658,6 +658,22 @@ pub fn create_gp_history_record(
     }
 }
 
+// Re-export al_parser types and functions
+pub use crate::al_parser::{AlFactor, AlParser};
+
+impl PersistenceManager {
+    /// Load factors from .al files in ~/.alfars/ directory
+    pub fn load_from_al(&mut self) -> Result<Vec<AlFactor>, String> {
+        let factors = AlParser::load_from_default_dir()?;
+        Ok(factors)
+    }
+
+    /// Save a factor to .al file in ~/.alfars/ directory
+    pub fn save_to_al(&self, factor: &AlFactor, filename: Option<&str>) -> Result<PathBuf, String> {
+        AlParser::save_to_default_dir(factor, filename)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

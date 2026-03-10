@@ -6,7 +6,6 @@
 
 use crate::gp::GPConfig;
 use crate::persistence::{FactorMetadata, GPHistoryRecord};
-use rand::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 

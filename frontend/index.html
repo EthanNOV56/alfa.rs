@@ -13,42 +13,463 @@
         <p>Interactive backtest results with hover details</p>
       </header>
 
+      <!-- Navigation Tabs -->
+      <nav class="nav-tabs">
+        <button class="nav-tab active" data-page="backtest">Backtest</button>
+        <button class="nav-tab" data-page="data">Data Source</button>
+        <button class="nav-tab" data-page="mining">GP Mining</button>
+        <button class="nav-tab" data-page="alphas">Alpha Library</button>
+      </nav>
+
       <main>
-        <section class="controls">
-          <button id="runDemo">Run Demo Backtest</button>
-          <button id="clearChart">Clear</button>
+        <!-- Demo Backtest Page -->
+        <section id="page-backtest" class="page">
+          <div class="controls">
+            <button id="runRealBacktest">Run Backtest</button>
+            <button id="clearChart">Clear</button>
+          </div>
+
+          <!-- Alpha Selection -->
+          <div class="alpha-selection-section" id="alphaSelectionSection">
+            <h3>Alpha Selection</h3>
+            <p class="mapping-hint">Select alpha factors from library for batch backtesting</p>
+
+            <div class="config-field">
+              <label>Category:</label>
+              <select id="alphaCategoryFilter">
+                <option value="">All Categories</option>
+                <option value="momentum">Momentum</option>
+                <option value="value">Value</option>
+                <option value="volume">Volume</option>
+                <option value="volatility">Volatility</option>
+                <option value="composite">Composite</option>
+              </select>
+            </div>
+
+            <div class="config-field">
+              <label>Select Alphas:</label>
+              <div id="alphaListContainer" class="alpha-list-container">
+                <div class="loading">Loading alphas...</div>
+              </div>
+            </div>
+
+            <div id="selectedAlphasInfo" class="selected-alphas-info hidden">
+              <span class="count"></span>
+              <button id="clearSelectedAlphasBtn">Clear Selection</button>
+            </div>
+          </div>
+
+          <!-- Data Source Controls for Backtest -->
+          <div class="data-source-controls" id="backtestDataControls">
+            <h3>Data Source</h3>
+            <div class="config-field">
+              <label>Table:</label>
+              <select id="backtestTableSelect">
+                <option value="">-- Select Table --</option>
+              </select>
+              <button id="refreshBacktestTablesBtn">Refresh</button>
+            </div>
+            <div class="config-field">
+              <label>Date Range:</label>
+              <div class="date-range">
+                <input type="date" id="backtestStartDate" />
+                <span>to</span>
+                <input type="date" id="backtestEndDate" />
+              </div>
+            </div>
+            <div class="config-field">
+              <label>Filter:</label>
+              <div id="backtestFilters">
+                <button id="addBacktestFilterBtn">+ Add Filter</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="chart-container">
+            <canvas id="navChart"></canvas>
+          </div>
+
+          <section class="metrics" id="metrics">
+            <h2>Performance Metrics</h2>
+            <div class="metrics-grid" id="metricsGrid">
+              <div class="metric">
+                <span class="metric-label">Long-Short Return</span>
+                <span class="metric-value" id="lsReturn">--</span>
+              </div>
+              <div class="metric">
+                <span class="metric-label">Annualized Return</span>
+                <span class="metric-value" id="annReturn">--</span>
+              </div>
+              <div class="metric">
+                <span class="metric-label">Sharpe Ratio</span>
+                <span class="metric-value" id="sharpe">--</span>
+              </div>
+              <div class="metric">
+                <span class="metric-label">Max Drawdown</span>
+                <span class="metric-value" id="maxDd">--</span>
+              </div>
+              <div class="metric">
+                <span class="metric-label">IC Mean</span>
+                <span class="metric-value" id="icMean">--</span>
+              </div>
+              <div class="metric">
+                <span class="metric-label">IC IR</span>
+                <span class="metric-value" id="icIr">--</span>
+              </div>
+            </div>
+          </section>
         </section>
 
-        <section class="chart-container">
-          <canvas id="navChart"></canvas>
+        <!-- Data Source Page -->
+        <section id="page-data" class="page hidden">
+          <h2>Data Source Configuration</h2>
+          <p>Configure ClickHouse database connection and load real market data</p>
+
+          <div class="data-container">
+            <div class="db-config-section">
+              <h3>Database Connection</h3>
+              <div class="db-status" id="dbStatus">
+                <span class="status-indicator disconnected"></span>
+                <span>Not connected</span>
+              </div>
+
+              <div class="config-field">
+                <label>Host:</label>
+                <input type="text" id="dbHost" value="localhost" placeholder="localhost" />
+              </div>
+              <div class="config-field">
+                <label>Port:</label>
+                <input type="number" id="dbPort" value="8123" placeholder="8123" />
+              </div>
+              <div class="config-field">
+                <label>Username:</label>
+                <input type="text" id="dbUsername" value="default" placeholder="default" />
+              </div>
+              <div class="config-field">
+                <label>Password:</label>
+                <input type="password" id="dbPassword" value="" placeholder="Password (optional)" />
+              </div>
+              <button id="connectDb">Connect</button>
+              <div id="dbConnectMessage" class="message"></div>
+            </div>
+
+            <div class="column-mapping-section hidden" id="columnMappingSection">
+              <h3>Column Mapping</h3>
+              <p class="mapping-hint">Map your database column names to standard names. Select from available columns or enter custom names.</p>
+
+              <!-- Column validation status -->
+              <div id="columnValidationStatus" class="table-validation-status"></div>
+
+              <div class="mapping-grid">
+                <div class="config-field">
+                  <label>Close Column:</label>
+                  <select id="mapCloseSelect">
+                    <option value="">-- Select --</option>
+                  </select>
+                  <input type="text" id="mapClose" value="close" placeholder="e.g., close_price" />
+                </div>
+                <div class="config-field">
+                  <label>Open Column:</label>
+                  <select id="mapOpenSelect">
+                    <option value="">-- Select --</option>
+                  </select>
+                  <input type="text" id="mapOpen" value="open" placeholder="e.g., open_price" />
+                </div>
+                <div class="config-field">
+                  <label>High Column:</label>
+                  <select id="mapHighSelect">
+                    <option value="">-- Select --</option>
+                  </select>
+                  <input type="text" id="mapHigh" value="high" placeholder="e.g., high_price" />
+                </div>
+                <div class="config-field">
+                  <label>Low Column:</label>
+                  <select id="mapLowSelect">
+                    <option value="">-- Select --</option>
+                  </select>
+                  <input type="text" id="mapLow" value="low" placeholder="e.g., low_price" />
+                </div>
+                <div class="config-field">
+                  <label>Volume Column:</label>
+                  <select id="mapVolumeSelect">
+                    <option value="">-- Select --</option>
+                  </select>
+                  <input type="text" id="mapVolume" value="volume" placeholder="e.g., vol" />
+                </div>
+                <div class="config-field">
+                  <label>Symbol Column:</label>
+                  <select id="mapSymbolSelect">
+                    <option value="">-- Select --</option>
+                  </select>
+                  <input type="text" id="mapSymbol" value="symbol" placeholder="e.g., stock_code" />
+                </div>
+                <div class="config-field">
+                  <label>Date Column:</label>
+                  <select id="mapTradingDateSelect">
+                    <option value="">-- Select --</option>
+                  </select>
+                  <input type="text" id="mapTradingDate" value="trading_date" placeholder="e.g., trade_date" />
+                </div>
+              </div>
+              <button id="validateColumnsBtn">Validate & Save</button>
+              <div id="mappingMessage" class="message"></div>
+            </div>
+
+            <div class="table-mapping-section hidden" id="tableMappingSection">
+              <h3>Table Mapping</h3>
+              <p class="mapping-hint">Select the database tables for each frequency (1 Day is required)</p>
+
+              <!-- Table validation status -->
+              <div id="tableValidationStatus" class="table-validation-status"></div>
+
+              <!-- Table mapping with dropdowns -->
+              <div class="table-mapping-grid">
+                <div class="config-field">
+                  <label>1 Day Table:</label>
+                  <select id="table1daySelect">
+                    <option value="">-- Select table --</option>
+                  </select>
+                  <input type="text" id="table1day" class="table-input" placeholder="or enter custom name" />
+                </div>
+                <div class="config-field">
+                  <label>5 Min Table (optional):</label>
+                  <select id="table5minSelect">
+                    <option value="">-- Select table --</option>
+                  </select>
+                  <input type="text" id="table5min" class="table-input" placeholder="or enter custom name" />
+                </div>
+                <div class="config-field">
+                  <label>1 Min Table (optional):</label>
+                  <select id="table1minSelect">
+                    <option value="">-- Select table --</option>
+                  </select>
+                  <input type="text" id="table1min" class="table-input" placeholder="or enter custom name" />
+                </div>
+              </div>
+              <button id="saveTableMappingBtn">Save Table Mapping</button>
+              <div id="tableMappingMessage" class="message"></div>
+            </div>
+          </div>
         </section>
 
-        <section class="metrics" id="metrics">
-          <h2>Performance Metrics</h2>
-          <div class="metrics-grid" id="metricsGrid">
-            <div class="metric">
-              <span class="metric-label">Long-Short Return</span>
-              <span class="metric-value" id="lsReturn">--</span>
+
+        <!-- GP Mining Page -->
+        <section id="page-mining" class="page hidden">
+          <h2>GP Factor Mining</h2>
+          <p>Configure genetic programming parameters to discover new factors</p>
+
+          <div class="mining-container">
+            <div class="mining-config">
+              <h3>Configuration</h3>
+
+              <!-- Alpha Selection for GP Mining -->
+              <div class="mining-alpha-selection" id="miningAlphaSelection">
+                <h4>Seed Alpha (Optional)</h4>
+                <p class="mapping-hint">Select an alpha from library to use as seed for mutation-based mining</p>
+
+                <div class="config-field">
+                  <label>Category:</label>
+                  <select id="miningAlphaCategoryFilter">
+                    <option value="">All Categories</option>
+                    <option value="momentum">Momentum</option>
+                    <option value="value">Value</option>
+                    <option value="volume">Volume</option>
+                    <option value="volatility">Volatility</option>
+                    <option value="composite">Composite</option>
+                  </select>
+                </div>
+
+                <div class="config-field">
+                  <label>Select Alpha:</label>
+                  <div id="miningAlphaListContainer" class="alpha-list-container">
+                    <div class="loading">Loading alphas...</div>
+                  </div>
+                </div>
+
+                <div id="selectedMiningAlphaInfo" class="selected-alphas-info hidden">
+                  <span class="count"></span>
+                  <button id="clearSelectedMiningAlphaBtn">Clear Selection</button>
+                </div>
+              </div>
+
+              <!-- Data Source Controls for GP Mining -->
+              <div class="data-source-controls">
+                <h4>Data Source</h4>
+                <div class="config-field">
+                  <label>Table:</label>
+                  <select id="miningTableSelect">
+                    <option value="">-- Select Table --</option>
+                  </select>
+                  <button id="refreshMiningTablesBtn">Refresh</button>
+                </div>
+                <div class="config-field">
+                  <label>Date Range:</label>
+                  <div class="date-range">
+                    <input type="date" id="miningStartDate" />
+                    <span>to</span>
+                    <input type="date" id="miningEndDate" />
+                  </div>
+                </div>
+                <div class="config-field">
+                  <label>Filter:</label>
+                  <div id="miningFilters">
+                    <button id="addMiningFilterBtn">+ Add Filter</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="config-field">
+                <label>Population Size:</label>
+                <input type="number" id="popSize" value="100" min="10" max="500" />
+              </div>
+
+              <div class="config-field">
+                <label>Max Generations:</label>
+                <input type="number" id="maxGens" value="10" min="1" max="100" />
+              </div>
+
+              <div class="config-field">
+                <label>Terminal Set:</label>
+                <div class="checkbox-group">
+                  <label><input type="checkbox" value="close" checked /> close</label>
+                  <label><input type="checkbox" value="open" checked /> open</label>
+                  <label><input type="checkbox" value="high" checked /> high</label>
+                  <label><input type="checkbox" value="low" checked /> low</label>
+                  <label><input type="checkbox" value="volume" checked /> volume</label>
+                  <label><input type="checkbox" value="returns" /> returns</label>
+                  <label><input type="checkbox" value="amount" /> amount</label>
+                  <label><input type="checkbox" value="turnover" /> turnover</label>
+                </div>
+              </div>
+
+              <div class="config-field">
+                <label>Function Set:</label>
+                <div class="checkbox-group">
+                  <label><input type="checkbox" value="add" checked /> add</label>
+                  <label><input type="checkbox" value="sub" checked /> sub</label>
+                  <label><input type="checkbox" value="mul" checked /> mul</label>
+                  <label><input type="checkbox" value="div" checked /> div</label>
+                  <label><input type="checkbox" value="sqrt" /> sqrt</label>
+                  <label><input type="checkbox" value="abs" /> abs</label>
+                  <label><input type="checkbox" value="neg" /> neg</label>
+                  <label><input type="checkbox" value="rank" checked /> rank</label>
+                  <label><input type="checkbox" value="ts_mean" checked /> ts_mean</label>
+                  <label><input type="checkbox" value="ts_std" checked /> ts_std</label>
+                  <label><input type="checkbox" value="ts_max" /> ts_max</label>
+                  <label><input type="checkbox" value="ts_min" /> ts_min</label>
+                  <label><input type="checkbox" value="delay" /> delay</label>
+                  <label><input type="checkbox" value="log" /> log</label>
+                  <label><input type="checkbox" value="sign" /> sign</label>
+                  <label><input type="checkbox" value="ts_rank" /> ts_rank</label>
+                  <label><input type="checkbox" value="decay_linear" /> decay_linear</label>
+                  <label><input type="checkbox" value="correlation" /> correlation</label>
+                </div>
+              </div>
+
+              <div class="config-field">
+                <label>Target IC:</label>
+                <input type="number" id="targetIc" value="0.03" step="0.01" min="0" max="1" />
+              </div>
+
+              <button id="runMining">Start Mining</button>
             </div>
-            <div class="metric">
-              <span class="metric-label">Annualized Return</span>
-              <span class="metric-value" id="annReturn">--</span>
+
+            <div class="mining-results">
+              <h3>Results</h3>
+              <div id="miningStatus" class="mining-status">Ready to start</div>
+              <div id="miningResults" class="mining-results-list"></div>
             </div>
-            <div class="metric">
-              <span class="metric-label">Sharpe Ratio</span>
-              <span class="metric-value" id="sharpe">--</span>
+          </div>
+        </section>
+
+        <!-- Alpha Library Page -->
+        <section id="page-alphas" class="page hidden">
+          <h2>Alpha Factor Library</h2>
+          <p>Browse .al factor files from ~/.alfars/ (readonly) and ~/.alfars/user/ (writable)</p>
+
+          <div class="alpha-container">
+            <div class="alpha-list-container">
+              <h3>Alpha Factors</h3>
+              <div class="alpha-list" id="alphaList">
+                <div class="loading">Loading alphas...</div>
+              </div>
             </div>
-            <div class="metric">
-              <span class="metric-label">Max Drawdown</span>
-              <span class="metric-value" id="maxDd">--</span>
-            </div>
-            <div class="metric">
-              <span class="metric-label">IC Mean</span>
-              <span class="metric-value" id="icMean">--</span>
-            </div>
-            <div class="metric">
-              <span class="metric-label">IC IR</span>
-              <span class="metric-value" id="icIr">--</span>
+
+            <div class="alpha-detail-container">
+              <div id="alphaDetail" class="alpha-detail hidden">
+                <h3 id="alphaDetailTitle">Alpha Details</h3>
+                <div class="alpha-info">
+                  <div class="alpha-field">
+                    <label>Expression:</label>
+                    <code id="alphaExpression"></code>
+                  </div>
+                  <div class="alpha-field">
+                    <label>Description:</label>
+                    <span id="alphaDescription"></span>
+                  </div>
+                  <div class="alpha-field">
+                    <label>Dimension:</label>
+                    <span id="alphaDimension"></span>
+                  </div>
+                  <div class="alpha-field">
+                    <label>Tags:</label>
+                    <span id="alphaTags"></span>
+                  </div>
+                  <div class="alpha-field">
+                    <label>Status:</label>
+                    <span id="alphaReadonly" class="readonly-badge"></span>
+                  </div>
+                </div>
+                <div class="alpha-actions">
+                  <button id="runAlphaBacktest">Run Backtest</button>
+                  <button id="gpMineAlpha">GP Mining</button>
+                </div>
+                <div class="alpha-chart-container">
+                  <canvas id="alphaChart"></canvas>
+                </div>
+                <div class="alpha-metrics" id="alphaMetrics">
+                  <div class="metric">
+                    <span class="metric-label">IC Mean</span>
+                    <span class="metric-value" id="alphaIcMean">--</span>
+                  </div>
+                  <div class="metric">
+                    <span class="metric-label">IC IR</span>
+                    <span class="metric-value" id="alphaIcIr">--</span>
+                  </div>
+                </div>
+              </div>
+
+              <div id="saveAlphaForm" class="save-alpha-form hidden">
+                <h3>Save GP Result</h3>
+                <div class="form-field">
+                  <label>Name:</label>
+                  <input type="text" id="saveAlphaName" placeholder="my_alpha" />
+                </div>
+                <div class="form-field">
+                  <label>Expression:</label>
+                  <code id="saveAlphaExpression"></code>
+                </div>
+                <div class="form-field">
+                  <label>Description:</label>
+                  <input type="text" id="saveAlphaDescription" placeholder="Optional description" />
+                </div>
+                <div class="form-field">
+                  <label>Dimension:</label>
+                  <select id="saveAlphaDimension">
+                    <option value="dimensionless">dimensionless</option>
+                    <option value="return">return</option>
+                    <option value="price">price</option>
+                    <option value="volume">volume</option>
+                    <option value="ratio">ratio</option>
+                  </select>
+                </div>
+                <div class="form-field">
+                  <label>Tags (comma-separated):</label>
+                  <input type="text" id="saveAlphaTags" placeholder="momentum, gp" />
+                </div>
+                <button id="saveAlphaBtn">Save to ~/.alfars/user/</button>
+                <div id="saveAlphaMessage" class="save-message"></div>
+              </div>
             </div>
           </div>
         </section>

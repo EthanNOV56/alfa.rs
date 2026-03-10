@@ -13,7 +13,7 @@ import {
   Legend,
   Filler,
 } from 'chart.js';
-import type { NavData } from './types';
+import type { NavData, Metrics } from './types';
 
 // Register Chart.js components
 Chart.register(
@@ -48,15 +48,24 @@ let chartInstance: Chart | null = null;
 /**
  * Format percentage
  */
-function formatPercent(value: number): string {
+function formatPercent(value: number | undefined): string {
+  if (value === undefined) return '--';
   return `${(value * 100).toFixed(2)}%`;
 }
 
 /**
  * Format number
  */
-function formatNumber(value: number): string {
+function formatNumber(value: number | undefined): string {
+  if (value === undefined) return '--';
   return value.toFixed(4);
+}
+
+/**
+ * Get long_short data (handles both snake_case and camelCase)
+ */
+function getLongShort(data: NavData): number[] {
+  return data.long_short || data.longShort || [];
 }
 
 /**
@@ -74,7 +83,8 @@ export function renderChart(navData: NavData, canvas: HTMLCanvasElement): void {
     throw new Error('Failed to get canvas context');
   }
 
-  const { dates, quantiles, long_short, benchmark } = navData;
+  const { dates, quantiles, benchmark } = navData;
+  const long_short = getLongShort(navData);
 
   // Prepare datasets
   const datasets: any[] = [];
@@ -209,16 +219,23 @@ export function destroyChart(): void {
 }
 
 /**
+ * Get metric value (handles both snake_case and camelCase)
+ */
+function getMetricValue(metrics: Metrics, snakeKey: keyof Metrics, camelKey: keyof Metrics): number | undefined {
+  return metrics[snakeKey] as number | undefined ?? metrics[camelKey] as number | undefined;
+}
+
+/**
  * Update metrics display
  */
-export function updateMetrics(metrics: NavData['metrics']): void {
+export function updateMetrics(metrics: Metrics): void {
   const elements: Record<string, string> = {
-    lsReturn: formatPercent(metrics.long_short_cum_return),
-    annReturn: formatPercent(metrics.annualized_return),
-    sharpe: formatNumber(metrics.sharpe_ratio),
-    maxDd: formatPercent(metrics.max_drawdown),
-    icMean: formatNumber(metrics.ic_mean),
-    icIr: formatNumber(metrics.ic_ir),
+    lsReturn: formatPercent(getMetricValue(metrics, 'long_short_cum_return', 'longShortCumReturn')),
+    annReturn: formatPercent(getMetricValue(metrics, 'annualized_return', 'annualizedReturn')),
+    sharpe: formatNumber(getMetricValue(metrics, 'sharpe_ratio', 'sharpeRatio')),
+    maxDd: formatPercent(getMetricValue(metrics, 'max_drawdown', 'maxDrawdown')),
+    icMean: formatNumber(getMetricValue(metrics, 'ic_mean', 'icMean')),
+    icIr: formatNumber(getMetricValue(metrics, 'ic_ir', 'icIr')),
   };
 
   for (const [id, value] of Object.entries(elements)) {

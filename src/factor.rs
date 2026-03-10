@@ -6,7 +6,6 @@
 
 use crate::expr::{BinaryOp, Expr, Literal, UnaryOp};
 use crate::lazy::{DataSource, LogicalPlan};
-use rayon::prelude::*;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -312,6 +311,7 @@ impl FactorRegistry {
     }
 
     /// Evaluate expression with cached intermediate results
+    #[allow(dead_code)]
     fn eval_expr_with_cache(
         &self,
         expr: &Expr,
@@ -334,6 +334,7 @@ impl FactorRegistry {
     }
 
     /// Inner evaluation that actually computes the expression
+    #[allow(dead_code)]
     fn eval_expr_with_cache_inner(
         &self,
         expr: &Expr,
@@ -392,6 +393,7 @@ impl FactorRegistry {
         }
     }
 
+    #[allow(dead_code)]
     fn eval_function_with_cache(
         &self,
         name: &str,
@@ -516,6 +518,7 @@ impl FactorRegistry {
         }
     }
 
+    #[allow(dead_code)]
     fn eval_ts_function_with_cache(
         &self,
         name: &str,
@@ -1287,6 +1290,7 @@ fn eval_ts_function_memoized(
 }
 
 /// Compute expressions in parallel using rayon
+#[allow(dead_code)]
 fn compute_exprs_parallel(
     exprs: &[Expr],
     data: &HashMap<String, Vec<f64>>,
@@ -1307,6 +1311,7 @@ fn compute_exprs_parallel(
 }
 
 /// Simple expression evaluator for parallel computation
+#[allow(dead_code)]
 fn eval_expr_simple(
     expr: &Expr,
     data: &HashMap<String, Vec<f64>>,
@@ -1956,7 +1961,7 @@ fn parse_primary(tokens: &[Token], start: usize) -> Result<(Expr, usize), String
                 Ok((Expr::Column(name.clone()), start + 1))
             }
         }
-        Token::Function(name) => parse_function(tokens, start),
+        Token::Function(_name) => parse_function(tokens, start),
         Token::LParen => {
             // Parenthesized expression
             let (expr, pos) = parse_additive(tokens, start + 1)?;
@@ -1992,7 +1997,7 @@ fn parse_function(tokens: &[Token], start: usize) -> Result<(Expr, usize), Strin
     // Parse arguments
     let mut args = Vec::new();
     let mut pos = paren_pos + 1;
-    let mut arg_count = 0;
+    let mut _arg_count = 0;
 
     while pos < tokens.len() {
         match &tokens[pos] {
@@ -2002,7 +2007,7 @@ fn parse_function(tokens: &[Token], start: usize) -> Result<(Expr, usize), Strin
             }
             Token::Comma => {
                 pos += 1;
-                arg_count += 1;
+                _arg_count += 1;
             }
             _ => {
                 let (expr, new_pos) = parse_additive(tokens, pos)?;

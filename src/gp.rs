@@ -15,7 +15,7 @@ use crate::polars_style::{evaluate_expr_on_dataframe, DataFrame, Series};
 use crate::WeightMethod;
 use lru::LruCache;
 use ndarray::Array2;
-use rand::prelude::*;
+use rand::Rng;
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
@@ -282,6 +282,155 @@ impl Function {
             name: "neg".to_string(),
             arity: 1,
             builder: |args| args.into_iter().next().unwrap().unary(UnaryOp::Negate),
+        }
+    }
+
+    /// Create rank function (cross-sectional rank)
+    pub fn rank() -> Self {
+        Function {
+            name: "rank".to_string(),
+            arity: 1,
+            builder: |args| {
+                let expr = args.into_iter().next().unwrap();
+                Expr::function("rank", vec![expr])
+            },
+        }
+    }
+
+    /// Create ts_mean function (time-series mean)
+    pub fn ts_mean() -> Self {
+        Function {
+            name: "ts_mean".to_string(),
+            arity: 2, // expr, window
+            builder: |args| {
+                let mut iter = args.into_iter();
+                let expr = iter.next().unwrap();
+                let window = iter.next().unwrap_or(Expr::lit_float(20.0));
+                Expr::function("ts_mean", vec![expr, window])
+            },
+        }
+    }
+
+    /// Create ts_std function (time-series standard deviation)
+    pub fn ts_std() -> Self {
+        Function {
+            name: "ts_std".to_string(),
+            arity: 2, // expr, window
+            builder: |args| {
+                let mut iter = args.into_iter();
+                let expr = iter.next().unwrap();
+                let window = iter.next().unwrap_or(Expr::lit_float(20.0));
+                Expr::function("ts_std", vec![expr, window])
+            },
+        }
+    }
+
+    /// Create ts_max function (time-series maximum)
+    pub fn ts_max() -> Self {
+        Function {
+            name: "ts_max".to_string(),
+            arity: 2, // expr, window
+            builder: |args| {
+                let mut iter = args.into_iter();
+                let expr = iter.next().unwrap();
+                let window = iter.next().unwrap_or(Expr::lit_float(20.0));
+                Expr::function("ts_max", vec![expr, window])
+            },
+        }
+    }
+
+    /// Create ts_min function (time-series minimum)
+    pub fn ts_min() -> Self {
+        Function {
+            name: "ts_min".to_string(),
+            arity: 2, // expr, window
+            builder: |args| {
+                let mut iter = args.into_iter();
+                let expr = iter.next().unwrap();
+                let window = iter.next().unwrap_or(Expr::lit_float(20.0));
+                Expr::function("ts_min", vec![expr, window])
+            },
+        }
+    }
+
+    /// Create delay function (time-series shift)
+    pub fn delay() -> Self {
+        Function {
+            name: "delay".to_string(),
+            arity: 2, // expr, periods
+            builder: |args| {
+                let mut iter = args.into_iter();
+                let expr = iter.next().unwrap();
+                let periods = iter.next().unwrap_or(Expr::lit_float(1.0));
+                Expr::function("delay", vec![expr, periods])
+            },
+        }
+    }
+
+    /// Create log function (natural logarithm)
+    pub fn log() -> Self {
+        Function {
+            name: "log".to_string(),
+            arity: 1,
+            builder: |args| {
+                let expr = args.into_iter().next().unwrap();
+                Expr::function("log", vec![expr])
+            },
+        }
+    }
+
+    /// Create sign function
+    pub fn sign() -> Self {
+        Function {
+            name: "sign".to_string(),
+            arity: 1,
+            builder: |args| {
+                let expr = args.into_iter().next().unwrap();
+                Expr::function("sign", vec![expr])
+            },
+        }
+    }
+
+    /// Create ts_rank function (time-series rank)
+    pub fn ts_rank() -> Self {
+        Function {
+            name: "ts_rank".to_string(),
+            arity: 2, // expr, window
+            builder: |args| {
+                let mut iter = args.into_iter();
+                let expr = iter.next().unwrap();
+                let window = iter.next().unwrap_or(Expr::lit_float(20.0));
+                Expr::function("ts_rank", vec![expr, window])
+            },
+        }
+    }
+
+    /// Create decay_linear function (exponential decay weighted average)
+    pub fn decay_linear() -> Self {
+        Function {
+            name: "decay_linear".to_string(),
+            arity: 2, // expr, window
+            builder: |args| {
+                let mut iter = args.into_iter();
+                let expr = iter.next().unwrap();
+                let window = iter.next().unwrap_or(Expr::lit_float(20.0));
+                Expr::function("decay_linear", vec![expr, window])
+            },
+        }
+    }
+
+    /// Create correlation function
+    pub fn correlation() -> Self {
+        Function {
+            name: "correlation".to_string(),
+            arity: 3, // expr1, expr2, window
+            builder: |args| {
+                let mut iter = args.into_iter();
+                let expr1 = iter.next().unwrap();
+                let expr2 = iter.next().unwrap();
+                let window = iter.next().unwrap_or(Expr::lit_float(20.0));
+                Expr::function("correlation", vec![expr1, expr2, window])
+            },
         }
     }
 }
@@ -1366,6 +1515,7 @@ impl FitnessEvaluator for RealBacktestFitnessEvaluator {
 }
 
 /// Simple fitness evaluator based on expression complexity (for testing)
+#[allow(dead_code)]
 pub struct BacktestFitnessEvaluator {
     data: HashMap<String, Array2<f64>>,
     returns: Array2<f64>,
