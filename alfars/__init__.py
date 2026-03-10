@@ -22,6 +22,9 @@ import pandas as pd
 
 # Package metadata
 __version__ = "0.2.0"
+
+# Lab command
+from .lab import main as lab
 __author__ = "EthanNOV56"
 
 try:
@@ -227,6 +230,8 @@ __all__ = [
     "FactorResult",
     # Dimension types
     "Dimension",
+    # Lab environment
+    "lab",
 ]
 
 

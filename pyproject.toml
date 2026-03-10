@@ -25,6 +25,8 @@ dependencies = [
     "numpy>=1.20",
     "pandas>=1.3",
     "polars>=1.8.2",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.23.0",
 ]
 
 [project.optional-dependencies]
@@ -34,6 +36,9 @@ dev = [
     "jupyter>=1.0",
     "matplotlib>=3.5",
 ]
+
+[project.scripts]
+alfars-lab = "alfars.lab:main"
 
 [project.urls]
 Homepage = "https://github.com/EthanNOV56/alfa.rs"
