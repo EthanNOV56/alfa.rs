@@ -43,7 +43,8 @@ const QUANTILE_COLORS = [
 const LONG_SHORT_COLOR = '#10b981';
 const BENCHMARK_COLOR = '#6b7280';
 
-let chartInstance: Chart | null = null;
+// Track multiple chart instances
+const chartInstances: Chart[] = [];
 
 /**
  * Format percentage
@@ -72,25 +73,27 @@ function getLongShort(data: NavData): number[] {
  * Create or update the NAV chart
  */
 export function renderChart(navData: NavData, canvas: HTMLCanvasElement): void {
-  // Destroy existing chart
-  if (chartInstance) {
-    chartInstance.destroy();
-    chartInstance = null;
-  }
+  try {
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      console.error('Failed to get canvas context');
+      return;
+    }
 
-  const ctx = canvas.getContext('2d');
-  if (!ctx) {
-    throw new Error('Failed to get canvas context');
-  }
+    const { dates, quantiles, benchmark } = navData;
+    const long_short = getLongShort(navData);
 
-  const { dates, quantiles, benchmark } = navData;
-  const long_short = getLongShort(navData);
+    // Validate data
+    if (!dates || dates.length === 0) {
+      console.error('Invalid navData: missing dates');
+      return;
+    }
 
-  // Prepare datasets
-  const datasets: any[] = [];
+    // Prepare datasets
+    const datasets: any[] = [];
 
-  // Quantile curves
-  quantiles.forEach((values, index) => {
+    // Quantile curves
+    quantiles.forEach((values, index) => {
     const color = QUANTILE_COLORS[index % QUANTILE_COLORS.length];
     datasets.push({
       label: `Q${index + 1}`,
@@ -136,8 +139,8 @@ export function renderChart(navData: NavData, canvas: HTMLCanvasElement): void {
     });
   }
 
-  // Create chart
-  chartInstance = new Chart(ctx, {
+  // Create chart and track it
+  const newChart = new Chart(ctx, {
     type: 'line',
     data: {
       labels: dates,
@@ -206,16 +209,20 @@ export function renderChart(navData: NavData, canvas: HTMLCanvasElement): void {
       },
     },
   });
+
+  // Track this chart instance
+  chartInstances.push(newChart);
+  } catch (error) {
+    console.error('Error rendering chart:', error);
+  }
 }
 
 /**
- * Destroy the chart
+ * Destroy all charts
  */
 export function destroyChart(): void {
-  if (chartInstance) {
-    chartInstance.destroy();
-    chartInstance = null;
-  }
+  chartInstances.forEach(chart => chart.destroy());
+  chartInstances.length = 0;
 }
 
 /**

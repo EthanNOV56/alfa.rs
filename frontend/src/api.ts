@@ -47,13 +47,18 @@ async function handleApiError(response: Response): Promise<string> {
  * Run a backtest and get NAV data for visualization
  */
 export async function runBacktest(request: BacktestRequest): Promise<NavData> {
+  console.log('[runBacktest] Starting request, factor shape:', request.factor?.length, 'x', request.factor?.[0]?.length);
+  const requestBody = JSON.stringify(request);
+  console.log('[runBacktest] Request body size:', requestBody.length, 'bytes');
+
   const response = await fetch(`${API_BASE}/backtest`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify(request),
+    body: requestBody,
   });
+  console.log('[runBacktest] Response status:', response.status);
 
   if (!response.ok) {
     const errorMessage = await handleApiError(response);
@@ -302,10 +307,10 @@ export async function getTables(request: GetTablesRequest): Promise<string[]> {
 // ============================================================================
 
 /**
- * Get column mapping configuration
+ * Get column mapping configuration for a specific table
  */
-export async function getColumnMapping(): Promise<ColumnMapping> {
-  const response = await fetch(`${API_BASE}/config/column-mapping`);
+export async function getColumnMapping(table: string = 'stock_1d'): Promise<ColumnMapping> {
+  const response = await fetch(`${API_BASE}/config/column-mapping?table=${encodeURIComponent(table)}`);
 
   if (!response.ok) {
     const errorMessage = await handleApiError(response);
@@ -317,7 +322,7 @@ export async function getColumnMapping(): Promise<ColumnMapping> {
 }
 
 /**
- * Set column mapping configuration
+ * Set column mapping configuration for a specific table
  */
 export async function setColumnMapping(request: SetColumnMappingRequest): Promise<ColumnMapping> {
   const response = await fetch(`${API_BASE}/config/column-mapping`, {
@@ -458,8 +463,11 @@ export interface ColumnValidationResult {
 /**
  * Validate column existence and get available columns for table mapping
  */
-export async function validateColumns(): Promise<ColumnValidationResult> {
-  const response = await fetch(`${API_BASE}/data/validate-columns`);
+export async function validateColumns(table?: string): Promise<ColumnValidationResult> {
+  const url = table
+    ? `${API_BASE}/data/validate-columns?table=${encodeURIComponent(table)}`
+    : `${API_BASE}/data/validate-columns`;
+  const response = await fetch(url);
 
   if (!response.ok) {
     const errorMessage = await handleApiError(response);

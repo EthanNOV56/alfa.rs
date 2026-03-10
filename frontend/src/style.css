@@ -128,6 +128,26 @@ button {
   position: relative;
 }
 
+/* Allow chart-container to expand for multiple charts */
+.chart-container:has(.alpha-chart-section) {
+  height: auto;
+}
+
+.alpha-chart-section {
+  background: #f9fafb;
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 24px;
+}
+
+.alpha-chart-section:last-child {
+  margin-bottom: 0;
+}
+
+.alpha-chart-section canvas {
+  height: 300px !important;
+}
+
 .chart-container canvas {
   width: 100% !important;
   height: 100% !important;

@@ -3,6 +3,7 @@
 //! Run with: cargo run --release --bin alfars-server
 
 use alfars::backtest::{BacktestEngine, BacktestResult};
+use alfars::factor::FactorRegistry;
 use alfars::WeightMethod;
 use axum::{
     extract::State,
@@ -15,12 +16,18 @@ use ndarray::Array2;
 use rand::Rng;
 use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tower_http::cors::{Any, CorsLayer};
+
+/// Check if a TCP port is already in use
+fn is_port_in_use(port: u16) -> bool {
+    std::net::TcpListener::bind(("0.0.0.0", port)).is_err()
+}
 
 /// Built-in Alpha101/Alpha191 factors (readonly)
 const BUILTIN_ALPHAS: &[(&str, &str, &str, &str, &str, &str)] = &[
@@ -44,11 +51,13 @@ const BUILTIN_ALPHAS: &[(&str, &str, &str, &str, &str, &str)] = &[
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 struct BacktestRequest {
-    /// Factor values (optional if data_source is provided)
+    /// Factor values (optional if data_source or cache_id is provided)
     factor: Option<Vec<Vec<f64>>>,
-    /// Returns values (optional if data_source is provided)
+    /// Returns values (optional if data_source or cache_id is provided)
     returns: Option<Vec<Vec<f64>>>,
     dates: Option<Vec<String>>,
+    /// Cache ID from compute_factor to retrieve pre-computed factor
+    cache_id: Option<String>,
     quantiles: Option<usize>,
     weight_method: Option<String>,
     long_top_n: Option<usize>,
@@ -128,6 +137,8 @@ struct FactorComputeResponse {
     factor: Vec<Vec<f64>>,
     returns: Vec<Vec<f64>>,
     dates: Vec<String>,
+    #[serde(rename = "cache_id", skip_serializing_if = "Option::is_none")]
+    cache_id: Option<String>,
 }
 
 /// GP mine request
@@ -310,6 +321,56 @@ fn save_db_config(config: &DbConfig) {
     }
 }
 
+/// Load saved column mappings from file
+fn load_saved_column_mappings() -> TableColumnMappings {
+    let config_path = get_config_dir().join("column_mappings.json");
+    if config_path.exists() {
+        match fs::read_to_string(&config_path) {
+            Ok(contents) => {
+                match serde_json::from_str::<TableColumnMappings>(&contents) {
+                    Ok(mappings) => {
+                        eprintln!("Loaded saved column mappings from {:?}", config_path);
+                        return mappings;
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to parse saved column mappings: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to read saved column mappings: {}", e);
+            }
+        }
+    }
+    TableColumnMappings::default()
+}
+
+/// Save column mappings to file
+fn save_column_mappings(mappings: &TableColumnMappings) {
+    let config_dir = get_config_dir();
+    if !config_dir.exists() {
+        if let Err(e) = fs::create_dir_all(&config_dir) {
+            eprintln!("Failed to create config directory: {}", e);
+            return;
+        }
+    }
+
+    let config_path = config_dir.join("column_mappings.json");
+
+    match serde_json::to_string_pretty(mappings) {
+        Ok(contents) => {
+            if let Err(e) = fs::write(&config_path, contents) {
+                eprintln!("Failed to save column mappings: {}", e);
+            } else {
+                eprintln!("Saved column mappings to {:?}", config_path);
+            }
+        }
+        Err(e) => {
+            eprintln!("Failed to serialize column mappings: {}", e);
+        }
+    }
+}
+
 /// Request to set database configuration
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -343,30 +404,50 @@ struct ColumnInfo {
     column_type: String,
 }
 
-/// Column mapping configuration
+/// Column mapping configuration for a single table
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
-struct ColumnMapping {
+pub struct ColumnMapping {
     /// Close price column name in user's database
-    close: Option<String>,
+    pub close: Option<String>,
     /// Open price column name in user's database
-    open: Option<String>,
+    pub open: Option<String>,
     /// High price column name in user's database
-    high: Option<String>,
+    pub high: Option<String>,
     /// Low price column name in user's database
-    low: Option<String>,
+    pub low: Option<String>,
     /// Volume column name in user's database
-    volume: Option<String>,
+    pub volume: Option<String>,
     /// Symbol column name (optional)
-    symbol: Option<String>,
+    pub symbol: Option<String>,
     /// Trading date column name (optional)
-    trading_date: Option<String>,
+    pub trading_date: Option<String>,
     /// PE column for filtering (optional)
-    pe: Option<String>,
+    pub pe: Option<String>,
     /// ROE column for filtering (optional)
-    roe: Option<String>,
+    pub roe: Option<String>,
     /// Market cap column for filtering (optional)
-    market_cap: Option<String>,
+    pub market_cap: Option<String>,
+}
+
+/// Per-table column mappings storage
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct TableColumnMappings {
+    /// Map of table name to its column mapping
+    mappings: std::collections::HashMap<String, ColumnMapping>,
+}
+
+impl TableColumnMappings {
+    /// Get mapping for a specific table, returns empty mapping if not found
+    pub fn get(&self, table: &str) -> ColumnMapping {
+        self.mappings.get(table).cloned().unwrap_or_default()
+    }
+
+    /// Set mapping for a specific table
+    pub fn set(&mut self, table: &str, mapping: ColumnMapping) {
+        self.mappings.insert(table.to_string(), mapping);
+    }
 }
 
 /// Table name mapping for different data frequencies
@@ -437,12 +518,21 @@ struct LoadDataResponse {
     returns: Vec<Vec<f64>>,
 }
 
-/// Application state
+/// Cached factor computation result
+#[derive(Clone)]
+struct CachedFactor {
+    factor_id: String,
+    factor: Vec<Vec<f64>>,
+    returns: Vec<Vec<f64>>,
+    dates: Vec<String>,
+}
+
 #[derive(Clone)]
 struct AppState {
     db_config: Arc<RwLock<DbConfig>>,
-    column_mapping: Arc<RwLock<ColumnMapping>>,
+    column_mappings: Arc<RwLock<TableColumnMappings>>,
     table_mapping: Arc<RwLock<TableMapping>>,
+    factor_cache: Arc<RwLock<HashMap<String, CachedFactor>>>,
 }
 
 /// Run backtest and return NAV data
@@ -450,41 +540,55 @@ async fn run_backtest(
     State(state): State<AppState>,
     Json(req): Json<BacktestRequest>,
 ) -> Result<Json<NavData>, (StatusCode, String)> {
-    // Data source must be provided
-    let data_source = req.data_source.as_ref().ok_or_else(|| {
-        (
-            StatusCode::BAD_REQUEST,
-            "Data source not configured. Please configure data source in Data Source page first."
-                .to_string(),
-        )
-    })?;
+    eprintln!("[run_backtest] Received request");
 
-    // Load data from database
-    let loaded = load_data_from_config(&state, data_source).await?;
-
-    // Use close prices as factor (rank them)
-    let n_days = loaded.dates.len();
-    let n_assets = loaded.symbols.len();
-
-    // Rank the factor (close prices)
-    let mut factor: Vec<Vec<f64>> = Vec::with_capacity(n_days);
-    for d in 0..n_days {
-        let _day_factor: Vec<f64> = Vec::with_capacity(n_assets);
-        let mut pairs: Vec<(usize, f64)> = loaded.close[d]
-            .iter()
-            .enumerate()
-            .map(|(i, &v)| (i, v))
-            .collect();
-        pairs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        let mut ranked = vec![0.0; n_assets];
-        for (rank, (idx, _)) in pairs.iter().enumerate() {
-            ranked[*idx] = rank as f64 / n_assets as f64;
+    // Check if cache_id is provided
+    let (factor, returns, dates) = if let Some(cache_id) = &req.cache_id {
+        eprintln!("[run_backtest] Retrieving from cache: {} (factor_id: {:?})", cache_id, cache_id);
+        let cache = state.factor_cache.read().await;
+        if let Some(cached) = cache.get(cache_id) {
+            eprintln!("[run_backtest] Cache hit: {}x{}, factor_id={}", cached.factor.len(), cached.factor.first().map(|r| r.len()).unwrap_or(0), cached.factor_id);
+            (cached.factor.clone(), cached.returns.clone(), Some(cached.dates.clone()))
+        } else {
+            return Err((
+                StatusCode::NOT_FOUND,
+                format!("Cache not found for id: {}. Please recompute the factor.", cache_id),
+            ));
         }
-        factor.push(ranked);
-    }
+    } else if let (Some(factor), Some(returns), Some(dates)) = (&req.factor, &req.returns, &req.dates) {
+        eprintln!("[run_backtest] Using pre-computed factor: {}x{}", factor.len(), factor.first().map(|r| r.len()).unwrap_or(0));
+        // Use pre-computed factor and returns
+        (factor.clone(), returns.clone(), Some(dates.clone()))
+    } else if let Some(data_source) = &req.data_source {
+        // Load data from database
+        let loaded = load_data_from_config(&state, data_source).await?;
 
-    let returns = loaded.returns;
-    let dates = Some(loaded.dates);
+        let n_days = loaded.dates.len();
+        let n_assets = loaded.symbols.len();
+
+        // Use close prices as factor (rank them)
+        let mut factor: Vec<Vec<f64>> = Vec::with_capacity(n_days);
+        for d in 0..n_days {
+            let mut pairs: Vec<(usize, f64)> = loaded.close[d]
+                .iter()
+                .enumerate()
+                .map(|(i, &v)| (i, v))
+                .collect();
+            pairs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            let mut ranked = vec![0.0; n_assets];
+            for (rank, (idx, _)) in pairs.iter().enumerate() {
+                ranked[*idx] = rank as f64 / n_assets as f64;
+            }
+            factor.push(ranked);
+        }
+
+        (factor, loaded.returns, Some(loaded.dates))
+    } else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Either provide factor/returns/dates or configure data_source".to_string(),
+        ));
+    };
 
     let n_days = factor.len();
     let n_assets = factor[0].len();
@@ -527,6 +631,7 @@ async fn run_backtest(
     };
 
     // Create and run backtest
+    eprintln!("[run_backtest] Creating backtest engine with {} days, {} assets", n_days, n_assets);
     let engine = BacktestEngine::new_simple(
         factor_array,
         returns_array,
@@ -538,12 +643,22 @@ async fn run_backtest(
         None,
     );
 
+    eprintln!("[run_backtest] Running backtest engine...");
     let result = engine
         .run()
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    eprintln!("[run_backtest] Backtest engine completed");
+
+    // Clear the cache after backtest to free memory
+    if let Some(cache_id) = &req.cache_id {
+        let mut cache = state.factor_cache.write().await;
+        cache.remove(cache_id);
+        eprintln!("[run_backtest] Cleared cache for {}", cache_id);
+    }
 
     // Convert to NAV data
     let nav_data = convert_to_nav_data(result, n_days, dates);
+    eprintln!("[run_backtest] Returning nav data with {} dates", nav_data.dates.len());
 
     Ok(Json(nav_data))
 }
@@ -655,7 +770,7 @@ async fn list_factors() -> Json<FactorListResponse> {
     Json(FactorListResponse { factors })
 }
 
-/// Compute factor values (synthetic data)
+/// Compute factor values
 async fn compute_factor(
     State(state): State<AppState>,
     Json(req): Json<FactorComputeRequest>,
@@ -693,15 +808,131 @@ async fn compute_factor(
 
     // Load data from database
     let loaded = load_data_from_config(&state, data_source).await?;
-    let factor = loaded.close;
+
+    // Get dimensions
+    let n_days = loaded.close.len();
+    let n_assets = if n_days > 0 { loaded.close[0].len() } else { 0 };
+
+    eprintln!("[compute_factor] Computing factor '{}' with {} days x {} assets", req.factor_id, n_days, n_assets);
+
+    // Prepare data for FactorRegistry: transpose and flatten
+    // FactorRegistry expects data in format: each column is flattened [asset0_day0, asset0_day1, ..., asset0_dayN-1, asset1_day0, ...]
+    // Our data is [day0_asset0, day0_asset1, ..., day1_asset0, ...] so we need to transpose
+    use std::collections::HashMap;
+
+    let mut data: HashMap<String, Vec<f64>> = HashMap::new();
+
+    // For each column, transpose and flatten
+    let mut close_flat: Vec<f64> = Vec::with_capacity(n_days * n_assets);
+    let mut open_flat: Vec<f64> = Vec::with_capacity(n_days * n_assets);
+    let mut high_flat: Vec<f64> = Vec::with_capacity(n_days * n_assets);
+    let mut low_flat: Vec<f64> = Vec::with_capacity(n_days * n_assets);
+    let mut volume_flat: Vec<f64> = Vec::with_capacity(n_days * n_assets);
+    let mut returns_flat: Vec<f64> = Vec::with_capacity(n_days * n_assets);
+
+    for day in 0..n_days {
+        for asset in 0..n_assets {
+            close_flat.push(loaded.close[day][asset]);
+            open_flat.push(loaded.open[day][asset]);
+            high_flat.push(loaded.high[day][asset]);
+            low_flat.push(loaded.low[day][asset]);
+            volume_flat.push(loaded.volume[day][asset]);
+            returns_flat.push(loaded.returns[day][asset]);
+        }
+    }
+
+    data.insert("close".to_string(), close_flat);
+    data.insert("open".to_string(), open_flat);
+    data.insert("high".to_string(), high_flat);
+    data.insert("low".to_string(), low_flat);
+    data.insert("volume".to_string(), volume_flat);
+    data.insert("returns".to_string(), returns_flat);
+
+    // Create FactorRegistry and compute factor
+    let mut registry = FactorRegistry::new();
+    registry.set_columns(vec!["close".to_string(), "open".to_string(), "high".to_string(), "low".to_string(), "volume".to_string(), "returns".to_string()]);
+
+    // Register the factor expression
+    let factor_name = "factor";
+    if let Err(e) = registry.register(factor_name, &req.factor_id) {
+        eprintln!("[compute_factor] Failed to register factor: {}", e);
+        // Fall back to close price
+    } else {
+        // Compute the factor
+        match registry.compute(factor_name, &data) {
+            Ok(result) => {
+                eprintln!("[compute_factor] Computed factor, n_rows={}", result.n_rows);
+                // Reshape result back to (n_days, n_assets)
+                let values = result.values;
+                let mut factor: Vec<Vec<f64>> = Vec::with_capacity(n_days);
+                for day in 0..n_days {
+                    let mut day_factor: Vec<f64> = Vec::with_capacity(n_assets);
+                    for asset in 0..n_assets {
+                        let idx = asset * n_days + day;
+                        day_factor.push(values[idx]);
+                    }
+                    factor.push(day_factor);
+                }
+
+                // Generate a unique cache ID
+                let cache_id = uuid::Uuid::new_v4().to_string();
+
+                // Store in cache
+                let cached = CachedFactor {
+                    factor_id: req.factor_id.clone(),
+                    factor: factor.clone(),
+                    returns: loaded.returns.clone(),
+                    dates: loaded.dates.clone(),
+                };
+                eprintln!("[compute_factor] Caching factor for {} with id {}", req.factor_id, cache_id);
+                {
+                    let mut cache = state.factor_cache.write().await;
+                    cache.insert(cache_id.clone(), cached);
+                }
+
+                // Return with cache ID - empty arrays to minimize response size
+                return Ok(Json(FactorComputeResponse {
+                    factor_id: req.factor_id,
+                    factor: vec![],
+                    returns: vec![],
+                    dates: vec![],
+                    cache_id: Some(cache_id),
+                }));
+            }
+            Err(e) => {
+                eprintln!("[compute_factor] Failed to compute factor: {}", e);
+            }
+        }
+    }
+
+    // Fallback: use close prices as factor
+    let factor = loaded.close.clone();
     let returns = loaded.returns;
     let dates = loaded.dates;
 
+    // Generate a unique cache ID
+    let cache_id = uuid::Uuid::new_v4().to_string();
+
+    // Store in cache
+    let cached = CachedFactor {
+        factor_id: req.factor_id.clone(),
+        factor: factor.clone(),
+        returns: returns.clone(),
+        dates: dates.clone(),
+    };
+    eprintln!("[compute_factor] Caching factor for {} with id {}", req.factor_id, cache_id);
+    {
+        let mut cache = state.factor_cache.write().await;
+        cache.insert(cache_id.clone(), cached);
+    }
+
+    // Return with cache ID - empty arrays to minimize response size
     Ok(Json(FactorComputeResponse {
         factor_id: req.factor_id,
-        factor,
-        returns,
-        dates,
+        factor: vec![], // Empty to minimize response
+        returns: vec![], // Empty to minimize response
+        dates: vec![], // Empty to minimize response
+        cache_id: Some(cache_id),
     }))
 }
 
@@ -1112,6 +1343,7 @@ struct ColumnValidationResult {
 /// Validate column existence and get available columns for table mapping
 async fn validate_columns(
     State(state): State<AppState>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<ColumnValidationResult>, (StatusCode, String)> {
     let config = state.db_config.read().await;
 
@@ -1124,12 +1356,15 @@ async fn validate_columns(
 
     let client = HttpClient::new();
 
-    // Get table mapping to determine which table to check
-    let table_mapping = state.table_mapping.read().await;
-    let table = table_mapping.stock_1day.clone();
-    drop(table_mapping);
+    // Get table from query param or use default from table mapping
+    let table = if let Some(t) = params.get("table") {
+        t.clone()
+    } else {
+        let table_mapping = state.table_mapping.read().await;
+        table_mapping.stock_1day.clone()
+    };
 
-    // Get available columns from the 1-day table
+    // Get available columns from the table
     let query = format!(
         "SELECT name FROM system.columns WHERE database = '{}' AND table = '{}' ORDER BY name",
         config.database, table
@@ -1165,20 +1400,9 @@ async fn validate_columns(
         }
     }
 
-    // Get current column mapping
-    let column_mapping = state.column_mapping.read().await;
-    let current_mapping = ColumnMapping {
-        close: column_mapping.close.clone(),
-        open: column_mapping.open.clone(),
-        high: column_mapping.high.clone(),
-        low: column_mapping.low.clone(),
-        volume: column_mapping.volume.clone(),
-        symbol: column_mapping.symbol.clone(),
-        trading_date: column_mapping.trading_date.clone(),
-        pe: column_mapping.pe.clone(),
-        roe: column_mapping.roe.clone(),
-        market_cap: column_mapping.market_cap.clone(),
-    };
+    // Get current column mapping for this table
+    let column_mappings = state.column_mappings.read().await;
+    let current_mapping = column_mappings.get(&table);
 
     // Check which columns from mapping exist
     let mapped_columns = [
@@ -1362,7 +1586,7 @@ async fn load_data_from_config(
     data_source: &DataSourceConfig,
 ) -> Result<LoadDataResponse, (StatusCode, String)> {
     let config = state.db_config.read().await;
-    let saved_mapping = state.column_mapping.read().await;
+    let saved_mappings = state.column_mappings.read().await;
 
     if !config.connected {
         return Err((
@@ -1371,11 +1595,11 @@ async fn load_data_from_config(
         ));
     }
 
-    // Use provided column_mapping or fall back to saved mapping
+    // Use provided column_mapping or fall back to saved mapping for this table
     let mapping = if let Some(ref ds_mapping) = data_source.column_mapping {
         ds_mapping.clone()
     } else {
-        saved_mapping.clone()
+        saved_mappings.get(&data_source.table)
     };
 
     let client = HttpClient::new();
@@ -1562,7 +1786,7 @@ async fn load_data(
     Json(req): Json<LoadDataRequest>,
 ) -> Result<Json<LoadDataResponse>, (StatusCode, String)> {
     let config = state.db_config.read().await;
-    let mapping = state.column_mapping.read().await;
+    let mappings = state.column_mappings.read().await;
 
     if !config.connected {
         return Err((
@@ -1579,6 +1803,9 @@ async fn load_data(
                 .to_string(),
         )
     })?;
+
+    // Get column mapping for this table
+    let mapping = mappings.get(&table);
 
     // Build query with symbol list
     let symbols_list = req
@@ -1835,26 +2062,37 @@ async fn get_columns(
     Ok(Json(columns))
 }
 
-/// Get column mapping configuration
-async fn get_column_mapping(State(state): State<AppState>) -> Json<ColumnMapping> {
-    let mapping = state.column_mapping.read().await;
-    Json(mapping.clone())
+/// Request to set column mapping for a specific table
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetColumnMappingRequest {
+    /// Table name (e.g., stock_1d, stock_1m, stock_5m)
+    table: String,
+    /// Column mapping for this table
+    mapping: ColumnMapping,
 }
 
-/// Set column mapping configuration
+/// Get column mapping configuration for a specific table
+async fn get_column_mapping(
+    State(state): State<AppState>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Json<ColumnMapping> {
+    let mappings = state.column_mappings.read().await;
+    let table = params.get("table").cloned().unwrap_or_else(|| "stock_1d".to_string());
+    Json(mappings.get(&table))
+}
+
+/// Set column mapping configuration for a specific table
 async fn set_column_mapping(
     State(state): State<AppState>,
-    Json(req): Json<ColumnMapping>,
+    Json(req): Json<SetColumnMappingRequest>,
 ) -> Result<Json<ColumnMapping>, (StatusCode, String)> {
-    let mut mapping = state.column_mapping.write().await;
-    *mapping = req.clone();
-
     // Validate required columns exist
-    if req.close.is_none()
-        || req.open.is_none()
-        || req.high.is_none()
-        || req.low.is_none()
-        || req.volume.is_none()
+    if req.mapping.close.is_none()
+        || req.mapping.open.is_none()
+        || req.mapping.high.is_none()
+        || req.mapping.low.is_none()
+        || req.mapping.volume.is_none()
     {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -1862,7 +2100,13 @@ async fn set_column_mapping(
         ));
     }
 
-    Ok(Json(req))
+    let mut mappings = state.column_mappings.write().await;
+    mappings.set(&req.table, req.mapping.clone());
+
+    // Persist to file
+    save_column_mappings(&mappings);
+
+    Ok(Json(req.mapping))
 }
 
 /// Get table mapping configuration
@@ -2246,15 +2490,19 @@ async fn main() {
     // Load saved database config if available
     let saved_db_config = load_saved_db_config();
 
+    // Load saved column mappings if available
+    let saved_column_mappings = load_saved_column_mappings();
+
     // Initialize application state with database config
     let state = AppState {
         db_config: Arc::new(RwLock::new(saved_db_config)),
-        column_mapping: Arc::new(RwLock::new(ColumnMapping::default())),
+        column_mappings: Arc::new(RwLock::new(saved_column_mappings)),
         table_mapping: Arc::new(RwLock::new(TableMapping {
             stock_1day: "stock_1day".to_string(),
             stock_5min: Some("stock_5min".to_string()),
             stock_1min: Some("stock_1min".to_string()),
         })),
+        factor_cache: Arc::new(RwLock::new(HashMap::new())),
     };
 
     // Build the application
@@ -2291,9 +2539,18 @@ async fn main() {
 
     // Run the server
     let addr = SocketAddr::from(([0, 0, 0, 0], 8000));
+
+    // Check if port is already in use
+    if is_port_in_use(8000) {
+        eprintln!("Warning: Port 8000 is already in use. Is another server running?");
+        eprintln!("Run 'pkill -f alfars-server' to stop any existing server, or use a different port.");
+    }
+
     println!("Starting Alfa.rs server on http://{}", addr);
     println!("API Documentation: http://{}/docs", addr);
 
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(addr).await.expect(
+        "Failed to bind to port 8000. Is another instance already running? Try: pkill -f alfars-server",
+    );
+    axum::serve(listener, app).await.expect("Server failed to run");
 }

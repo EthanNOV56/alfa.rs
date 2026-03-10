@@ -6,6 +6,7 @@ export interface BacktestRequest {
   factor?: number[][];
   returns?: number[][];
   dates?: string[];
+  cacheId?: string;
   quantiles?: number;
   weight_method?: string;
   long_top_n?: number;
@@ -75,6 +76,8 @@ export interface FactorComputeResponse {
   factor: number[][];
   returns: number[][];
   dates: string[];
+  /** Cache ID from backend (snake_case from API) */
+  cache_id?: string;
 }
 
 // GP Mining types
@@ -211,16 +214,19 @@ export interface ColumnMapping {
 }
 
 export interface SetColumnMappingRequest {
-  close: string;
-  open: string;
-  high: string;
-  low: string;
-  volume: string;
-  symbol?: string;
-  tradingDate?: string;
-  pe?: string;
-  roe?: string;
-  marketCap?: string;
+  table: string;
+  mapping: {
+    close: string;
+    open: string;
+    high: string;
+    low: string;
+    volume: string;
+    symbol?: string;
+    tradingDate?: string;
+    pe?: string;
+    roe?: string;
+    marketCap?: string;
+  };
 }
 
 // Table mapping types

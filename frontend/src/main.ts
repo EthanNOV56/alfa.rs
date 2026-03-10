@@ -22,7 +22,7 @@ import {
   validateColumns,
 } from './api';
 import { renderChart, destroyChart, updateMetrics } from './chart';
-import type { NavData, GpMineRequest, GpFactor, Alpha, FactorComputeResponse, FilterCondition, ColumnInfo, DataSourceConfig, TableMapping } from './types';
+import type { NavData, GpMineRequest, GpFactor, Alpha, FactorComputeResponse, FilterCondition, ColumnInfo, DataSourceConfig, TableMapping, Metrics } from './types';
 
 // Chart instances
 // Note: Chart instance is stored in chart.ts module, managed by renderChart/destroyChart
@@ -183,25 +183,30 @@ function initDataSource(): void {
   const saveMappingBtn = document.getElementById('validateColumnsBtn') as HTMLButtonElement;
   saveMappingBtn?.addEventListener('click', async () => {
     const mappingMessage = document.getElementById('mappingMessage');
+    const tableSelect = document.getElementById('columnMappingTableSelect') as HTMLSelectElement;
+    const selectedTable = tableSelect?.value || 'stock_1d';
 
     try {
       const mapping = {
-        close: (document.getElementById('mapClose') as HTMLInputElement).value || 'close',
-        open: (document.getElementById('mapOpen') as HTMLInputElement).value || 'open',
-        high: (document.getElementById('mapHigh') as HTMLInputElement).value || 'high',
-        low: (document.getElementById('mapLow') as HTMLInputElement).value || 'low',
-        volume: (document.getElementById('mapVolume') as HTMLInputElement).value || 'volume',
-        symbol: (document.getElementById('mapSymbol') as HTMLInputElement).value || 'symbol',
-        tradingDate: (document.getElementById('mapTradingDate') as HTMLInputElement).value || 'trading_date',
+        table: selectedTable,
+        mapping: {
+          close: (document.getElementById('mapClose') as HTMLInputElement).value || 'close',
+          open: (document.getElementById('mapOpen') as HTMLInputElement).value || 'open',
+          high: (document.getElementById('mapHigh') as HTMLInputElement).value || 'high',
+          low: (document.getElementById('mapLow') as HTMLInputElement).value || 'low',
+          volume: (document.getElementById('mapVolume') as HTMLInputElement).value || 'volume',
+          symbol: (document.getElementById('mapSymbol') as HTMLInputElement).value || 'symbol',
+          tradingDate: (document.getElementById('mapTradingDate') as HTMLInputElement).value || 'trading_date',
+        },
       };
 
       // Validate columns first
-      const validationResult = await validateColumns();
+      const validationResult = await validateColumns(selectedTable);
 
       // Update validation status display
       updateColumnValidationStatus(validationResult);
 
-      if (!validationResult.valid) {
+      if (!validationResult.valid && validationResult.missing_columns) {
         if (mappingMessage) {
           mappingMessage.textContent = `Warning: Some columns not found: ${validationResult.missing_columns.join(', ')}`;
           mappingMessage.className = 'message error';
@@ -226,6 +231,12 @@ function initDataSource(): void {
 
   // Set up column dropdown change handlers
   setupColumnDropdowns();
+
+  // Set up table selector change handler
+  const columnMappingTableSelect = document.getElementById('columnMappingTableSelect') as HTMLSelectElement;
+  columnMappingTableSelect?.addEventListener('change', () => {
+    loadColumnMapping(columnMappingTableSelect.value);
+  });
 
   // Load saved column mapping on init
   loadColumnMapping();
@@ -386,9 +397,12 @@ async function loadDbConfig(): Promise<void> {
   }
 }
 
-async function loadColumnMapping(): Promise<void> {
+async function loadColumnMapping(table?: string): Promise<void> {
+  const tableSelect = document.getElementById('columnMappingTableSelect') as HTMLSelectElement;
+  const selectedTable = table || tableSelect?.value || 'stock_1d';
+
   try {
-    const mapping = await getColumnMapping();
+    const mapping = await getColumnMapping(selectedTable);
     (document.getElementById('mapClose') as HTMLInputElement).value = mapping.close || 'close';
     (document.getElementById('mapOpen') as HTMLInputElement).value = mapping.open || 'open';
     (document.getElementById('mapHigh') as HTMLInputElement).value = mapping.high || 'high';
@@ -398,7 +412,7 @@ async function loadColumnMapping(): Promise<void> {
     (document.getElementById('mapTradingDate') as HTMLInputElement).value = mapping.tradingDate || 'trading_date';
 
     // Populate dropdowns with available columns
-    await populateColumnDropdowns();
+    await populateColumnDropdowns(selectedTable);
   } catch (error) {
     console.error('Failed to load column mapping:', error);
   }
@@ -407,9 +421,9 @@ async function loadColumnMapping(): Promise<void> {
 /**
  * Populate column dropdowns with available columns from database
  */
-async function populateColumnDropdowns(): Promise<void> {
+async function populateColumnDropdowns(table?: string): Promise<void> {
   try {
-    const result = await validateColumns();
+    const result = await validateColumns(table);
     const columns = result.available_columns;
 
     // Populate all dropdowns
@@ -468,14 +482,16 @@ function autoSelectMatchingColumns(columns: string[]): void {
 /**
  * Update column validation status display
  */
-function updateColumnValidationStatus(result: { valid: boolean; missing_columns: string[] }): void {
+function updateColumnValidationStatus(result: { valid?: boolean; missing_columns?: string[] }): void {
   const statusEl = document.getElementById('columnValidationStatus');
   if (!statusEl) return;
 
   if (result.valid) {
     statusEl.innerHTML = '<span class="status-valid">All columns found in database</span>';
-  } else {
+  } else if (result.missing_columns && result.missing_columns.length > 0) {
     statusEl.innerHTML = `<span class="status-invalid">Missing columns: ${result.missing_columns.join(', ')}</span>`;
+  } else {
+    statusEl.innerHTML = '<span class="status-invalid">Validation failed</span>';
   }
 }
 
@@ -568,31 +584,43 @@ function initBacktest(): void {
     try {
       // Check if alphas are selected for batch backtest
       if (selectedAlphasForBacktest.length > 0) {
-        // Batch mode: run backtest for each selected alpha
+        // Batch mode: run backtest for each selected alpha in parallel
         runRealBacktestBtn.textContent = `Running (0/${selectedAlphasForBacktest.length})...`;
 
-        const results: Array<{ name: string; metrics: any }> = [];
+        // Create container for multiple charts
+        const chartContainer = document.querySelector('.chart-container');
+        if (chartContainer) {
+          // Clear previous charts - also destroy Chart.js instances
+          destroyChart();
+          chartContainer.innerHTML = '';
+        }
 
-        for (let i = 0; i < selectedAlphasForBacktest.length; i++) {
-          const alpha = selectedAlphasForBacktest[i];
-          runRealBacktestBtn.textContent = `Running (${i + 1}/${selectedAlphasForBacktest.length})...`;
+        // Track completion order
+        let completedCount = 0;
+
+        // Create parallel promise for each alpha
+        const alphaPromises = selectedAlphasForBacktest.map(async (alpha, index) => {
+          const startTime = Date.now();
 
           try {
-            // Compute factor
+            // Compute factor - create a fresh copy of dataSource for each request
             const computeReq: any = {
               factorId: alpha.expression,
-              dataSource,
+              dataSource: { ...dataSource },
             };
 
-            console.log(`Computing factor ${i + 1}/${selectedAlphasForBacktest.length}: ${alpha.name}`);
-            const computeRes: FactorComputeResponse = await computeFactor(computeReq);
+            console.log(`Computing factor ${index + 1}/${selectedAlphasForBacktest.length}: ${alpha.name}`);
+            let computeRes: FactorComputeResponse;
+            try {
+              computeRes = await computeFactor(computeReq);
+            } catch (e) {
+              console.error(`computeFactor failed for ${alpha.name}:`, e);
+              throw e;
+            }
             console.log(`Factor computed successfully for ${alpha.name}:`, computeRes);
 
-            // Run backtest
-            const request = {
-              factor: computeRes.factor,
-              returns: computeRes.returns,
-              dates: computeRes.dates,
+            // Use cacheId if available, otherwise send full data
+            const request: any = {
               quantiles: 5,
               weight_method: 'equal',
               long_top_n: 1,
@@ -600,29 +628,147 @@ function initBacktest(): void {
               commission_rate: 0.001,
             };
 
-            const navData: NavData = await runBacktest(request);
+            // Note: backend returns cache_id (snake_case), not cacheId
+            if (computeRes.cache_id) {
+              // Use cache ID - much smaller request
+              request.cacheId = computeRes.cache_id;
+              console.log(`Running backtest for ${alpha.name} using cache: ${request.cacheId}`);
+            } else {
+              // Fallback to sending full data (for backward compatibility)
+              if (!computeRes.factor || !computeRes.returns || !computeRes.dates) {
+                throw new Error(`Invalid computeRes for ${alpha.name}: missing factor/returns/dates`);
+              }
+              request.factor = computeRes.factor;
+              request.returns = computeRes.returns;
+              request.dates = computeRes.dates;
+              console.log(`Running backtest for ${alpha.name} with factor shape: ${request.factor?.length}x${request.factor?.[0]?.length}`);
+            }
+            let navData: NavData;
+            try {
+              navData = await runBacktest(request);
+            } catch (e) {
+              console.error(`runBacktest failed for ${alpha.name}:`, e);
+              throw e;
+            }
+            console.log(`Backtest completed for ${alpha.name}:`, navData.metrics);
 
-            results.push({
-            name: alpha.name,
-            metrics: navData.metrics,
-          });
+            const elapsed = Date.now() - startTime;
+            console.log(`Alpha "${alpha.name}" completed in ${elapsed}ms`);
 
-          // Render first result
-          if (i === 0) {
-            destroyChart();
-            renderChart(navData, canvas);
-            updateMetrics(navData.metrics);
-          }
+            return {
+              name: alpha.name,
+              metrics: navData.metrics,
+              navData,
+              completionOrder: completedCount++,
+              elapsed,
+            };
           } catch (innerError) {
-            console.error(`Failed to process alpha "${alpha.name}" (${i + 1}/${selectedAlphasForBacktest.length}):`, innerError);
+            console.error(`Failed to process alpha "${alpha.name}" (${index + 1}/${selectedAlphasForBacktest.length}):`, innerError);
             const innerErrorMsg = innerError instanceof Error ? innerError.message : 'Unknown error';
+            // Check for network errors
+            if (innerErrorMsg.includes('NetworkError') || innerErrorMsg.includes('Failed to fetch')) {
+              throw new Error(`Network error: Is the server running? (http://localhost:8000)`);
+            }
             throw new Error(`Failed to process alpha "${alpha.name}": ${innerErrorMsg}`);
+          }
+        });
+
+        // Execute sequentially instead of parallel for debugging
+        console.log(`Starting batch backtest for ${alphaPromises.length} alphas (sequential mode)...`);
+        const settledResults: Array<{ status: 'fulfilled' | 'rejected'; value?: any; reason?: any }> = [];
+        for (const promise of alphaPromises) {
+          try {
+            const result = await promise;
+            settledResults.push({ status: 'fulfilled', value: result });
+          } catch (err) {
+            settledResults.push({ status: 'rejected', reason: err });
           }
         }
 
-        // Show summary
-        console.log('Batch backtest results:', results);
-        alert(`Batch backtest complete!\n\n${results.map(r => `${r.name}: IC=${r.metrics.ic_mean?.toFixed(4) || r.metrics.icMean?.toFixed(4)}`).join('\n')}`);
+        // Process results - separate successes and failures
+        const allResults: Array<{
+          name: string;
+          metrics: Metrics;
+          navData: NavData;
+          completionOrder: number;
+          elapsed: number;
+        }> = [];
+        const failures: Array<{ name: string; reason: string }> = [];
+
+        settledResults.forEach((result, index) => {
+          if (result.status === 'fulfilled') {
+            console.log(`Alpha ${index + 1} completed successfully:`, result.value.name);
+            allResults.push(result.value);
+          } else {
+            console.error(`Alpha ${index + 1} failed:`, result.reason);
+            failures.push({
+              name: selectedAlphasForBacktest[index]?.name || `Alpha ${index + 1}`,
+              reason: result.reason instanceof Error ? result.reason.message : String(result.reason)
+            });
+          }
+        });
+
+        console.log(`Batch complete: ${allResults.length} succeeded, ${failures.length} failed`);
+
+        if (failures.length > 0) {
+          console.warn('Failed alphas:', failures);
+        }
+
+        // If no results at all, show error
+        if (allResults.length === 0) {
+          throw new Error(`All ${failures.length} alphas failed. Check console for details.`);
+        }
+
+        // Sort by completion order (fastest first)
+        allResults.sort((a, b) => a.completionOrder - b.completionOrder);
+
+        // Render all charts in order
+        for (const result of allResults) {
+          // Create chart section for each alpha
+          const chartSection = document.createElement('div');
+          chartSection.className = 'alpha-chart-section';
+          chartSection.style.marginBottom = '24px';
+          chartSection.style.padding = '16px';
+          chartSection.style.background = '#f9fafb';
+          chartSection.style.borderRadius = '8px';
+          chartSection.style.height = '350px';
+
+          // Add title with metrics
+          const icValue = result.metrics.ic_mean ?? result.metrics.icMean ?? 0;
+          const title = document.createElement('h3');
+          title.textContent = `${result.name} (IC: ${icValue.toFixed(4)}, ${result.elapsed}ms)`;
+          title.style.margin = '0 0 12px 0';
+          title.style.color = '#374151';
+          chartSection.appendChild(title);
+
+          // Create canvas for this chart
+          const canvas = document.createElement('canvas');
+          chartSection.appendChild(canvas);
+
+          if (chartContainer) {
+            chartContainer.appendChild(chartSection);
+          }
+
+          // Render chart with error handling
+          try {
+            renderChart(result.navData, canvas);
+            console.log(`Chart rendered successfully for ${result.name}`);
+          } catch (chartError) {
+            console.error(`Failed to render chart for ${result.name}:`, chartError);
+          }
+        }
+
+        // Update metrics display with first result
+        if (allResults.length > 0) {
+          updateMetrics(allResults[0].metrics);
+        }
+
+        // Show summary in console
+        console.log('Batch backtest results:', allResults.map(r => ({
+          name: r.name,
+          ic: r.metrics.ic_mean ?? r.metrics.icMean,
+          elapsed: r.elapsed,
+        })));
 
       } else {
         // Single mode: run backtest with database data directly
