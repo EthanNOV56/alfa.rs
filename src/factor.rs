@@ -7,11 +7,11 @@
 use crate::expr::{BinaryOp, Expr, Literal, UnaryOp};
 use crate::lazy::{DataSource, LogicalPlan};
 use rayon::prelude::*;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Instant;
-use std::hash::{Hash, Hasher};
-use std::collections::hash_map::DefaultHasher;
 
 /// Configuration for resource limits and timeout to prevent system overload
 #[derive(Debug, Clone)]
@@ -218,9 +218,10 @@ impl FactorRegistry {
 
             // Extract the expression from plan (unwrap from Projection)
             let expr = match &info.plan {
-                LogicalPlan::Projection { exprs, .. } => {
-                    exprs.first().map(|(_, e)| e.clone()).ok_or("Empty expression")?
-                }
+                LogicalPlan::Projection { exprs, .. } => exprs
+                    .first()
+                    .map(|(_, e)| e.clone())
+                    .ok_or("Empty expression")?,
                 _ => continue,
             };
 
@@ -423,7 +424,11 @@ impl FactorRegistry {
             // Element-wise min of two series
             "min" => {
                 if arg_values.len() >= 2 {
-                    Ok(arg_values[0].iter().zip(arg_values[1].iter()).map(|(&a, &b)| a.min(b)).collect())
+                    Ok(arg_values[0]
+                        .iter()
+                        .zip(arg_values[1].iter())
+                        .map(|(&a, &b)| a.min(b))
+                        .collect())
                 } else {
                     Ok(arg_values[0].clone())
                 }
@@ -431,7 +436,11 @@ impl FactorRegistry {
             // Element-wise max of two series
             "max" => {
                 if arg_values.len() >= 2 {
-                    Ok(arg_values[0].iter().zip(arg_values[1].iter()).map(|(&a, &b)| a.max(b)).collect())
+                    Ok(arg_values[0]
+                        .iter()
+                        .zip(arg_values[1].iter())
+                        .map(|(&a, &b)| a.max(b))
+                        .collect())
                 } else {
                     Ok(arg_values[0].clone())
                 }
@@ -441,15 +450,21 @@ impl FactorRegistry {
                 let total: f64 = arg_values[0].iter().sum();
                 Ok(arg_values[0].iter().map(|_| total).collect())
             }
-            "log" => Ok(arg_values[0].iter().map(|v| {
-                if *v > 0.0 { v.ln() } else { f64::NAN }
-            }).collect()),
-            "log10" => Ok(arg_values[0].iter().map(|v| {
-                if *v > 0.0 { v.log10() } else { f64::NAN }
-            }).collect()),
+            "log" => Ok(arg_values[0]
+                .iter()
+                .map(|v| if *v > 0.0 { v.ln() } else { f64::NAN })
+                .collect()),
+            "log10" => Ok(arg_values[0]
+                .iter()
+                .map(|v| if *v > 0.0 { v.log10() } else { f64::NAN })
+                .collect()),
             "sqrt" => Ok(arg_values[0].iter().map(|v| v.sqrt()).collect()),
             "power" => {
-                let exponent = args.get(1).and_then(|a| get_literal_int(a)).map(|e| e as f64).unwrap_or(2.0);
+                let exponent = args
+                    .get(1)
+                    .and_then(|a| get_literal_int(a))
+                    .map(|e| e as f64)
+                    .unwrap_or(2.0);
                 Ok(arg_values[0].iter().map(|v| v.powf(exponent)).collect())
             }
             "decay_linear" | "decay" => {
@@ -464,18 +479,39 @@ impl FactorRegistry {
                 if args.len() != 3 {
                     return Err("IF requires 3 arguments".to_string());
                 }
-                let result: Vec<f64> = arg_values[0].iter()
+                let result: Vec<f64> = arg_values[0]
+                    .iter()
                     .zip(arg_values[1].iter())
                     .zip(arg_values[2].iter())
                     .map(|((&c, &t), &f)| if c > 0.0 { t } else { f })
                     .collect();
                 Ok(result)
             }
-            "gt" | "greater" => Ok(arg_values[0].iter().zip(arg_values[1].iter()).map(|(&x, &y)| if x > y { 1.0 } else { 0.0 }).collect()),
-            "lt" | "less" => Ok(arg_values[0].iter().zip(arg_values[1].iter()).map(|(&x, &y)| if x < y { 1.0 } else { 0.0 }).collect()),
-            "gte" => Ok(arg_values[0].iter().zip(arg_values[1].iter()).map(|(&x, &y)| if x >= y { 1.0 } else { 0.0 }).collect()),
-            "lte" => Ok(arg_values[0].iter().zip(arg_values[1].iter()).map(|(&x, &y)| if x <= y { 1.0 } else { 0.0 }).collect()),
-            "eq" | "equal" => Ok(arg_values[0].iter().zip(arg_values[1].iter()).map(|(&x, &y)| if (x - y).abs() < 1e-10 { 1.0 } else { 0.0 }).collect()),
+            "gt" | "greater" => Ok(arg_values[0]
+                .iter()
+                .zip(arg_values[1].iter())
+                .map(|(&x, &y)| if x > y { 1.0 } else { 0.0 })
+                .collect()),
+            "lt" | "less" => Ok(arg_values[0]
+                .iter()
+                .zip(arg_values[1].iter())
+                .map(|(&x, &y)| if x < y { 1.0 } else { 0.0 })
+                .collect()),
+            "gte" => Ok(arg_values[0]
+                .iter()
+                .zip(arg_values[1].iter())
+                .map(|(&x, &y)| if x >= y { 1.0 } else { 0.0 })
+                .collect()),
+            "lte" => Ok(arg_values[0]
+                .iter()
+                .zip(arg_values[1].iter())
+                .map(|(&x, &y)| if x <= y { 1.0 } else { 0.0 })
+                .collect()),
+            "eq" | "equal" => Ok(arg_values[0]
+                .iter()
+                .zip(arg_values[1].iter())
+                .map(|(&x, &y)| if (x - y).abs() < 1e-10 { 1.0 } else { 0.0 })
+                .collect()),
             _ => Err(format!("Unknown function: {}", name)),
         }
     }
@@ -522,7 +558,11 @@ impl FactorRegistry {
                 let n = window; // default 20
                 let m = args.get(2).and_then(|a| get_literal_int(a)).unwrap_or(2);
                 let alpha = m as f64 / n as f64;
-                let alpha = if alpha > 0.0 && alpha <= 1.0 { alpha } else { 0.5 };
+                let alpha = if alpha > 0.0 && alpha <= 1.0 {
+                    alpha
+                } else {
+                    0.5
+                };
                 Ok(sma(&vals, alpha))
             }
             "lowday" => Ok(lowday(&vals, window)),
@@ -644,7 +684,11 @@ impl FactorRegistry {
                 if args.len() >= 2 {
                     let vals1 = self.eval_expr(&args[0], data, n_rows)?;
                     let vals2 = self.eval_expr(&args[1], data, n_rows)?;
-                    Ok(vals1.iter().zip(vals2.iter()).map(|(&a, &b)| a.min(b)).collect())
+                    Ok(vals1
+                        .iter()
+                        .zip(vals2.iter())
+                        .map(|(&a, &b)| a.min(b))
+                        .collect())
                 } else {
                     let vals = self.eval_args(args, data, n_rows)?;
                     Ok(vals)
@@ -655,7 +699,11 @@ impl FactorRegistry {
                 if args.len() >= 2 {
                     let vals1 = self.eval_expr(&args[0], data, n_rows)?;
                     let vals2 = self.eval_expr(&args[1], data, n_rows)?;
-                    Ok(vals1.iter().zip(vals2.iter()).map(|(&a, &b)| a.max(b)).collect())
+                    Ok(vals1
+                        .iter()
+                        .zip(vals2.iter())
+                        .map(|(&a, &b)| a.max(b))
+                        .collect())
                 } else {
                     let vals = self.eval_args(args, data, n_rows)?;
                     Ok(vals)
@@ -669,15 +717,17 @@ impl FactorRegistry {
             }
             "log" => {
                 let vals = self.eval_args(args, data, n_rows)?;
-                Ok(vals.iter().map(|v| {
-                    if *v > 0.0 { v.ln() } else { f64::NAN }
-                }).collect())
+                Ok(vals
+                    .iter()
+                    .map(|v| if *v > 0.0 { v.ln() } else { f64::NAN })
+                    .collect())
             }
             "log10" => {
                 let vals = self.eval_args(args, data, n_rows)?;
-                Ok(vals.iter().map(|v| {
-                    if *v > 0.0 { v.log10() } else { f64::NAN }
-                }).collect())
+                Ok(vals
+                    .iter()
+                    .map(|v| if *v > 0.0 { v.log10() } else { f64::NAN })
+                    .collect())
             }
             "sqrt" => {
                 let vals = self.eval_args(args, data, n_rows)?;
@@ -685,7 +735,11 @@ impl FactorRegistry {
             }
             "power" => {
                 let vals = self.eval_args(args, data, n_rows)?;
-                let exponent = args.get(1).and_then(|a| get_literal_int(a)).map(|e| e as f64).unwrap_or(2.0);
+                let exponent = args
+                    .get(1)
+                    .and_then(|a| get_literal_int(a))
+                    .map(|e| e as f64)
+                    .unwrap_or(2.0);
                 Ok(vals.iter().map(|v| v.powf(exponent)).collect())
             }
             "decay_linear" | "decay" => {
@@ -702,13 +756,17 @@ impl FactorRegistry {
                 // IF(cond, true_val, false_val) - ternary operator
                 // If cond > 0, return true_val, else return false_val
                 if args.len() != 3 {
-                    return Err("IF requires 3 arguments: IF(condition, true_value, false_value)".to_string());
+                    return Err(
+                        "IF requires 3 arguments: IF(condition, true_value, false_value)"
+                            .to_string(),
+                    );
                 }
                 let cond = self.eval_expr(&args[0], data, n_rows)?;
                 let true_val = self.eval_expr(&args[1], data, n_rows)?;
                 let false_val = self.eval_expr(&args[2], data, n_rows)?;
 
-                let result: Vec<f64> = cond.iter()
+                let result: Vec<f64> = cond
+                    .iter()
                     .zip(true_val.iter())
                     .zip(false_val.iter())
                     .map(|((&c, &t), &f)| if c > 0.0 { t } else { f })
@@ -722,7 +780,10 @@ impl FactorRegistry {
                 }
                 let a = self.eval_expr(&args[0], data, n_rows)?;
                 let b = self.eval_expr(&args[1], data, n_rows)?;
-                Ok(a.iter().zip(b.iter()).map(|(&x, &y)| if x > y { 1.0 } else { 0.0 }).collect())
+                Ok(a.iter()
+                    .zip(b.iter())
+                    .map(|(&x, &y)| if x > y { 1.0 } else { 0.0 })
+                    .collect())
             }
             "lt" | "less" | "less_than" => {
                 if args.len() != 2 {
@@ -730,7 +791,10 @@ impl FactorRegistry {
                 }
                 let a = self.eval_expr(&args[0], data, n_rows)?;
                 let b = self.eval_expr(&args[1], data, n_rows)?;
-                Ok(a.iter().zip(b.iter()).map(|(&x, &y)| if x < y { 1.0 } else { 0.0 }).collect())
+                Ok(a.iter()
+                    .zip(b.iter())
+                    .map(|(&x, &y)| if x < y { 1.0 } else { 0.0 })
+                    .collect())
             }
             "gte" | "greater_equal" => {
                 if args.len() != 2 {
@@ -738,7 +802,10 @@ impl FactorRegistry {
                 }
                 let a = self.eval_expr(&args[0], data, n_rows)?;
                 let b = self.eval_expr(&args[1], data, n_rows)?;
-                Ok(a.iter().zip(b.iter()).map(|(&x, &y)| if x >= y { 1.0 } else { 0.0 }).collect())
+                Ok(a.iter()
+                    .zip(b.iter())
+                    .map(|(&x, &y)| if x >= y { 1.0 } else { 0.0 })
+                    .collect())
             }
             "lte" | "less_equal" => {
                 if args.len() != 2 {
@@ -746,7 +813,10 @@ impl FactorRegistry {
                 }
                 let a = self.eval_expr(&args[0], data, n_rows)?;
                 let b = self.eval_expr(&args[1], data, n_rows)?;
-                Ok(a.iter().zip(b.iter()).map(|(&x, &y)| if x <= y { 1.0 } else { 0.0 }).collect())
+                Ok(a.iter()
+                    .zip(b.iter())
+                    .map(|(&x, &y)| if x <= y { 1.0 } else { 0.0 })
+                    .collect())
             }
             "eq" | "equal" => {
                 if args.len() != 2 {
@@ -754,7 +824,10 @@ impl FactorRegistry {
                 }
                 let a = self.eval_expr(&args[0], data, n_rows)?;
                 let b = self.eval_expr(&args[1], data, n_rows)?;
-                Ok(a.iter().zip(b.iter()).map(|(&x, &y)| if (x - y).abs() < 1e-10 { 1.0 } else { 0.0 }).collect())
+                Ok(a.iter()
+                    .zip(b.iter())
+                    .map(|(&x, &y)| if (x - y).abs() < 1e-10 { 1.0 } else { 0.0 })
+                    .collect())
             }
             "vwap" => {
                 // VWAP = amount / volume
@@ -809,7 +882,11 @@ impl FactorRegistry {
                 let n = window;
                 let m = args.get(2).and_then(|a| get_literal_int(a)).unwrap_or(2);
                 let alpha = m as f64 / n as f64;
-                let alpha = if alpha > 0.0 && alpha <= 1.0 { alpha } else { 0.5 };
+                let alpha = if alpha > 0.0 && alpha <= 1.0 {
+                    alpha
+                } else {
+                    0.5
+                };
                 Ok(sma(&vals, alpha))
             }
             "ts_delta" | "delta" => Ok(ts_delta(&vals, window)),
@@ -1037,7 +1114,12 @@ fn eval_function_memoized(
     let name_lower = name.to_lowercase();
 
     // Check for ts_ prefix OR known ts functions without prefix
-    if name_lower.starts_with("ts_") || matches!(name_lower.as_str(), "sma" | "lowday" | "highday" | "wma" | "min" | "max" | "sum") {
+    if name_lower.starts_with("ts_")
+        || matches!(
+            name_lower.as_str(),
+            "sma" | "lowday" | "highday" | "wma" | "min" | "max" | "sum"
+        )
+    {
         return eval_ts_function_memoized(&name_lower, args, data, n_rows, cache);
     }
 
@@ -1059,7 +1141,11 @@ fn eval_function_memoized(
         // Element-wise min of two series: min(a, b)
         "min" => {
             if args.len() >= 2 {
-                Ok(arg_values[0].iter().zip(arg_values[1].iter()).map(|(&a, &b)| a.min(b)).collect())
+                Ok(arg_values[0]
+                    .iter()
+                    .zip(arg_values[1].iter())
+                    .map(|(&a, &b)| a.min(b))
+                    .collect())
             } else {
                 Ok(arg_values[0].clone())
             }
@@ -1067,7 +1153,11 @@ fn eval_function_memoized(
         // Element-wise max of two series: max(a, b)
         "max" => {
             if args.len() >= 2 {
-                Ok(arg_values[0].iter().zip(arg_values[1].iter()).map(|(&a, &b)| a.max(b)).collect())
+                Ok(arg_values[0]
+                    .iter()
+                    .zip(arg_values[1].iter())
+                    .map(|(&a, &b)| a.max(b))
+                    .collect())
             } else {
                 Ok(arg_values[0].clone())
             }
@@ -1077,12 +1167,14 @@ fn eval_function_memoized(
             let total: f64 = arg_values[0].iter().sum();
             Ok(arg_values[0].iter().map(|_| total).collect())
         }
-        "log" => Ok(arg_values[0].iter().map(|v| {
-            if *v > 0.0 { v.ln() } else { f64::NAN }
-        }).collect()),
-        "log10" => Ok(arg_values[0].iter().map(|v| {
-            if *v > 0.0 { v.log10() } else { f64::NAN }
-        }).collect()),
+        "log" => Ok(arg_values[0]
+            .iter()
+            .map(|v| if *v > 0.0 { v.ln() } else { f64::NAN })
+            .collect()),
+        "log10" => Ok(arg_values[0]
+            .iter()
+            .map(|v| if *v > 0.0 { v.log10() } else { f64::NAN })
+            .collect()),
         "sqrt" => Ok(arg_values[0].iter().map(|v| v.sqrt()).collect()),
         "power" => {
             let exponent = get_literal_int(&args[1]).map(|e| e as f64).unwrap_or(2.0);
@@ -1100,18 +1192,39 @@ fn eval_function_memoized(
             if args.len() != 3 {
                 return Err("IF requires 3 arguments".to_string());
             }
-            let result: Vec<f64> = arg_values[0].iter()
+            let result: Vec<f64> = arg_values[0]
+                .iter()
                 .zip(arg_values[1].iter())
                 .zip(arg_values[2].iter())
                 .map(|((&c, &t), &f)| if c > 0.0 { t } else { f })
                 .collect();
             Ok(result)
         }
-        "gt" | "greater" => Ok(arg_values[0].iter().zip(arg_values[1].iter()).map(|(&x, &y)| if x > y { 1.0 } else { 0.0 }).collect()),
-        "lt" | "less" => Ok(arg_values[0].iter().zip(arg_values[1].iter()).map(|(&x, &y)| if x < y { 1.0 } else { 0.0 }).collect()),
-        "gte" => Ok(arg_values[0].iter().zip(arg_values[1].iter()).map(|(&x, &y)| if x >= y { 1.0 } else { 0.0 }).collect()),
-        "lte" => Ok(arg_values[0].iter().zip(arg_values[1].iter()).map(|(&x, &y)| if x <= y { 1.0 } else { 0.0 }).collect()),
-        "eq" | "equal" => Ok(arg_values[0].iter().zip(arg_values[1].iter()).map(|(&x, &y)| if (x - y).abs() < 1e-10 { 1.0 } else { 0.0 }).collect()),
+        "gt" | "greater" => Ok(arg_values[0]
+            .iter()
+            .zip(arg_values[1].iter())
+            .map(|(&x, &y)| if x > y { 1.0 } else { 0.0 })
+            .collect()),
+        "lt" | "less" => Ok(arg_values[0]
+            .iter()
+            .zip(arg_values[1].iter())
+            .map(|(&x, &y)| if x < y { 1.0 } else { 0.0 })
+            .collect()),
+        "gte" => Ok(arg_values[0]
+            .iter()
+            .zip(arg_values[1].iter())
+            .map(|(&x, &y)| if x >= y { 1.0 } else { 0.0 })
+            .collect()),
+        "lte" => Ok(arg_values[0]
+            .iter()
+            .zip(arg_values[1].iter())
+            .map(|(&x, &y)| if x <= y { 1.0 } else { 0.0 })
+            .collect()),
+        "eq" | "equal" => Ok(arg_values[0]
+            .iter()
+            .zip(arg_values[1].iter())
+            .map(|(&x, &y)| if (x - y).abs() < 1e-10 { 1.0 } else { 0.0 })
+            .collect()),
         _ => Err(format!("Unknown function: {}", name)),
     }
 }
@@ -1156,7 +1269,11 @@ fn eval_ts_function_memoized(
             let n = window; // default 20
             let m = args.get(2).and_then(|a| get_literal_int(a)).unwrap_or(2);
             let alpha = m as f64 / n as f64;
-            let alpha = if alpha > 0.0 && alpha <= 1.0 { alpha } else { 0.5 };
+            let alpha = if alpha > 0.0 && alpha <= 1.0 {
+                alpha
+            } else {
+                0.5
+            };
             Ok(sma(&vals, alpha))
         }
         "lowday" => Ok(lowday(&vals, window)),
@@ -1190,7 +1307,11 @@ fn compute_exprs_parallel(
 }
 
 /// Simple expression evaluator for parallel computation
-fn eval_expr_simple(expr: &Expr, data: &HashMap<String, Vec<f64>>, n_rows: usize) -> Result<Vec<f64>, String> {
+fn eval_expr_simple(
+    expr: &Expr,
+    data: &HashMap<String, Vec<f64>>,
+    n_rows: usize,
+) -> Result<Vec<f64>, String> {
     match expr {
         Expr::Column(name) => data
             .get(name)
@@ -1331,7 +1452,9 @@ fn ts_argmax(vals: &[f64], window: usize) -> Vec<f64> {
         let start = i.saturating_sub(window - 1);
         let slice = &vals[start..=i];
         let max_val = slice.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        let pos = slice.iter().position(|&x| (x - max_val).abs() < f64::EPSILON);
+        let pos = slice
+            .iter()
+            .position(|&x| (x - max_val).abs() < f64::EPSILON);
         result[i] = pos.map(|p| (slice.len() - p) as f64).unwrap_or(0.0);
     }
     result
@@ -1345,7 +1468,9 @@ fn ts_argmin(vals: &[f64], window: usize) -> Vec<f64> {
         let start = i.saturating_sub(window - 1);
         let slice = &vals[start..=i];
         let min_val = slice.iter().cloned().fold(f64::INFINITY, f64::min);
-        let pos = slice.iter().position(|&x| (x - min_val).abs() < f64::EPSILON);
+        let pos = slice
+            .iter()
+            .position(|&x| (x - min_val).abs() < f64::EPSILON);
         result[i] = pos.map(|p| (slice.len() - p) as f64).unwrap_or(0.0);
     }
     result
@@ -1417,7 +1542,7 @@ fn ts_cov(vals1: &[f64], vals2: &[f64], window: usize) -> Vec<f64> {
             let d2 = slice2[j] - mean2;
             cov += d1 * d2;
         }
-        result[i] = cov / (len - 1) as f64;  // Sample covariance
+        result[i] = cov / (len - 1) as f64; // Sample covariance
     }
     result
 }
@@ -1455,9 +1580,12 @@ fn lowday(vals: &[f64], window: usize) -> Vec<f64> {
         }
 
         // Find position of minimum (from start of window)
-        let min_pos = slice.iter().enumerate().min_by(|(_, a), (_, b)| {
-            a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
-        }).map(|(idx, _)| idx).unwrap_or(0);
+        let min_pos = slice
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(idx, _)| idx)
+            .unwrap_or(0);
 
         // Days since low = position from end
         result[i] = (slice.len() - 1 - min_pos) as f64;
@@ -1480,9 +1608,12 @@ fn highday(vals: &[f64], window: usize) -> Vec<f64> {
         }
 
         // Find position of maximum (from start of window)
-        let max_pos = slice.iter().enumerate().max_by(|(_, a), (_, b)| {
-            a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
-        }).map(|(idx, _)| idx).unwrap_or(0);
+        let max_pos = slice
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(idx, _)| idx)
+            .unwrap_or(0);
 
         // Days since high = position from end
         result[i] = (slice.len() - 1 - max_pos) as f64;
@@ -1582,7 +1713,9 @@ fn rank(vals: &[f64]) -> Vec<f64> {
     }
 
     // Separate NaN values and valid values
-    let mut indexed: Vec<(usize, f64)> = vals.iter().enumerate()
+    let mut indexed: Vec<(usize, f64)> = vals
+        .iter()
+        .enumerate()
         .filter(|(_, v)| !v.is_nan())
         .map(|(i, &v)| (i, v))
         .collect();
@@ -1625,15 +1758,17 @@ fn scale(vals: &[f64]) -> Vec<f64> {
 }
 
 fn sign(vals: &[f64]) -> Vec<f64> {
-    vals.iter().map(|v| {
-        if *v > 0.0 {
-            1.0
-        } else if *v < 0.0 {
-            -1.0
-        } else {
-            0.0
-        }
-    }).collect()
+    vals.iter()
+        .map(|v| {
+            if *v > 0.0 {
+                1.0
+            } else if *v < 0.0 {
+                -1.0
+            } else {
+                0.0
+            }
+        })
+        .collect()
 }
 
 // =============================================================================
@@ -1831,7 +1966,10 @@ fn parse_primary(tokens: &[Token], start: usize) -> Result<(Expr, usize), String
                 Err("Expected ')'".to_string())
             }
         }
-        _ => Err(format!("Unexpected token at position {}: {:?}", start, tokens[start])),
+        _ => Err(format!(
+            "Unexpected token at position {}: {:?}",
+            start, tokens[start]
+        )),
     }
 }
 

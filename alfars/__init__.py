@@ -25,6 +25,7 @@ __version__ = "0.2.0"
 
 # Lab command
 from .lab import main as lab
+
 __author__ = "EthanNOV56"
 
 try:
@@ -81,6 +82,7 @@ try:
         ts_sum,
         ts_count,
     )
+
     HAS_RUST_EXT = True
     # Create aliases for internal use
     _quantile_backtest = quantile_backtest
@@ -98,59 +100,73 @@ except ImportError:
     from ._fallback import (
         quantile_backtest as _quantile_backtest,
     )
+
     # Create simple stubs for new functionality when Rust extension is missing
     class Expr:
         """Stub Expr class for fallback mode."""
+
         pass
 
     class Series:
         """Stub Series class for fallback mode."""
+
         pass
 
     class DataFrame:
         """Stub DataFrame class for fallback mode."""
+
         pass
 
     class LazyFrame:
         """Stub LazyFrame class for fallback mode."""
+
         pass
 
     # GP system stubs
     class GpEngine:
         """Stub GpEngine class for fallback mode."""
+
         pass
 
     class PersistenceManager:
         """Stub PersistenceManager class for fallback mode."""
+
         pass
 
     class FactorMetadata:
         """Stub FactorMetadata class for fallback mode."""
+
         pass
 
     class GPHistoryRecord:
         """Stub GPHistoryRecord class for fallback mode."""
+
         pass
 
     class MetaLearningAnalyzer:
         """Stub MetaLearningAnalyzer class for fallback mode."""
+
         pass
 
     class GPRecommendations:
         """Stub GPRecommendations class for fallback mode."""
+
         pass
 
     # Factor registry stubs
     class FactorRegistry:
         """Stub FactorRegistry class for fallback mode."""
+
         pass
 
     class FactorInfo:
         """Stub FactorInfo class for fallback mode."""
+
         pass
 
     class FactorResult:
         """Stub FactorResult class for fallback mode."""
+
         pass
 
     def rolling_window(*args, **kwargs):
@@ -184,6 +200,8 @@ except ImportError:
     def evaluate_expression(*args, **kwargs):
         """Stub function for fallback mode."""
         return np.array([])
+
+
 __all__ = [
     # Core backtesting
     "factor_returns",
@@ -238,6 +256,7 @@ __all__ = [
 # =============================================================================
 # Ergonomic Factor Registration API
 # =============================================================================
+
 
 class AlphaRegistry:
     """
@@ -390,6 +409,7 @@ class AlphaRegistry:
 # Expression Parsing and Optimization
 # =============================================================================
 
+
 def parse_expression(expression: str) -> "Expr":
     """
     Parse a factor expression string into an AST.
@@ -415,6 +435,7 @@ def parse_expression(expression: str) -> "Expr":
     # Use Rust implementation if available
     try:
         from ._core import parse_expression as _parse
+
         return _parse(expression)
     except (ImportError, AttributeError):
         # Fallback: return a basic expression
@@ -444,6 +465,7 @@ def optimize_expression(expr: "Expr") -> "Expr":
 
     try:
         from ._core import optimize_expression as _optimize
+
         return _optimize(expr)
     except (ImportError, AttributeError):
         return expr
@@ -452,6 +474,7 @@ def optimize_expression(expr: "Expr") -> "Expr":
 # =============================================================================
 # Dimension Types
 # =============================================================================
+
 
 class Dimension:
     """
@@ -546,8 +569,14 @@ class BacktestEngine:
             )
 
         self._engine = PyBacktestEngine(
-            factor, returns, quantiles, weight_method,
-            long_top_n, short_top_n, commission_rate, weights
+            factor,
+            returns,
+            quantiles,
+            weight_method,
+            long_top_n,
+            short_top_n,
+            commission_rate,
+            weights,
         )
         self.factor_shape = factor.shape
         self.returns_shape = returns.shape
@@ -591,7 +620,9 @@ class BacktestResult:
         self.max_drawdown = max_drawdown
         self.turnover = turnover
         self.long_returns = long_returns if long_returns is not None else np.array([])
-        self.short_returns = short_returns if short_returns is not None else np.array([])
+        self.short_returns = (
+            short_returns if short_returns is not None else np.array([])
+        )
 
     @classmethod
     def from_rust_result(cls, rust_result: Any) -> "BacktestResult":
@@ -604,13 +635,13 @@ class BacktestResult:
             ic_series=np.array(rust_result.ic_series),
             ic_mean=rust_result.ic_mean,
             ic_ir=rust_result.ic_ir,
-            total_return=getattr(rust_result, 'total_return', 0.0),
-            annualized_return=getattr(rust_result, 'annualized_return', 0.0),
-            sharpe_ratio=getattr(rust_result, 'sharpe_ratio', 0.0),
-            max_drawdown=getattr(rust_result, 'max_drawdown', 0.0),
-            turnover=getattr(rust_result, 'turnover', 0.0),
-            long_returns=getattr(rust_result, 'long_returns', np.array([])),
-            short_returns=getattr(rust_result, 'short_returns', np.array([])),
+            total_return=getattr(rust_result, "total_return", 0.0),
+            annualized_return=getattr(rust_result, "annualized_return", 0.0),
+            sharpe_ratio=getattr(rust_result, "sharpe_ratio", 0.0),
+            max_drawdown=getattr(rust_result, "max_drawdown", 0.0),
+            turnover=getattr(rust_result, "turnover", 0.0),
+            long_returns=getattr(rust_result, "long_returns", np.array([])),
+            short_returns=getattr(rust_result, "short_returns", np.array([])),
         )
 
     def to_dict(self) -> Dict[str, Union[np.ndarray, float]]:
@@ -657,7 +688,7 @@ Group Mean Returns:
         group_means = self.group_returns.mean(axis=0)
         lines = []
         for i, mean in enumerate(group_means):
-            lines.append(f"  Group {i+1}: {mean:.6%}")
+            lines.append(f"  Group {i + 1}: {mean:.6%}")
         return "\n".join(lines)
 
 
@@ -730,16 +761,14 @@ def factor_returns(
     # Convert results back to pandas
     factor_returns_df = pd.DataFrame(
         result.group_returns,
-        index=common_dates[:result.group_returns.shape[0]],
-        columns=[f"Q{i+1}" for i in range(quantiles)]
+        index=common_dates[: result.group_returns.shape[0]],
+        columns=[f"Q{i + 1}" for i in range(quantiles)],
     )
 
     # Create factor quantiles series
     # Note: This is a simplified version
     factor_quantiles = pd.Series(
-        index=factor.index,
-        data=np.nan,
-        name="factor_quantile"
+        index=factor.index, data=np.nan, name="factor_quantile"
     )
 
     return {
@@ -789,14 +818,27 @@ def quantile_backtest(
     if not HAS_RUST_EXT:
         # Fallback to pure Python implementation
         from ._fallback import quantile_backtest as python_backtest
+
         return python_backtest(
-            factor, returns, quantiles, weight_method,
-            long_top_n, short_top_n, commission_rate, weights
+            factor,
+            returns,
+            quantiles,
+            weight_method,
+            long_top_n,
+            short_top_n,
+            commission_rate,
+            weights,
         )
 
     rust_result = _quantile_backtest(
-        factor, returns, quantiles, weight_method,
-        long_top_n, short_top_n, commission_rate, weights
+        factor,
+        returns,
+        quantiles,
+        weight_method,
+        long_top_n,
+        short_top_n,
+        commission_rate,
+        weights,
     )
     return BacktestResult.from_rust_result(rust_result)
 
@@ -823,6 +865,7 @@ def compute_information_coefficient(
     if not HAS_RUST_EXT:
         # Fallback
         from ._fallback import compute_ic
+
         return compute_ic(factor, returns)
 
     return _compute_ic(factor, returns)
@@ -862,8 +905,7 @@ def create_factor_tear_sheet(
 
     # Compute factor returns
     results = factor_returns(
-        factor, forward_returns, quantiles=quantiles,
-        periods=periods, **kwargs
+        factor, forward_returns, quantiles=quantiles, periods=periods, **kwargs
     )
 
     # Compute IC

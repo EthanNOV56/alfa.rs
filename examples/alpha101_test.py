@@ -38,9 +38,7 @@ from alfars import (
 
 
 def create_sample_data(
-    n_days: int = 252,
-    n_assets: int = 100,
-    seed: int = 42
+    n_days: int = 252, n_assets: int = 100, seed: int = 42
 ) -> Dict[str, npt.NDArray]:
     """Generate realistic sample OHLCV data with correlations."""
     np.random.seed(seed)
@@ -53,7 +51,9 @@ def create_sample_data(
     # Generate correlated random numbers
     correlation = 0.3
     uncorrelated = np.random.randn(n_days, n_assets)
-    correlated = correlation * uncorrelated + np.sqrt(1 - correlation**2) * np.random.randn(n_days, n_assets)
+    correlated = correlation * uncorrelated + np.sqrt(
+        1 - correlation**2
+    ) * np.random.randn(n_days, n_assets)
 
     # Generate prices
     returns = mu * dt + sigma * np.sqrt(dt) * correlated
@@ -62,20 +62,24 @@ def create_sample_data(
     # Generate OHLCV from close
     daily_range = np.abs(np.random.randn(n_days, n_assets)) * 0.01 + 0.005
     open_price = close * (1 + np.random.randn(n_days, n_assets) * 0.002)
-    high = np.maximum(close, open_price) * (1 + daily_range * np.random.rand(n_days, n_assets))
-    low = np.minimum(close, open_price) * (1 - daily_range * np.random.rand(n_days, n_assets))
+    high = np.maximum(close, open_price) * (
+        1 + daily_range * np.random.rand(n_days, n_assets)
+    )
+    low = np.minimum(close, open_price) * (
+        1 - daily_range * np.random.rand(n_days, n_assets)
+    )
     volume = np.random.lognormal(15, 1, size=(n_days, n_assets))
 
     # Calculate vwap (simplified)
     vwap = (open_price + high + low + close) / 4
 
     return {
-        'close': close,
-        'open': open_price,
-        'high': high,
-        'low': low,
-        'volume': volume,
-        'vwap': vwap,
+        "close": close,
+        "open": open_price,
+        "high": high,
+        "low": low,
+        "volume": volume,
+        "vwap": vwap,
     }
 
 
@@ -84,17 +88,17 @@ class Alpha101:
 
     def __init__(self, data: Dict[str, npt.NDArray]):
         self.data = data
-        self.n_days, self.n_assets = data['close'].shape
+        self.n_days, self.n_assets = data["close"].shape
         self._setup_columns()
 
     def _setup_columns(self):
         """Set up column references."""
-        self.close = Expr.col('close')
-        self.open = Expr.col('open')
-        self.high = Expr.col('high')
-        self.low = Expr.col('low')
-        self.volume = Expr.col('volume')
-        self.vwap = Expr.col('vwap')
+        self.close = Expr.col("close")
+        self.open = Expr.col("open")
+        self.high = Expr.col("high")
+        self.low = Expr.col("low")
+        self.volume = Expr.col("volume")
+        self.vwap = Expr.col("vwap")
 
         # Pre-compute returns
         self.returns = (self.close - lag(self.close, 1)) / lag(self.close, 1)
@@ -107,7 +111,9 @@ class Alpha101:
 
     def alpha003(self) -> Expr:
         """-1 * correlation(rank(open), rank(volume), 10)"""
-        return sign(ts_corr(rank(self.open), rank(self.volume), 10)) * Expr.lit_float(-1)
+        return sign(ts_corr(rank(self.open), rank(self.volume), 10)) * Expr.lit_float(
+            -1
+        )
 
     def alpha004(self) -> Expr:
         """-1 * Ts_Rank(rank(low), 9)"""
@@ -126,7 +132,9 @@ class Alpha101:
         """(adv20 < volume) ? ((-1 * ts_rank(abs(returns), 2)) * ts_rank(open - vwap, 2)) : -1"""
         adv20 = rolling_mean(self.volume, 20)
         # Simplified: use sign instead of conditional
-        return sign(ts_rank(self.returns.abs(), 2) * ts_rank(self.open - self.vwap, 2)) * Expr.lit_float(-1)
+        return sign(
+            ts_rank(self.returns.abs(), 2) * ts_rank(self.open - self.vwap, 2)
+        ) * Expr.lit_float(-1)
 
     def alpha008(self) -> Expr:
         """-1 * rank(((sum(open, 5) * sum(returns, 5)) - delay((sum(open, 5) * sum(returns, 5)), 10)))"""
@@ -181,7 +189,9 @@ class Alpha101:
     def alpha017(self) -> Expr:
         """-1 * rank((stddev(returns, 2) * correlation(returns, volume, 2)))"""
         # Approximation: use rolling mean as proxy for std
-        std_ret = rolling_mean(self.returns.abs(), 2) * Expr.lit_float(1.25)  # Rough approximation
+        std_ret = rolling_mean(self.returns.abs(), 2) * Expr.lit_float(
+            1.25
+        )  # Rough approximation
         corr = ts_corr(self.returns, self.volume, 2)
         return rank(std_ret * corr) * Expr.lit_float(-1)
 
@@ -204,13 +214,17 @@ class Alpha101:
         """(0 - rank((open - delay(high, 1)))) * (0 - rank(abs((close - delay(close, 1)))))"""
         open_delay_high = self.open - lag(self.high, 1)
         close_delay = self.close - lag(self.close, 1)
-        return (Expr.lit_float(0) - rank(open_delay_high)) * (Expr.lit_float(0) - rank(close_delay.abs()))
+        return (Expr.lit_float(0) - rank(open_delay_high)) * (
+            Expr.lit_float(0) - rank(close_delay.abs())
+        )
 
     def alpha021(self) -> Expr:
         """-1 * rank(correlation(close, vwap, 6) * std(high))"""
         # Approximation: use rolling mean as proxy for std
         corr = ts_corr(self.close, self.vwap, 6)
-        std_high = rolling_mean((self.high - rolling_mean(self.high, 2)).abs(), 2) * Expr.lit_float(1.25)
+        std_high = rolling_mean(
+            (self.high - rolling_mean(self.high, 2)).abs(), 2
+        ) * Expr.lit_float(1.25)
         return rank(corr * std_high) * Expr.lit_float(-1)
 
     def alpha022(self) -> Expr:
@@ -317,12 +331,18 @@ class Alpha101:
         """-1 * ts_rank(volume / mean(volume, 20), 20) * ts_rank(-1 * delta(close, 7), 8)"""
         vol_ratio = self.volume / rolling_mean(self.volume, 20)
         delta_close_7 = diff(self.close, 7)
-        return ts_rank(rank(vol_ratio), 20) * ts_rank(rank(-delta_close_7), 8) * Expr.lit_float(-1)
+        return (
+            ts_rank(rank(vol_ratio), 20)
+            * ts_rank(rank(-delta_close_7), 8)
+            * Expr.lit_float(-1)
+        )
 
     def alpha044(self) -> Expr:
         """-1 * rank(stddev(close / delay(close, 1), 2))"""
         close_ratio = self.close / lag(self.close, 1)
-        std_ratio = rolling_mean((close_ratio - rolling_mean(close_ratio, 2)).abs(), 2) * Expr.lit_float(1.25)
+        std_ratio = rolling_mean(
+            (close_ratio - rolling_mean(close_ratio, 2)).abs(), 2
+        ) * Expr.lit_float(1.25)
         return rank(std_ratio) * Expr.lit_float(-1)
 
     def alpha045(self) -> Expr:
@@ -354,7 +374,9 @@ class Alpha101:
 
     def alpha050(self) -> Expr:
         """-1 * rank(stddev(high, 10)) * rank(Delta(vwap, 1))"""
-        std_high = rolling_mean((self.high - rolling_mean(self.high, 10)).abs(), 10) * Expr.lit_float(1.25)
+        std_high = rolling_mean(
+            (self.high - rolling_mean(self.high, 10)).abs(), 10
+        ) * Expr.lit_float(1.25)
         delta_vwap = diff(self.vwap, 1)
         return rank(std_high) * rank(delta_vwap) * Expr.lit_float(-1)
 
@@ -367,12 +389,16 @@ class Alpha101:
     def alpha052(self) -> Expr:
         """-1 * Ts_Rank(ts_sum(returns, 7), 5) * Ts_Rank(ts_rank(-stddev(close, 7), 3), 5)"""
         sum_ret_7 = ts_sum(self.returns, 7)
-        std_close = rolling_mean((self.close - rolling_mean(self.close, 7)).abs(), 7) * Expr.lit_float(1.25)
+        std_close = rolling_mean(
+            (self.close - rolling_mean(self.close, 7)).abs(), 7
+        ) * Expr.lit_float(1.25)
         return ts_rank(sum_ret_7, 5) * ts_rank(rank(-std_close), 5) * Expr.lit_float(-1)
 
     def alpha053(self) -> Expr:
         """-1 * rank(stddev(open, 2) + delta(open, 1) + ts_corr(open, volume, 10))"""
-        std_open = rolling_mean((self.open - rolling_mean(self.open, 2)).abs(), 2) * Expr.lit_float(1.25)
+        std_open = rolling_mean(
+            (self.open - rolling_mean(self.open, 2)).abs(), 2
+        ) * Expr.lit_float(1.25)
         delta_open = diff(self.open, 1)
         corr = ts_corr(self.open, self.volume, 10)
         return rank(std_open + delta_open + corr) * Expr.lit_float(-1)
@@ -425,7 +451,9 @@ class Alpha101:
 
     def alpha065(self) -> Expr:
         """rank(correlation(((high * 0.9) + (close * 0.1)), mean(volume, 10), 10)) * rank(correlation(ts_rank(((close * 0.9) + (open * 0.1)), 4), ts_rank(volume, 9), 7))"""
-        price_composite = self.high * Expr.lit_float(0.9) + self.close * Expr.lit_float(0.1)
+        price_composite = self.high * Expr.lit_float(0.9) + self.close * Expr.lit_float(
+            0.1
+        )
         vol_ma10 = rolling_mean(self.volume, 10)
         corr1 = ts_corr(price_composite, vol_ma10, 10)
         close_rank = self.close * Expr.lit_float(0.9) + self.open * Expr.lit_float(0.1)
@@ -437,7 +465,9 @@ class Alpha101:
         vol_ma5 = rolling_mean(self.volume, 5)
         vol_sum = ts_sum(vol_ma5, 26)
         corr1 = ts_corr(self.vwap, vol_sum, 9)
-        composite = self.low * Expr.lit_float(0.3522) + self.vwap * Expr.lit_float(0.6478)
+        composite = self.low * Expr.lit_float(0.3522) + self.vwap * Expr.lit_float(
+            0.6478
+        )
         vol_ma80 = rolling_mean(self.volume, 80)
         corr2 = ts_corr(rank(composite), rank(vol_ma80), 8)
         return rank(corr1) * rank(corr2)
@@ -449,37 +479,34 @@ class Alpha101:
 
 
 def evaluate_alpha(
-    expr: Expr,
-    data: Dict[str, npt.NDArray],
-    name: str = "Alpha"
+    expr: Expr, data: Dict[str, npt.NDArray], name: str = "Alpha"
 ) -> Tuple:
     """Evaluate an alpha expression and return results with statistics."""
-    n_days, n_assets = data['close'].shape
+    n_days, n_assets = data["close"].shape
 
     try:
         result = ae.evaluate_expression(expr, data, n_days, n_assets)
 
         # Calculate statistics
         stats = {
-            'mean': float(np.nanmean(result)),
-            'std': float(np.nanstd(result)),
-            'min': float(np.nanmin(result)),
-            'max': float(np.nanmax(result)),
-            'nan_ratio': float(np.mean(np.isnan(result))),
-            'valid_count': int(np.sum(~np.isnan(result))),
+            "mean": float(np.nanmean(result)),
+            "std": float(np.nanstd(result)),
+            "min": float(np.nanmin(result)),
+            "max": float(np.nanmax(result)),
+            "nan_ratio": float(np.mean(np.isnan(result))),
+            "valid_count": int(np.sum(~np.isnan(result))),
         }
         return result, stats
     except Exception as e:
         print(f"  Error evaluating {name}: {e}")
         import traceback
+
         traceback.print_exc()
-        return None, {'error': str(e)}
+        return None, {"error": str(e)}
 
 
 def run_backtest(
-    factor: npt.NDArray,
-    returns: npt.NDArray,
-    alpha_name: str = "Alpha"
+    factor: npt.NDArray, returns: npt.NDArray, alpha_name: str = "Alpha"
 ) -> Dict:
     """Run a simple backtest on the factor."""
     try:
@@ -494,12 +521,12 @@ def run_backtest(
         )
 
         return {
-            'long_short_return': float(result.long_short_cum_return),
-            'ic_mean': float(result.ic_mean),
-            'ic_ir': float(result.ic_ir),
+            "long_short_return": float(result.long_short_cum_return),
+            "ic_mean": float(result.ic_mean),
+            "ic_ir": float(result.ic_ir),
         }
     except Exception as e:
-        return {'error': str(e)}
+        return {"error": str(e)}
 
 
 def main():
@@ -514,31 +541,31 @@ def main():
     print(f"   Data shape: {data['close'].shape}")
 
     # Calculate returns for backtesting
-    returns = (data['close'][1:] - data['close'][:-1]) / data['close'][:-1]
+    returns = (data["close"][1:] - data["close"][:-1]) / data["close"][:-1]
 
     # Test selected Alpha101 factors
     alphas_to_test = [
-        ('alpha001', lambda a: a.alpha001()),
-        ('alpha003', lambda a: a.alpha003()),
-        ('alpha006', lambda a: a.alpha006()),
-        ('alpha009', lambda a: a.alpha009()),
-        ('alpha010', lambda a: a.alpha010()),
-        ('alpha012', lambda a: a.alpha012()),
-        ('alpha013', lambda a: a.alpha013()),
-        ('alpha014', lambda a: a.alpha014()),
-        ('alpha015', lambda a: a.alpha015()),
-        ('alpha020', lambda a: a.alpha020()),
-        ('alpha030', lambda a: a.alpha030()),
-        ('alpha041', lambda a: a.alpha041()),
-        ('alpha042', lambda a: a.alpha042()),
-        ('alpha046', lambda a: a.alpha046()),
-        ('alpha047', lambda a: a.alpha047()),
-        ('alpha049', lambda a: a.alpha049()),
-        ('alpha050', lambda a: a.alpha050()),
-        ('alpha051', lambda a: a.alpha051()),
-        ('alpha055', lambda a: a.alpha055()),
-        ('alpha057', lambda a: a.alpha057()),
-        ('alpha101', lambda a: a.alpha101()),
+        ("alpha001", lambda a: a.alpha001()),
+        ("alpha003", lambda a: a.alpha003()),
+        ("alpha006", lambda a: a.alpha006()),
+        ("alpha009", lambda a: a.alpha009()),
+        ("alpha010", lambda a: a.alpha010()),
+        ("alpha012", lambda a: a.alpha012()),
+        ("alpha013", lambda a: a.alpha013()),
+        ("alpha014", lambda a: a.alpha014()),
+        ("alpha015", lambda a: a.alpha015()),
+        ("alpha020", lambda a: a.alpha020()),
+        ("alpha030", lambda a: a.alpha030()),
+        ("alpha041", lambda a: a.alpha041()),
+        ("alpha042", lambda a: a.alpha042()),
+        ("alpha046", lambda a: a.alpha046()),
+        ("alpha047", lambda a: a.alpha047()),
+        ("alpha049", lambda a: a.alpha049()),
+        ("alpha050", lambda a: a.alpha050()),
+        ("alpha051", lambda a: a.alpha051()),
+        ("alpha055", lambda a: a.alpha055()),
+        ("alpha057", lambda a: a.alpha057()),
+        ("alpha101", lambda a: a.alpha101()),
     ]
 
     alpha101_instance = Alpha101(data)
@@ -563,15 +590,17 @@ def main():
                 bt_result = run_backtest(factor_aligned, returns_aligned, name)
 
                 print(f"      Mean: {stats['mean']:>10.4f}, Std: {stats['std']:>10.4f}")
-                ic = bt_result.get('ic_mean', 0)
-                ir = bt_result.get('ic_ir', 0)
+                ic = bt_result.get("ic_mean", 0)
+                ir = bt_result.get("ic_ir", 0)
                 print(f"      IC Mean: {ic:>10.4f}, IC IR: {ir:>10.4f}")
 
-                results.append({
-                    'name': name,
-                    'stats': stats,
-                    'backtest': bt_result,
-                })
+                results.append(
+                    {
+                        "name": name,
+                        "stats": stats,
+                        "backtest": bt_result,
+                    }
+                )
         except Exception as e:
             print(f"      Error: {e}")
 
@@ -582,23 +611,31 @@ def main():
     print(f"{'Alpha':<12} {'Mean':>10} {'Std':>10} {'IC Mean':>10} {'IC IR':>10}")
     print("-" * 60)
     for r in results:
-        bt = r['backtest']
-        print(f"{r['name']:<12} {r['stats']['mean']:>10.4f} {r['stats']['std']:>10.4f} {bt.get('ic_mean', 0):>10.4f} {bt.get('ic_ir', 0):>10.4f}")
+        bt = r["backtest"]
+        print(
+            f"{r['name']:<12} {r['stats']['mean']:>10.4f} {r['stats']['std']:>10.4f} {bt.get('ic_mean', 0):>10.4f} {bt.get('ic_ir', 0):>10.4f}"
+        )
 
     # Best performers
-    valid_results = [r for r in results if 'ic_mean' in r['backtest']]
+    valid_results = [r for r in results if "ic_mean" in r["backtest"]]
     if valid_results:
-        sorted_by_ic = sorted(valid_results, key=lambda x: abs(x['backtest'].get('ic_mean', 0)), reverse=True)
+        sorted_by_ic = sorted(
+            valid_results,
+            key=lambda x: abs(x["backtest"].get("ic_mean", 0)),
+            reverse=True,
+        )
         print("\n" + "=" * 80)
         print("Top 5 by |IC Mean|")
         print("=" * 80)
         for r in sorted_by_ic[:5]:
-            print(f"  {r['name']}: IC={r['backtest']['ic_mean']:+.4f}, IR={r['backtest']['ic_ir']:+.4f}")
+            print(
+                f"  {r['name']}: IC={r['backtest']['ic_mean']:+.4f}, IR={r['backtest']['ic_ir']:+.4f}"
+            )
 
     print("\n" + "=" * 80)
     print("Alpha101 Test Complete!")
     print("=" * 80)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

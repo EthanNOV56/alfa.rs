@@ -3,8 +3,8 @@
 //! This module provides a Polars-inspired API for building and evaluating
 //! expressions on time series data in a vectorized manner.
 
-use crate::expr::{Expr, Literal, BinaryOp, UnaryOp};
-use crate::expr_optimizer::{ExpressionOptimizer, optimize_expression};
+use crate::expr::{BinaryOp, Expr, Literal, UnaryOp};
+use crate::expr_optimizer::{optimize_expression, ExpressionOptimizer};
 use ndarray::{Array1, Array2};
 use std::collections::HashMap;
 
@@ -27,188 +27,221 @@ impl Series {
             name: None,
         }
     }
-    
+
     /// Create a new Series from an ndarray
     pub fn from_array(data: Array1<f64>) -> Self {
-        Series {
-            data,
-            name: None,
-        }
+        Series { data, name: None }
     }
-    
+
     /// Create a new Series with a name
     pub fn with_name(mut self, name: &str) -> Self {
         self.name = Some(name.to_string());
         self
     }
-    
+
     /// Get the length of the series
     pub fn len(&self) -> usize {
         self.data.len()
     }
-    
+
     /// Check if the series is empty
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
-    
+
     /// Get the underlying data as a slice
     pub fn as_slice(&self) -> Option<&[f64]> {
         self.data.as_slice()
     }
-    
+
     /// Get the underlying ndarray
     pub fn data(&self) -> &Array1<f64> {
         &self.data
     }
-    
+
     /// Get the name of the series
     pub fn name(&self) -> Option<&str> {
         self.name.as_deref()
     }
-    
+
     // ==================== Vectorized Operations ====================
-    
+
     /// Element-wise addition
     pub fn add(&self, other: &Series) -> Result<Series, String> {
         if self.len() != other.len() {
-            return Err(format!("Series length mismatch: {} != {}", self.len(), other.len()));
+            return Err(format!(
+                "Series length mismatch: {} != {}",
+                self.len(),
+                other.len()
+            ));
         }
         Ok(Series::from_array(&self.data + &other.data))
     }
-    
+
     /// Element-wise subtraction
     pub fn sub(&self, other: &Series) -> Result<Series, String> {
         if self.len() != other.len() {
-            return Err(format!("Series length mismatch: {} != {}", self.len(), other.len()));
+            return Err(format!(
+                "Series length mismatch: {} != {}",
+                self.len(),
+                other.len()
+            ));
         }
         Ok(Series::from_array(&self.data - &other.data))
     }
-    
+
     /// Element-wise multiplication
     pub fn mul(&self, other: &Series) -> Result<Series, String> {
         if self.len() != other.len() {
-            return Err(format!("Series length mismatch: {} != {}", self.len(), other.len()));
+            return Err(format!(
+                "Series length mismatch: {} != {}",
+                self.len(),
+                other.len()
+            ));
         }
         Ok(Series::from_array(&self.data * &other.data))
     }
-    
+
     /// Element-wise division
     pub fn div(&self, other: &Series) -> Result<Series, String> {
         if self.len() != other.len() {
-            return Err(format!("Series length mismatch: {} != {}", self.len(), other.len()));
+            return Err(format!(
+                "Series length mismatch: {} != {}",
+                self.len(),
+                other.len()
+            ));
         }
         Ok(Series::from_array(&self.data / &other.data))
     }
-    
+
     /// Element-wise comparison: greater than
     pub fn gt(&self, other: &Series) -> Result<Series, String> {
         if self.len() != other.len() {
-            return Err(format!("Series length mismatch: {} != {}", self.len(), other.len()));
+            return Err(format!(
+                "Series length mismatch: {} != {}",
+                self.len(),
+                other.len()
+            ));
         }
-        let result: Array1<f64> = Array1::from_iter(
-            self.data.iter().zip(other.data.iter())
-                .map(|(&a, &b)| if a > b { 1.0 } else { 0.0 })
-        );
+        let result: Array1<f64> =
+            Array1::from_iter(self.data.iter().zip(other.data.iter()).map(|(&a, &b)| {
+                if a > b {
+                    1.0
+                } else {
+                    0.0
+                }
+            }));
         Ok(Series::from_array(result))
     }
-    
+
     /// Element-wise absolute value
     pub fn abs(&self) -> Series {
         Series::from_array(self.data.mapv(f64::abs))
     }
-    
+
     /// Element-wise square root
     pub fn sqrt(&self) -> Series {
         Series::from_array(self.data.mapv(|x| x.sqrt()))
     }
-    
+
     /// Element-wise logarithm
     pub fn log(&self) -> Series {
         Series::from_array(self.data.mapv(|x| x.ln()))
     }
-    
+
     /// Element-wise exponential
     pub fn exp(&self) -> Series {
         Series::from_array(self.data.mapv(f64::exp))
     }
-    
+
     /// Element-wise negation
     pub fn neg(&self) -> Series {
         Series::from_array(-&self.data)
     }
-    
+
     // ==================== Time Series Operations ====================
-    
+
     /// Lag the series by N periods
     pub fn lag(&self, periods: usize) -> Series {
         let n = self.len();
         if periods >= n {
             return Series::new(vec![f64::NAN; n]);
         }
-        
+
         let mut lagged = vec![f64::NAN; periods];
         lagged.extend_from_slice(&self.data.as_slice().unwrap()[..n - periods]);
         Series::new(lagged)
     }
-    
+
     /// Difference: current value - lagged value
     pub fn diff(&self, periods: usize) -> Series {
         let lagged = self.lag(periods);
-        self.sub(&lagged).unwrap_or_else(|_| Series::new(vec![f64::NAN; self.len()]))
+        self.sub(&lagged)
+            .unwrap_or_else(|_| Series::new(vec![f64::NAN; self.len()]))
     }
-    
+
     /// Percentage change: (current - lagged) / lagged
     pub fn pct_change(&self, periods: usize) -> Series {
         let lagged = self.lag(periods);
-        let diff = self.sub(&lagged).unwrap_or_else(|_| Series::new(vec![f64::NAN; self.len()]));
-        diff.div(&lagged).unwrap_or_else(|_| Series::new(vec![f64::NAN; self.len()]))
+        let diff = self
+            .sub(&lagged)
+            .unwrap_or_else(|_| Series::new(vec![f64::NAN; self.len()]));
+        diff.div(&lagged)
+            .unwrap_or_else(|_| Series::new(vec![f64::NAN; self.len()]))
     }
-    
+
     /// Simple moving average
     pub fn moving_average(&self, window: usize) -> Series {
         let n = self.len();
         let mut result = Array1::zeros(n);
-        
+
         for i in 0..n {
             let start = if i + 1 >= window { i + 1 - window } else { 0 };
             let slice = self.data.slice(ndarray::s![start..=i]);
-            result[i] = if slice.len() == 0 { f64::NAN } else { slice.mean().unwrap_or(f64::NAN) };
+            result[i] = if slice.len() == 0 {
+                f64::NAN
+            } else {
+                slice.mean().unwrap_or(f64::NAN)
+            };
         }
-        
+
         Series::from_array(result)
     }
-    
+
     /// Rolling standard deviation
     pub fn rolling_std(&self, window: usize) -> Series {
         let n = self.len();
         let mut result = Array1::zeros(n);
-        
+
         for i in 0..n {
             let start = if i + 1 >= window { i + 1 - window } else { 0 };
             let slice = self.data.slice(ndarray::s![start..=i]);
-            result[i] = if slice.len() == 0 { f64::NAN } else { slice.std(1.0) };
+            result[i] = if slice.len() == 0 {
+                f64::NAN
+            } else {
+                slice.std(1.0)
+            };
         }
-        
+
         Series::from_array(result)
     }
-    
+
     /// Exponential moving average
     pub fn ema(&self, span: usize) -> Series {
         let n = self.len();
         let alpha = 2.0 / (span as f64 + 1.0);
         let mut result = Array1::zeros(n);
-        
+
         if n > 0 {
             result[0] = self.data[0];
             for i in 1..n {
                 result[i] = alpha * self.data[i] + (1.0 - alpha) * result[i - 1];
             }
         }
-        
+
         Series::from_array(result)
     }
-    
+
     /// Z-score normalization
     pub fn z_score(&self, window: usize) -> Series {
         let mean = self.moving_average(window);
@@ -298,7 +331,8 @@ impl Series {
         let n = self.len();
         let mut result = Array1::zeros(n);
 
-        let mut vals: Vec<(usize, f64)> = self.data.iter().enumerate().map(|(i, &v)| (i, v)).collect();
+        let mut vals: Vec<(usize, f64)> =
+            self.data.iter().enumerate().map(|(i, &v)| (i, v)).collect();
         vals.sort_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
         for (orig_idx, _) in &vals {
@@ -391,7 +425,9 @@ impl Series {
                 let start = i + 1 - window;
                 let slice = self.data.slice(ndarray::s![start..=i]);
                 let mean = slice.iter().sum::<f64>() / slice.len() as f64;
-                let std = (slice.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / slice.len() as f64).sqrt();
+                let std = (slice.iter().map(|x| (x - mean).powi(2)).sum::<f64>()
+                    / slice.len() as f64)
+                    .sqrt();
 
                 if std > 0.0 {
                     result[i] = (self.data[i] - mean) / std;
@@ -563,7 +599,7 @@ impl DataFrame {
             n_rows: 0,
         }
     }
-    
+
     /// Create a DataFrame from a map of column names to Series
     pub fn from_series_map(columns: HashMap<String, Series>) -> Result<Self, String> {
         let mut n_rows = 0;
@@ -571,47 +607,55 @@ impl DataFrame {
             if n_rows == 0 {
                 n_rows = series.len();
             } else if series.len() != n_rows {
-                return Err(format!("Column '{}' has length {}, expected {}", 
-                    name, series.len(), n_rows));
+                return Err(format!(
+                    "Column '{}' has length {}, expected {}",
+                    name,
+                    series.len(),
+                    n_rows
+                ));
             }
         }
-        
+
         Ok(DataFrame { columns, n_rows })
     }
-    
+
     /// Get the number of rows in the DataFrame
     pub fn n_rows(&self) -> usize {
         self.n_rows
     }
-    
+
     /// Get the number of columns in the DataFrame
     pub fn n_cols(&self) -> usize {
         self.columns.len()
     }
-    
+
     /// Get the column names
     pub fn column_names(&self) -> Vec<String> {
         self.columns.keys().cloned().collect()
     }
-    
+
     /// Get a column by name
     pub fn column(&self, name: &str) -> Option<&Series> {
         self.columns.get(name)
     }
-    
+
     /// Add a column to the DataFrame
     pub fn with_column(mut self, name: &str, series: Series) -> Result<Self, String> {
         if self.n_rows == 0 {
             self.n_rows = series.len();
         } else if series.len() != self.n_rows {
-            return Err(format!("Column '{}' has length {}, expected {}", 
-                name, series.len(), self.n_rows));
+            return Err(format!(
+                "Column '{}' has length {}, expected {}",
+                name,
+                series.len(),
+                self.n_rows
+            ));
         }
-        
+
         self.columns.insert(name.to_string(), series);
         Ok(self)
     }
-    
+
     /// Select specific columns
     pub fn select(&self, col_names: &[&str]) -> Result<DataFrame, String> {
         let mut new_columns = HashMap::new();
@@ -624,7 +668,7 @@ impl DataFrame {
         }
         DataFrame::from_series_map(new_columns)
     }
-    
+
     /// Evaluate an expression and add it as a new column
     pub fn with_expr(self, name: &str, expr: &Expr) -> Result<DataFrame, String> {
         let series = evaluate_expr_on_dataframe(expr, &self)?;
@@ -654,29 +698,33 @@ pub fn evaluate_expr_on_dataframe(expr: &Expr, df: &DataFrame) -> Result<Series,
                     let data = Array1::from_elem(df.n_rows(), if *b { 1.0 } else { 0.0 });
                     Ok(Series::from_array(data))
                 }
-                Literal::String(_) => Err("String literals not supported in vectorized evaluation".to_string()),
+                Literal::String(_) => {
+                    Err("String literals not supported in vectorized evaluation".to_string())
+                }
                 Literal::Null => {
                     let data = Array1::from_elem(df.n_rows(), f64::NAN);
                     Ok(Series::from_array(data))
                 }
             }
         }
-        Expr::Column(name) => {
-            df.column(name)
-                .cloned()
-                .ok_or_else(|| format!("Column '{}' not found in DataFrame", name))
-        }
+        Expr::Column(name) => df
+            .column(name)
+            .cloned()
+            .ok_or_else(|| format!("Column '{}' not found in DataFrame", name)),
         Expr::BinaryExpr { left, op, right } => {
             let left_series = evaluate_expr_on_dataframe(left, df)?;
             let right_series = evaluate_expr_on_dataframe(right, df)?;
-            
+
             match op {
                 BinaryOp::Add => left_series.add(&right_series),
                 BinaryOp::Subtract => left_series.sub(&right_series),
                 BinaryOp::Multiply => left_series.mul(&right_series),
                 BinaryOp::Divide => left_series.div(&right_series),
                 BinaryOp::GreaterThan => left_series.gt(&right_series),
-                _ => Err(format!("Binary operator {:?} not yet implemented in vectorized evaluator", op)),
+                _ => Err(format!(
+                    "Binary operator {:?} not yet implemented in vectorized evaluator",
+                    op
+                )),
             }
         }
         Expr::UnaryExpr { op, expr } => {
@@ -687,18 +735,26 @@ pub fn evaluate_expr_on_dataframe(expr: &Expr, df: &DataFrame) -> Result<Series,
                 UnaryOp::Sqrt => Ok(series.sqrt()),
                 UnaryOp::Log => Ok(series.log()),
                 UnaryOp::Exp => Ok(series.exp()),
-                _ => Err(format!("Unary operator {:?} not yet implemented in vectorized evaluator", op)),
+                _ => Err(format!(
+                    "Unary operator {:?} not yet implemented in vectorized evaluator",
+                    op
+                )),
             }
         }
-        Expr::FunctionCall { name, args } => {
-            evaluate_function_vectorized(name, args, df)
-        }
-        _ => Err(format!("Expression type {:?} not yet supported in vectorized evaluation", expr)),
+        Expr::FunctionCall { name, args } => evaluate_function_vectorized(name, args, df),
+        _ => Err(format!(
+            "Expression type {:?} not yet supported in vectorized evaluation",
+            expr
+        )),
     }
 }
 
 /// Evaluate a function call in vectorized manner
-fn evaluate_function_vectorized(name: &str, args: &[Expr], df: &DataFrame) -> Result<Series, String> {
+fn evaluate_function_vectorized(
+    name: &str,
+    args: &[Expr],
+    df: &DataFrame,
+) -> Result<Series, String> {
     match name {
         "lag" => {
             if args.len() != 2 {
@@ -713,7 +769,9 @@ fn evaluate_function_vectorized(name: &str, args: &[Expr], df: &DataFrame) -> Re
         }
         "diff" => {
             if args.len() != 2 {
-                return Err("diff function requires 2 arguments: expression and periods".to_string());
+                return Err(
+                    "diff function requires 2 arguments: expression and periods".to_string()
+                );
             }
             let series = evaluate_expr_on_dataframe(&args[0], df)?;
             let periods = match &args[1] {
@@ -724,7 +782,9 @@ fn evaluate_function_vectorized(name: &str, args: &[Expr], df: &DataFrame) -> Re
         }
         "pct_change" => {
             if args.len() != 2 {
-                return Err("pct_change function requires 2 arguments: expression and periods".to_string());
+                return Err(
+                    "pct_change function requires 2 arguments: expression and periods".to_string(),
+                );
             }
             let series = evaluate_expr_on_dataframe(&args[0], df)?;
             let periods = match &args[1] {
@@ -735,7 +795,10 @@ fn evaluate_function_vectorized(name: &str, args: &[Expr], df: &DataFrame) -> Re
         }
         "moving_average" => {
             if args.len() != 2 {
-                return Err("moving_average function requires 2 arguments: expression and window".to_string());
+                return Err(
+                    "moving_average function requires 2 arguments: expression and window"
+                        .to_string(),
+                );
             }
             let series = evaluate_expr_on_dataframe(&args[0], df)?;
             let window = match &args[1] {
@@ -750,7 +813,9 @@ fn evaluate_function_vectorized(name: &str, args: &[Expr], df: &DataFrame) -> Re
         }
         "volatility" => {
             if args.len() != 2 {
-                return Err("volatility function requires 2 arguments: expression and periods".to_string());
+                return Err(
+                    "volatility function requires 2 arguments: expression and periods".to_string(),
+                );
             }
             let series = evaluate_expr_on_dataframe(&args[0], df)?;
             let periods = match &args[1] {
@@ -773,7 +838,9 @@ fn evaluate_function_vectorized(name: &str, args: &[Expr], df: &DataFrame) -> Re
         // Alpha101 Functions
         "ts_rank" => {
             if args.len() != 2 {
-                return Err("ts_rank function requires 2 arguments: expression and window".to_string());
+                return Err(
+                    "ts_rank function requires 2 arguments: expression and window".to_string(),
+                );
             }
             let series = evaluate_expr_on_dataframe(&args[0], df)?;
             let window = match &args[1] {
@@ -784,7 +851,9 @@ fn evaluate_function_vectorized(name: &str, args: &[Expr], df: &DataFrame) -> Re
         }
         "ts_argmax" => {
             if args.len() != 2 {
-                return Err("ts_argmax function requires 2 arguments: expression and window".to_string());
+                return Err(
+                    "ts_argmax function requires 2 arguments: expression and window".to_string(),
+                );
             }
             let series = evaluate_expr_on_dataframe(&args[0], df)?;
             let window = match &args[1] {
@@ -795,7 +864,9 @@ fn evaluate_function_vectorized(name: &str, args: &[Expr], df: &DataFrame) -> Re
         }
         "ts_argmin" => {
             if args.len() != 2 {
-                return Err("ts_argmin function requires 2 arguments: expression and window".to_string());
+                return Err(
+                    "ts_argmin function requires 2 arguments: expression and window".to_string(),
+                );
             }
             let series = evaluate_expr_on_dataframe(&args[0], df)?;
             let window = match &args[1] {
@@ -814,7 +885,9 @@ fn evaluate_function_vectorized(name: &str, args: &[Expr], df: &DataFrame) -> Re
         }
         "ts_corr" => {
             if args.len() != 3 {
-                return Err("ts_corr function requires 3 arguments: expr1, expr2, window".to_string());
+                return Err(
+                    "ts_corr function requires 3 arguments: expr1, expr2, window".to_string(),
+                );
             }
             let series1 = evaluate_expr_on_dataframe(&args[0], df)?;
             let series2 = evaluate_expr_on_dataframe(&args[1], df)?;
@@ -826,7 +899,9 @@ fn evaluate_function_vectorized(name: &str, args: &[Expr], df: &DataFrame) -> Re
         }
         "ts_cov" => {
             if args.len() != 3 {
-                return Err("ts_cov function requires 3 arguments: expr1, expr2, window".to_string());
+                return Err(
+                    "ts_cov function requires 3 arguments: expr1, expr2, window".to_string()
+                );
             }
             let series1 = evaluate_expr_on_dataframe(&args[0], df)?;
             let series2 = evaluate_expr_on_dataframe(&args[1], df)?;
@@ -838,7 +913,9 @@ fn evaluate_function_vectorized(name: &str, args: &[Expr], df: &DataFrame) -> Re
         }
         "scale" => {
             if args.len() != 2 {
-                return Err("scale function requires 2 arguments: expression and window".to_string());
+                return Err(
+                    "scale function requires 2 arguments: expression and window".to_string()
+                );
             }
             let series = evaluate_expr_on_dataframe(&args[0], df)?;
             let window = match &args[1] {
@@ -849,7 +926,10 @@ fn evaluate_function_vectorized(name: &str, args: &[Expr], df: &DataFrame) -> Re
         }
         "decay_linear" => {
             if args.len() != 2 {
-                return Err("decay_linear function requires 2 arguments: expression and periods".to_string());
+                return Err(
+                    "decay_linear function requires 2 arguments: expression and periods"
+                        .to_string(),
+                );
             }
             let series = evaluate_expr_on_dataframe(&args[0], df)?;
             let periods = match &args[1] {
@@ -867,7 +947,9 @@ fn evaluate_function_vectorized(name: &str, args: &[Expr], df: &DataFrame) -> Re
         }
         "power" => {
             if args.len() != 2 {
-                return Err("power function requires 2 arguments: expression and exponent".to_string());
+                return Err(
+                    "power function requires 2 arguments: expression and exponent".to_string(),
+                );
             }
             let series = evaluate_expr_on_dataframe(&args[0], df)?;
             let exp = match &args[1] {
@@ -879,7 +961,9 @@ fn evaluate_function_vectorized(name: &str, args: &[Expr], df: &DataFrame) -> Re
         }
         "ts_sum" => {
             if args.len() != 2 {
-                return Err("ts_sum function requires 2 arguments: expression and window".to_string());
+                return Err(
+                    "ts_sum function requires 2 arguments: expression and window".to_string(),
+                );
             }
             let series = evaluate_expr_on_dataframe(&args[0], df)?;
             let window = match &args[1] {
@@ -890,7 +974,9 @@ fn evaluate_function_vectorized(name: &str, args: &[Expr], df: &DataFrame) -> Re
         }
         "ts_count" => {
             if args.len() != 2 {
-                return Err("ts_count function requires 2 arguments: expression and window".to_string());
+                return Err(
+                    "ts_count function requires 2 arguments: expression and window".to_string(),
+                );
             }
             let series = evaluate_expr_on_dataframe(&args[0], df)?;
             let window = match &args[1] {
@@ -901,7 +987,9 @@ fn evaluate_function_vectorized(name: &str, args: &[Expr], df: &DataFrame) -> Re
         }
         "ts_max" => {
             if args.len() != 2 {
-                return Err("ts_max function requires 2 arguments: expression and window".to_string());
+                return Err(
+                    "ts_max function requires 2 arguments: expression and window".to_string(),
+                );
             }
             let series = evaluate_expr_on_dataframe(&args[0], df)?;
             let window = match &args[1] {
@@ -912,7 +1000,9 @@ fn evaluate_function_vectorized(name: &str, args: &[Expr], df: &DataFrame) -> Re
         }
         "ts_min" => {
             if args.len() != 2 {
-                return Err("ts_min function requires 2 arguments: expression and window".to_string());
+                return Err(
+                    "ts_min function requires 2 arguments: expression and window".to_string(),
+                );
             }
             let series = evaluate_expr_on_dataframe(&args[0], df)?;
             let window = match &args[1] {
@@ -921,7 +1011,10 @@ fn evaluate_function_vectorized(name: &str, args: &[Expr], df: &DataFrame) -> Re
             };
             Ok(series.ts_min(window))
         }
-        _ => Err(format!("Unknown function in vectorized evaluator: {}", name)),
+        _ => Err(format!(
+            "Unknown function in vectorized evaluator: {}",
+            name
+        )),
     }
 }
 
@@ -960,30 +1053,34 @@ pub fn create_backtest_dataframe(
 ) -> Result<HashMap<String, DataFrame>, String> {
     let (n_days, n_assets) = prices.dim();
     let mut result = HashMap::new();
-    
+
     for asset_idx in 0..n_assets {
-        let symbol = symbols.get(asset_idx).ok_or_else(|| "Not enough symbols".to_string())?;
-        
+        let symbol = symbols
+            .get(asset_idx)
+            .ok_or_else(|| "Not enough symbols".to_string())?;
+
         let mut columns = HashMap::new();
         let price_series = prices.column(asset_idx).to_owned();
         columns.insert("close".to_string(), Series::from_array(price_series));
-        
+
         // Calculate returns (simplified)
         let mut returns = Array1::zeros(n_days);
         for day_idx in 1..n_days {
             let price_today = prices[[day_idx, asset_idx]];
             let price_yesterday = prices[[day_idx - 1, asset_idx]];
-            returns[day_idx] = if price_yesterday == 0.0 { f64::NAN } else { 
-                (price_today / price_yesterday) - 1.0 
+            returns[day_idx] = if price_yesterday == 0.0 {
+                f64::NAN
+            } else {
+                (price_today / price_yesterday) - 1.0
             };
         }
         returns[0] = f64::NAN;
         columns.insert("returns".to_string(), Series::from_array(returns));
-        
+
         let df = DataFrame::from_series_map(columns)?;
         result.insert(symbol.to_string(), df);
     }
-    
+
     Ok(result)
 }
 // ============================================================================
@@ -1006,69 +1103,72 @@ impl<'a> CachedExpressionEvaluator<'a> {
             optimizer: ExpressionOptimizer::new(),
         }
     }
-    
+
     /// Evaluate an expression with caching
     pub fn evaluate(&mut self, expr: &Expr) -> Result<Series, String> {
         // First, optimize the expression
         let optimized = self.optimizer.optimize(expr.clone());
-        
+
         // Use string representation as cache key
         let cache_key = format!("{:?}", optimized);
-        
+
         // Check cache
         if let Some(cached) = self.cache.get(&cache_key) {
             return Ok(cached.clone());
         }
-        
+
         // Evaluate (using the optimized expression)
         let result = self.evaluate_uncached(&optimized)?;
-        
+
         // Cache the result
         self.cache.insert(cache_key, result.clone());
-        
+
         Ok(result)
     }
-    
+
     /// Evaluate without caching (internal method)
     fn evaluate_uncached(&mut self, expr: &Expr) -> Result<Series, String> {
         match expr {
-            Expr::Literal(lit) => {
-                match lit {
-                    Literal::Float(f) => {
-                        let data = Array1::from_elem(self.df.n_rows(), *f);
-                        Ok(Series::from_array(data))
-                    }
-                    Literal::Integer(i) => {
-                        let data = Array1::from_elem(self.df.n_rows(), *i as f64);
-                        Ok(Series::from_array(data))
-                    }
-                    Literal::Boolean(b) => {
-                        let data = Array1::from_elem(self.df.n_rows(), if *b { 1.0 } else { 0.0 });
-                        Ok(Series::from_array(data))
-                    }
-                    Literal::String(_) => Err("String literals not supported in vectorized evaluation".to_string()),
-                    Literal::Null => {
-                        let data = Array1::from_elem(self.df.n_rows(), f64::NAN);
-                        Ok(Series::from_array(data))
-                    }
+            Expr::Literal(lit) => match lit {
+                Literal::Float(f) => {
+                    let data = Array1::from_elem(self.df.n_rows(), *f);
+                    Ok(Series::from_array(data))
                 }
-            }
-            Expr::Column(name) => {
-                self.df.column(name)
-                    .cloned()
-                    .ok_or_else(|| format!("Column '{}' not found in DataFrame", name))
-            }
+                Literal::Integer(i) => {
+                    let data = Array1::from_elem(self.df.n_rows(), *i as f64);
+                    Ok(Series::from_array(data))
+                }
+                Literal::Boolean(b) => {
+                    let data = Array1::from_elem(self.df.n_rows(), if *b { 1.0 } else { 0.0 });
+                    Ok(Series::from_array(data))
+                }
+                Literal::String(_) => {
+                    Err("String literals not supported in vectorized evaluation".to_string())
+                }
+                Literal::Null => {
+                    let data = Array1::from_elem(self.df.n_rows(), f64::NAN);
+                    Ok(Series::from_array(data))
+                }
+            },
+            Expr::Column(name) => self
+                .df
+                .column(name)
+                .cloned()
+                .ok_or_else(|| format!("Column '{}' not found in DataFrame", name)),
             Expr::BinaryExpr { left, op, right } => {
                 let left_series = self.evaluate(left)?;
                 let right_series = self.evaluate(right)?;
-                
+
                 match op {
                     BinaryOp::Add => left_series.add(&right_series),
                     BinaryOp::Subtract => left_series.sub(&right_series),
                     BinaryOp::Multiply => left_series.mul(&right_series),
                     BinaryOp::Divide => left_series.div(&right_series),
                     BinaryOp::GreaterThan => left_series.gt(&right_series),
-                    _ => Err(format!("Binary operator {:?} not yet implemented in vectorized evaluator", op)),
+                    _ => Err(format!(
+                        "Binary operator {:?} not yet implemented in vectorized evaluator",
+                        op
+                    )),
                 }
             }
             Expr::UnaryExpr { op, expr } => {
@@ -1079,22 +1179,28 @@ impl<'a> CachedExpressionEvaluator<'a> {
                     UnaryOp::Sqrt => Ok(series.sqrt()),
                     UnaryOp::Log => Ok(series.log()),
                     UnaryOp::Exp => Ok(series.exp()),
-                    _ => Err(format!("Unary operator {:?} not yet implemented in vectorized evaluator", op)),
+                    _ => Err(format!(
+                        "Unary operator {:?} not yet implemented in vectorized evaluator",
+                        op
+                    )),
                 }
             }
-            Expr::FunctionCall { name, args } => {
-                self.evaluate_function(name, args)
-            }
-            _ => Err(format!("Expression type {:?} not yet supported in vectorized evaluation", expr)),
+            Expr::FunctionCall { name, args } => self.evaluate_function(name, args),
+            _ => Err(format!(
+                "Expression type {:?} not yet supported in vectorized evaluation",
+                expr
+            )),
         }
     }
-    
+
     /// Evaluate a function call
     fn evaluate_function(&mut self, name: &str, args: &[Expr]) -> Result<Series, String> {
         match name {
             "lag" => {
                 if args.len() != 2 {
-                    return Err("lag function requires 2 arguments: expression and periods".to_string());
+                    return Err(
+                        "lag function requires 2 arguments: expression and periods".to_string()
+                    );
                 }
                 let series = self.evaluate(&args[0])?;
                 let periods = match &args[1] {
@@ -1105,7 +1211,9 @@ impl<'a> CachedExpressionEvaluator<'a> {
             }
             "diff" => {
                 if args.len() != 2 {
-                    return Err("diff function requires 2 arguments: expression and periods".to_string());
+                    return Err(
+                        "diff function requires 2 arguments: expression and periods".to_string()
+                    );
                 }
                 let series = self.evaluate(&args[0])?;
                 let periods = match &args[1] {
@@ -1116,7 +1224,10 @@ impl<'a> CachedExpressionEvaluator<'a> {
             }
             "pct_change" => {
                 if args.len() != 2 {
-                    return Err("pct_change function requires 2 arguments: expression and periods".to_string());
+                    return Err(
+                        "pct_change function requires 2 arguments: expression and periods"
+                            .to_string(),
+                    );
                 }
                 let series = self.evaluate(&args[0])?;
                 let periods = match &args[1] {
@@ -1127,7 +1238,10 @@ impl<'a> CachedExpressionEvaluator<'a> {
             }
             "moving_average" => {
                 if args.len() != 2 {
-                    return Err("moving_average function requires 2 arguments: expression and window".to_string());
+                    return Err(
+                        "moving_average function requires 2 arguments: expression and window"
+                            .to_string(),
+                    );
                 }
                 let series = self.evaluate(&args[0])?;
                 let window = match &args[1] {
@@ -1142,7 +1256,10 @@ impl<'a> CachedExpressionEvaluator<'a> {
             }
             "volatility" => {
                 if args.len() != 2 {
-                    return Err("volatility function requires 2 arguments: expression and periods".to_string());
+                    return Err(
+                        "volatility function requires 2 arguments: expression and periods"
+                            .to_string(),
+                    );
                 }
                 let series = self.evaluate(&args[0])?;
                 let periods = match &args[1] {
@@ -1153,7 +1270,9 @@ impl<'a> CachedExpressionEvaluator<'a> {
             }
             "ema" => {
                 if args.len() != 2 {
-                    return Err("ema function requires 2 arguments: expression and span".to_string());
+                    return Err(
+                        "ema function requires 2 arguments: expression and span".to_string()
+                    );
                 }
                 let series = self.evaluate(&args[0])?;
                 let span = match &args[1] {
@@ -1162,15 +1281,18 @@ impl<'a> CachedExpressionEvaluator<'a> {
                 };
                 Ok(series.ema(span))
             }
-            _ => Err(format!("Unknown function in vectorized evaluator: {}", name)),
+            _ => Err(format!(
+                "Unknown function in vectorized evaluator: {}",
+                name
+            )),
         }
     }
-    
+
     /// Clear the cache
     pub fn clear_cache(&mut self) {
         self.cache.clear();
     }
-    
+
     /// Get the number of cached results
     pub fn cache_size(&self) -> usize {
         self.cache.len()

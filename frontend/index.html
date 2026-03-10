@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Alfa.rs Factor Visualization</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1>Factor NAV Visualization</h1>
+        <p>Interactive backtest results with hover details</p>
+      </header>
+
+      <main>
+        <section class="controls">
+          <button id="runDemo">Run Demo Backtest</button>
+          <button id="clearChart">Clear</button>
+        </section>
+
+        <section class="chart-container">
+          <canvas id="navChart"></canvas>
+        </section>
+
+        <section class="metrics" id="metrics">
+          <h2>Performance Metrics</h2>
+          <div class="metrics-grid" id="metricsGrid">
+            <div class="metric">
+              <span class="metric-label">Long-Short Return</span>
+              <span class="metric-value" id="lsReturn">--</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">Annualized Return</span>
+              <span class="metric-value" id="annReturn">--</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">Sharpe Ratio</span>
+              <span class="metric-value" id="sharpe">--</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">Max Drawdown</span>
+              <span class="metric-value" id="maxDd">--</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">IC Mean</span>
+              <span class="metric-value" id="icMean">--</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">IC IR</span>
+              <span class="metric-value" id="icIr">--</span>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -70,7 +70,7 @@ impl Default for PositionConfig {
         Self {
             long_ratio: 1.0,
             short_ratio: 1.0,
-            market_neutral: true,  // Default to market neutral long-short strategy
+            market_neutral: true, // Default to market neutral long-short strategy
         }
     }
 }
@@ -281,7 +281,7 @@ impl BacktestEngine {
 
     fn compute_group_returns(
         &self,
-        group_labels: &Array2<usize>
+        group_labels: &Array2<usize>,
     ) -> Result<(Array2<f64>, Array2<f64>), String> {
         let (n_days, n_assets) = self.factor.dim();
         let mut group_weights = Array2::<f64>::zeros((n_days, self.quantiles));
@@ -314,14 +314,16 @@ impl BacktestEngine {
                     }
                     WeightMethod::Weighted => {
                         if let Some(ref weight_data) = self.weights {
-                            let total_weight: f64 = asset_indices.iter()
+                            let total_weight: f64 = asset_indices
+                                .iter()
                                 .map(|&idx| weight_data[[day, idx]])
                                 .filter(|&w| !w.is_nan())
                                 .sum();
                             if total_weight == 0.0 {
                                 vec![0.0; asset_indices.len()]
                             } else {
-                                asset_indices.iter()
+                                asset_indices
+                                    .iter()
                                     .map(|&idx| weight_data[[day, idx]] / total_weight)
                                     .collect()
                             }
@@ -335,13 +337,18 @@ impl BacktestEngine {
                 group_weights[[day, group - 1]] = weights.iter().sum();
 
                 // Apply adjustment factor if available
-                let weighted_return: f64 = asset_indices.iter()
+                let weighted_return: f64 = asset_indices
+                    .iter()
                     .zip(weights.iter())
                     .map(|(&idx, &w)| {
                         let ret = returns_today[idx];
                         let adj = adj_factor.map_or(1.0, |adj| adj[[day + 1, idx]]);
                         let adjusted_ret = if adj.is_nan() { ret } else { ret * adj };
-                        if adjusted_ret.is_nan() { 0.0 } else { w * adjusted_ret }
+                        if adjusted_ret.is_nan() {
+                            0.0
+                        } else {
+                            w * adjusted_ret
+                        }
                     })
                     .sum();
 
@@ -352,13 +359,17 @@ impl BacktestEngine {
         Ok((group_weights, group_returns))
     }
 
-    fn compute_long_short_returns(&self, group_returns: &Array2<f64>) -> (Array1<f64>, Array1<f64>, Array1<f64>) {
+    fn compute_long_short_returns(
+        &self,
+        group_returns: &Array2<f64>,
+    ) -> (Array1<f64>, Array1<f64>, Array1<f64>) {
         let n_days = group_returns.dim().0;
         let mut long_returns = Array1::<f64>::zeros(n_days);
         let mut short_returns = Array1::<f64>::zeros(n_days);
         let mut long_short = Array1::<f64>::zeros(n_days);
 
-        let long_groups: Vec<usize> = (self.quantiles - self.long_top_n + 1..=self.quantiles).collect();
+        let long_groups: Vec<usize> =
+            (self.quantiles - self.long_top_n + 1..=self.quantiles).collect();
         let short_groups: Vec<usize> = (1..=self.short_top_n).collect();
 
         let long_ratio = self.position_config.long_ratio;
@@ -366,13 +377,17 @@ impl BacktestEngine {
         let market_neutral = self.position_config.market_neutral;
 
         for day in 0..n_days {
-            let long_return: f64 = long_groups.iter()
+            let long_return: f64 = long_groups
+                .iter()
                 .map(|&g| group_returns[[day, g - 1]])
-                .sum::<f64>() / long_groups.len() as f64;
+                .sum::<f64>()
+                / long_groups.len() as f64;
 
-            let short_return: f64 = short_groups.iter()
+            let short_return: f64 = short_groups
+                .iter()
                 .map(|&g| group_returns[[day, g - 1]])
-                .sum::<f64>() / short_groups.len() as f64;
+                .sum::<f64>()
+                / short_groups.len() as f64;
 
             // Apply position ratios
             let long_position = long_return * long_ratio;
@@ -393,7 +408,11 @@ impl BacktestEngine {
         (long_returns, short_returns, long_short)
     }
 
-    fn apply_fees(&self, long_short_returns: &Array1<f64>, group_returns: &Array2<f64>) -> Array1<f64> {
+    fn apply_fees(
+        &self,
+        long_short_returns: &Array1<f64>,
+        group_returns: &Array2<f64>,
+    ) -> Array1<f64> {
         let commission_rate = self.fee_config.commission_rate;
         let min_commission = self.fee_config.min_commission;
         let slippage_config = &self.fee_config.slippage;
@@ -410,13 +429,16 @@ impl BacktestEngine {
             // Apply slippage if volume is available
             if let Some(ref volume) = self.volume {
                 // Get average volume for this day (approximation)
-                let day_volumes: Vec<f64> = volume.row(i).iter()
+                let day_volumes: Vec<f64> = volume
+                    .row(i)
+                    .iter()
                     .filter(|&&v| !v.is_nan())
                     .cloned()
                     .collect();
 
                 if !day_volumes.is_empty() {
-                    let avg_volume: f64 = day_volumes.iter().sum::<f64>() / day_volumes.len() as f64;
+                    let avg_volume: f64 =
+                        day_volumes.iter().sum::<f64>() / day_volumes.len() as f64;
                     let slippage_rate = if avg_volume > slippage_config.large_volume_threshold {
                         slippage_config.large_slippage_rate
                     } else {
@@ -455,7 +477,11 @@ impl BacktestEngine {
                     }
                 }
                 // Convert back from log returns
-                cum_returns[[d, g]] = if log_cum.is_nan() { f64::NAN } else { log_cum.exp() - 1.0 };
+                cum_returns[[d, g]] = if log_cum.is_nan() {
+                    f64::NAN
+                } else {
+                    log_cum.exp() - 1.0
+                };
             }
         }
 
@@ -466,32 +492,36 @@ impl BacktestEngine {
         let (n_days, n_assets) = self.factor.dim();
 
         // Parallel computation of IC for each day
-        let ic_vec: Vec<f64> = (0..(n_days - 1)).into_par_iter().map(|day| {
-            let factor_today = self.factor.row(day);
-            let returns_today = self.returns.row(day);
+        let ic_vec: Vec<f64> = (0..(n_days - 1))
+            .into_par_iter()
+            .map(|day| {
+                let factor_today = self.factor.row(day);
+                let returns_today = self.returns.row(day);
 
-            let mut factor_vals = Vec::new();
-            let mut return_vals = Vec::new();
+                let mut factor_vals = Vec::new();
+                let mut return_vals = Vec::new();
 
-            for asset in 0..n_assets {
-                let f = factor_today[asset];
-                let r = returns_today[asset];
-                if !f.is_nan() && !r.is_nan() {
-                    factor_vals.push(f);
-                    return_vals.push(r);
+                for asset in 0..n_assets {
+                    let f = factor_today[asset];
+                    let r = returns_today[asset];
+                    if !f.is_nan() && !r.is_nan() {
+                        factor_vals.push(f);
+                        return_vals.push(r);
+                    }
                 }
-            }
 
-            if factor_vals.len() < 2 {
-                return NAN;
-            }
+                if factor_vals.len() < 2 {
+                    return NAN;
+                }
 
-            Self::pearson_correlation(&factor_vals, &return_vals)
-        }).collect();
+                Self::pearson_correlation(&factor_vals, &return_vals)
+            })
+            .collect();
 
         let ic_series = Array1::from_vec(ic_vec);
 
-        let valid_ic: Vec<f64> = ic_series.iter()
+        let valid_ic: Vec<f64> = ic_series
+            .iter()
             .filter(|&&v| !v.is_nan())
             .cloned()
             .collect();
@@ -520,10 +550,7 @@ impl BacktestEngine {
     }
 
     fn compute_sharpe_ratio(&self, returns: &Array1<f64>, n_days: usize) -> f64 {
-        let valid_returns: Vec<f64> = returns.iter()
-            .filter(|&&r| !r.is_nan())
-            .cloned()
-            .collect();
+        let valid_returns: Vec<f64> = returns.iter().filter(|&&r| !r.is_nan()).cloned().collect();
 
         if valid_returns.len() < 2 {
             return 0.0;
@@ -615,7 +642,11 @@ impl BacktestEngine {
         let numerator = n * sum_xy - sum_x * sum_y;
         let denominator = ((n * sum_x2 - sum_x * sum_x) * (n * sum_y2 - sum_y * sum_y)).sqrt();
 
-        if denominator == 0.0 { 0.0 } else { numerator / denominator }
+        if denominator == 0.0 {
+            0.0
+        } else {
+            numerator / denominator
+        }
     }
 }
 
@@ -627,15 +658,20 @@ trait StatsExt {
 
 impl StatsExt for Vec<f64> {
     fn mean(&self) -> f64 {
-        if self.is_empty() { 0.0 } else { self.iter().sum::<f64>() / self.len() as f64 }
+        if self.is_empty() {
+            0.0
+        } else {
+            self.iter().sum::<f64>() / self.len() as f64
+        }
     }
 
     fn std_dev(&self) -> f64 {
-        if self.len() <= 1 { 0.0 } else {
+        if self.len() <= 1 {
+            0.0
+        } else {
             let mean = self.mean();
-            let variance = self.iter()
-                .map(|&x| (x - mean) * (x - mean))
-                .sum::<f64>() / (self.len() - 1) as f64;
+            let variance = self.iter().map(|&x| (x - mean) * (x - mean)).sum::<f64>()
+                / (self.len() - 1) as f64;
             variance.sqrt()
         }
     }
@@ -670,28 +706,22 @@ mod tests {
 
     #[test]
     fn test_backtest_engine_simple() {
-        let factor = Array2::from_shape_vec((3, 4), vec![
-            1.0, 2.0, 3.0, 4.0,
-            4.0, 3.0, 2.0, 1.0,
-            2.0, 3.0, 4.0, 1.0,
-        ]).unwrap();
+        let factor = Array2::from_shape_vec(
+            (3, 4),
+            vec![1.0, 2.0, 3.0, 4.0, 4.0, 3.0, 2.0, 1.0, 2.0, 3.0, 4.0, 1.0],
+        )
+        .unwrap();
 
-        let returns = Array2::from_shape_vec((3, 4), vec![
-            0.01, 0.02, 0.03, 0.04,
-            0.04, 0.03, 0.02, 0.01,
-            0.02, 0.01, 0.03, 0.02,
-        ]).unwrap();
+        let returns = Array2::from_shape_vec(
+            (3, 4),
+            vec![
+                0.01, 0.02, 0.03, 0.04, 0.04, 0.03, 0.02, 0.01, 0.02, 0.01, 0.03, 0.02,
+            ],
+        )
+        .unwrap();
 
-        let engine = BacktestEngine::new_simple(
-            factor,
-            returns,
-            4,
-            WeightMethod::Equal,
-            1,
-            1,
-            0.001,
-            None,
-        );
+        let engine =
+            BacktestEngine::new_simple(factor, returns, 4, WeightMethod::Equal, 1, 1, 0.001, None);
 
         let result = engine.run().unwrap();
         assert!(result.long_short_cum_return.is_finite());

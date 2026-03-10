@@ -9,9 +9,9 @@
 //! - Multi-objective optimization (IC, IR, turnover, complexity)
 //! - Enhanced backtest engine with fee and position configuration
 
-use crate::expr::{Expr, Literal, BinaryOp, UnaryOp};
-use crate::polars_style::{DataFrame, Series, evaluate_expr_on_dataframe};
 use crate::backtest::{BacktestEngine, BacktestResult, FeeConfig, PositionConfig};
+use crate::expr::{BinaryOp, Expr, Literal, UnaryOp};
+use crate::polars_style::{evaluate_expr_on_dataframe, DataFrame, Series};
 use crate::WeightMethod;
 use lru::LruCache;
 use ndarray::Array2;
@@ -52,7 +52,8 @@ impl DataSplitConfig {
 
     /// Get the actual test ratio (computed from remaining if not specified)
     pub fn get_test_ratio(&self) -> f64 {
-        self.test_ratio.unwrap_or(1.0 - self.train_ratio - self.validation_ratio)
+        self.test_ratio
+            .unwrap_or(1.0 - self.train_ratio - self.validation_ratio)
     }
 }
 
@@ -69,7 +70,11 @@ pub struct DataSplit {
 
 impl DataSplit {
     /// Create a new data split
-    pub fn new(train_indices: Vec<usize>, validation_indices: Vec<usize>, test_indices: Vec<usize>) -> Self {
+    pub fn new(
+        train_indices: Vec<usize>,
+        validation_indices: Vec<usize>,
+        test_indices: Vec<usize>,
+    ) -> Self {
         Self {
             train_indices,
             validation_indices,
@@ -142,13 +147,13 @@ impl SplitMetrics {
 /// Fitness evaluator trait for evaluating expression fitness
 pub trait FitnessEvaluator: Send + Sync {
     fn fitness(&self, expr: &Expr) -> f64;
-    
+
     /// Batch evaluate multiple expressions (optional optimization)
     fn fitness_batch(&self, exprs: &[Expr]) -> Vec<f64> {
         // Default implementation: evaluate sequentially
         exprs.iter().map(|e| self.fitness(e)).collect()
     }
-    
+
     /// Check if this evaluator supports batch evaluation
     fn supports_batch(&self) -> bool {
         false
@@ -258,9 +263,7 @@ impl Function {
         Function {
             name: "sqrt".to_string(),
             arity: 1,
-            builder: |args| {
-                args.into_iter().next().unwrap().unary(UnaryOp::Sqrt)
-            },
+            builder: |args| args.into_iter().next().unwrap().unary(UnaryOp::Sqrt),
         }
     }
 
@@ -269,9 +272,7 @@ impl Function {
         Function {
             name: "abs".to_string(),
             arity: 1,
-            builder: |args| {
-                args.into_iter().next().unwrap().unary(UnaryOp::Abs)
-            },
+            builder: |args| args.into_iter().next().unwrap().unary(UnaryOp::Abs),
         }
     }
 
@@ -280,9 +281,7 @@ impl Function {
         Function {
             name: "neg".to_string(),
             arity: 1,
-            builder: |args| {
-                args.into_iter().next().unwrap().unary(UnaryOp::Negate)
-            },
+            builder: |args| args.into_iter().next().unwrap().unary(UnaryOp::Negate),
         }
     }
 }
@@ -307,11 +306,7 @@ pub struct ExpressionGenerator<'a> {
 
 impl<'a> ExpressionGenerator<'a> {
     /// Create a new expression generator
-    pub fn new(
-        config: &'a GPConfig,
-        terminals: Vec<Terminal>,
-        functions: Vec<Function>,
-    ) -> Self {
+    pub fn new(config: &'a GPConfig, terminals: Vec<Terminal>, functions: Vec<Function>) -> Self {
         Self {
             config,
             terminals,
@@ -331,7 +326,7 @@ impl<'a> ExpressionGenerator<'a> {
     /// Generate a random terminal
     pub fn generate_random_terminal<R: Rng + ?Sized>(&self, rng: &mut R) -> Expr {
         let terminal = &self.terminals[rng.gen_range(0..self.terminals.len())];
-        
+
         match terminal {
             Terminal::Variable(name) => Expr::Column(name.clone()),
             Terminal::Constant(value) => Expr::Literal(Literal::Float(*value)),
@@ -344,17 +339,21 @@ impl<'a> ExpressionGenerator<'a> {
         let function_idx = rng.gen_range(0..self.functions.len());
         let arity = self.functions[function_idx].arity;
         let mut args = Vec::with_capacity(arity);
-        
+
         for _ in 0..arity {
             args.push(self.generate_random_expr(max_depth, rng));
         }
-        
+
         let function = &self.functions[function_idx];
         (function.builder)(args)
     }
 
     /// Generate initial population
-    pub fn generate_initial_population<R: Rng + ?Sized>(&self, size: usize, rng: &mut R) -> Vec<Expr> {
+    pub fn generate_initial_population<R: Rng + ?Sized>(
+        &self,
+        size: usize,
+        rng: &mut R,
+    ) -> Vec<Expr> {
         let mut population = Vec::with_capacity(size);
         for _ in 0..size {
             population.push(self.generate_random_expr(self.config.max_depth, rng));
@@ -370,7 +369,7 @@ pub mod tree_ops {
     /// Collect all paths to nodes in the expression tree
     pub fn collect_paths(e: &Expr, cur: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {
         out.push(cur.clone());
-        
+
         match e {
             Expr::UnaryExpr { expr, .. } => {
                 cur.push(0);
@@ -381,7 +380,7 @@ pub mod tree_ops {
                 cur.push(0);
                 collect_paths(left, cur, out);
                 cur.pop();
-                
+
                 cur.push(1);
                 collect_paths(right, cur, out);
                 cur.pop();
@@ -398,15 +397,19 @@ pub mod tree_ops {
                 collect_paths(expr, cur, out);
                 cur.pop();
             }
-            Expr::Conditional { condition, then_expr, else_expr } => {
+            Expr::Conditional {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
                 cur.push(0);
                 collect_paths(condition, cur, out);
                 cur.pop();
-                
+
                 cur.push(1);
                 collect_paths(then_expr, cur, out);
                 cur.pop();
-                
+
                 cur.push(2);
                 collect_paths(else_expr, cur, out);
                 cur.pop();
@@ -437,7 +440,12 @@ pub mod tree_ops {
                 }
                 Expr::FunctionCall { args, .. } => args.get(idx)?,
                 Expr::Aggregate { expr, .. } if idx == 0 => expr,
-                Expr::Conditional { condition, then_expr, else_expr, .. } => {
+                Expr::Conditional {
+                    condition,
+                    then_expr,
+                    else_expr,
+                    ..
+                } => {
                     if idx == 0 {
                         condition
                     } else if idx == 1 {
@@ -460,22 +468,33 @@ pub mod tree_ops {
         if path.is_empty() {
             return Some(new);
         }
-        
+
         let idx = path[0];
         let rest = &path[1..];
-        
+
         match e {
             Expr::UnaryExpr { op, expr } if idx == 0 => {
                 let new_expr = replace_node_at_path((*expr).clone(), rest, new)?;
-                Some(Expr::UnaryExpr { op, expr: Arc::new(new_expr) })
+                Some(Expr::UnaryExpr {
+                    op,
+                    expr: Arc::new(new_expr),
+                })
             }
             Expr::BinaryExpr { left, op, right } => {
                 if idx == 0 {
                     let new_left = replace_node_at_path((*left).clone(), rest, new)?;
-                    Some(Expr::BinaryExpr { left: Arc::new(new_left), op, right })
+                    Some(Expr::BinaryExpr {
+                        left: Arc::new(new_left),
+                        op,
+                        right,
+                    })
                 } else if idx == 1 {
                     let new_right = replace_node_at_path((*right).clone(), rest, new)?;
-                    Some(Expr::BinaryExpr { left, op, right: Arc::new(new_right) })
+                    Some(Expr::BinaryExpr {
+                        left,
+                        op,
+                        right: Arc::new(new_right),
+                    })
                 } else {
                     None
                 }
@@ -485,36 +504,47 @@ pub mod tree_ops {
                 if idx < new_args.len() {
                     let new_arg = replace_node_at_path(new_args[idx].clone(), rest, new)?;
                     new_args[idx] = new_arg;
-                    Some(Expr::FunctionCall { name, args: new_args })
+                    Some(Expr::FunctionCall {
+                        name,
+                        args: new_args,
+                    })
                 } else {
                     None
                 }
             }
             Expr::Aggregate { op, expr, distinct } if idx == 0 => {
                 let new_expr = replace_node_at_path((*expr).clone(), rest, new)?;
-                Some(Expr::Aggregate { op, expr: Arc::new(new_expr), distinct })
+                Some(Expr::Aggregate {
+                    op,
+                    expr: Arc::new(new_expr),
+                    distinct,
+                })
             }
-            Expr::Conditional { condition, then_expr, else_expr } => {
+            Expr::Conditional {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
                 let new_expr = if idx == 0 {
                     let new_cond = replace_node_at_path((*condition).clone(), rest, new)?;
-                    Expr::Conditional { 
-                        condition: Arc::new(new_cond), 
-                        then_expr, 
-                        else_expr 
+                    Expr::Conditional {
+                        condition: Arc::new(new_cond),
+                        then_expr,
+                        else_expr,
                     }
                 } else if idx == 1 {
                     let new_then = replace_node_at_path((*then_expr).clone(), rest, new)?;
-                    Expr::Conditional { 
-                        condition, 
-                        then_expr: Arc::new(new_then), 
-                        else_expr 
+                    Expr::Conditional {
+                        condition,
+                        then_expr: Arc::new(new_then),
+                        else_expr,
                     }
                 } else if idx == 2 {
                     let new_else = replace_node_at_path((*else_expr).clone(), rest, new)?;
-                    Expr::Conditional { 
-                        condition, 
-                        then_expr, 
-                        else_expr: Arc::new(new_else) 
+                    Expr::Conditional {
+                        condition,
+                        then_expr,
+                        else_expr: Arc::new(new_else),
                     }
                 } else {
                     return None;
@@ -523,7 +553,10 @@ pub mod tree_ops {
             }
             Expr::Cast { expr, data_type } if idx == 0 => {
                 let new_expr = replace_node_at_path((*expr).clone(), rest, new)?;
-                Some(Expr::Cast { expr: Arc::new(new_expr), data_type })
+                Some(Expr::Cast {
+                    expr: Arc::new(new_expr),
+                    data_type,
+                })
             }
             _ => None,
         }
@@ -558,7 +591,10 @@ pub mod tree_ops {
                 // Replace subtree in a with subtree from b, and vice versa
                 let new_a = replace_node_at_path(a.clone(), &pa, sub_b.clone());
                 let new_b = replace_node_at_path(b.clone(), &pb, sub_a.clone());
-                (new_a.unwrap_or_else(|| a.clone()), new_b.unwrap_or_else(|| b.clone()))
+                (
+                    new_a.unwrap_or_else(|| a.clone()),
+                    new_b.unwrap_or_else(|| b.clone()),
+                )
             }
             _ => (a.clone(), b.clone()),
         }
@@ -566,22 +602,22 @@ pub mod tree_ops {
 
     /// Subtree mutation
     pub fn subtree_mutate<R: Rng + ?Sized>(
-        e: &Expr, 
+        e: &Expr,
         generator: &ExpressionGenerator<'_>,
         max_depth: usize,
-        rng: &mut R
+        rng: &mut R,
     ) -> Expr {
         let mut paths = Vec::new();
         collect_paths(e, &mut Vec::new(), &mut paths);
         paths.retain(|p| !p.is_empty());
-        
+
         if paths.is_empty() {
             return e.clone();
         }
-        
+
         let p = paths[rng.gen_range(0..paths.len())].clone();
         let new_subtree = generator.generate_random_expr(max_depth, rng);
-        
+
         replace_node_at_path(e.clone(), &p, new_subtree).unwrap_or_else(|| e.clone())
     }
 }
@@ -595,23 +631,22 @@ pub fn run_gp<R: Rng + ?Sized>(
     rng: &mut R,
 ) -> (Expr, f64) {
     // Generate initial population
-    let generator = ExpressionGenerator::new(
-        config,
-        terminals,
-        functions,
-    );
-    
+    let generator = ExpressionGenerator::new(config, terminals, functions);
+
     let mut population = generator.generate_initial_population(config.population_size, rng);
     let pop_size = population.len();
-    
+
     // Evaluate initial population (using batch if supported)
     let mut scores: Vec<f64> = if evaluator.supports_batch() {
         evaluator.fitness_batch(&population)
     } else {
         // Use parallel iteration for better performance
-        population.par_iter().map(|e| evaluator.fitness(e)).collect()
+        population
+            .par_iter()
+            .map(|e| evaluator.fitness(e))
+            .collect()
     };
-    
+
     let mut best_idx = 0;
     for i in 1..pop_size {
         if scores[i] > scores[best_idx] {
@@ -623,7 +658,7 @@ pub fn run_gp<R: Rng + ?Sized>(
     for generation in 0..config.max_generations {
         // Selection and reproduction
         let mut next_population = Vec::with_capacity(pop_size);
-        
+
         while next_population.len() < pop_size {
             // Tournament selection
             let mut best = rng.gen_range(0..pop_size);
@@ -639,11 +674,8 @@ pub fn run_gp<R: Rng + ?Sized>(
         // Crossover
         for i in (0..pop_size).step_by(2) {
             if i + 1 < pop_size && rng.gen_bool(config.crossover_prob) {
-                let (c1, c2) = tree_ops::subtree_crossover(
-                    &next_population[i],
-                    &next_population[i + 1],
-                    rng,
-                );
+                let (c1, c2) =
+                    tree_ops::subtree_crossover(&next_population[i], &next_population[i + 1], rng);
                 next_population[i] = c1;
                 next_population[i + 1] = c2;
             }
@@ -652,12 +684,7 @@ pub fn run_gp<R: Rng + ?Sized>(
         // Mutation
         for expr in next_population.iter_mut() {
             if rng.gen_bool(config.mutation_prob) {
-                *expr = tree_ops::subtree_mutate(
-                    expr,
-                    &generator,
-                    config.max_depth,
-                    rng,
-                );
+                *expr = tree_ops::subtree_mutate(expr, &generator, config.max_depth, rng);
             }
         }
 
@@ -667,18 +694,24 @@ pub fn run_gp<R: Rng + ?Sized>(
             evaluator.fitness_batch(&population)
         } else {
             // Use parallel iteration for better performance
-            population.par_iter().map(|e| evaluator.fitness(e)).collect()
+            population
+                .par_iter()
+                .map(|e| evaluator.fitness(e))
+                .collect()
         };
-        
+
         // Update best individual
         for i in 0..pop_size {
             if scores[i] > scores[best_idx] {
                 best_idx = i;
             }
         }
-        
+
         if generation % 10 == 0 {
-            println!("Generation {}: best fitness = {:.6}", generation, scores[best_idx]);
+            println!(
+                "Generation {}: best fitness = {:.6}",
+                generation, scores[best_idx]
+            );
         }
     }
 
@@ -721,7 +754,11 @@ impl MultiObjectiveFitness {
         };
 
         // Only count IR if IC is above threshold (avoid artificial high IR from near-zero IC)
-        let effective_ir = if ic_score >= min_ic_threshold { ir_score } else { 0.0 };
+        let effective_ir = if ic_score >= min_ic_threshold {
+            ir_score
+        } else {
+            0.0
+        };
 
         // Normalize turnover (exponential penalty for high turnover)
         let turnover_penalty = (-turnover / 0.1).exp(); // Decay factor
@@ -731,7 +768,8 @@ impl MultiObjectiveFitness {
 
         // Combined weighted score
         let combined_score = w_ic * (ic_score - ic_penalty) + w_ir * effective_ir
-            - w_to * turnover_penalty - w_comp * complexity_penalty;
+            - w_to * turnover_penalty
+            - w_comp * complexity_penalty;
 
         Self {
             ic_score,
@@ -754,7 +792,7 @@ pub struct RealBacktestFitnessEvaluator {
     data: HashMap<String, Array2<f64>>,
     returns: Array2<f64>,
     weights: HashMap<String, f64>, // Feature weights for multi-objective optimization
-    min_valid_days: usize, // Minimum days required for valid backtest
+    min_valid_days: usize,         // Minimum days required for valid backtest
     // Data split configuration
     data_split: Option<DataSplit>,
     // Fee configuration for backtest
@@ -836,13 +874,13 @@ impl RealBacktestFitnessEvaluator {
     pub fn get_last_complexity(&self) -> usize {
         self.last_metrics.read().unwrap().3
     }
-    
+
     /// Set feature weights for multi-objective optimization
     pub fn set_weights(&mut self, weights: HashMap<String, f64>) -> &mut Self {
         self.weights = weights;
         self
     }
-    
+
     /// Set minimum valid days for backtest
     pub fn set_min_valid_days(&mut self, days: usize) -> &mut Self {
         self.min_valid_days = days;
@@ -851,7 +889,6 @@ impl RealBacktestFitnessEvaluator {
 
     /// Evaluate expression and run backtest with multiple objectives
     fn evaluate_with_backtest(&self, expr: &Expr) -> Option<MultiObjectiveFitness> {
-
         let n_days = self.returns.shape()[0];
 
         if n_days < self.min_valid_days {
@@ -899,33 +936,37 @@ impl RealBacktestFitnessEvaluator {
             Some((w_ic, w_ir, w_to, w_comp)),
         ))
     }
-    
+
     /// Evaluate expression to get factor matrix
     fn evaluate_expression(&self, expr: &Expr) -> Option<Array2<f64>> {
         let n_days = self.returns.shape()[0];
         let n_assets = self.returns.shape()[1];
 
         // Parallel evaluation across assets
-        let results: Vec<Vec<f64>> = (0..n_assets).into_par_iter().map(|asset_idx| {
-            // Create DataFrame for this asset
-            let mut columns = HashMap::new();
+        let results: Vec<Vec<f64>> = (0..n_assets)
+            .into_par_iter()
+            .map(|asset_idx| {
+                // Create DataFrame for this asset
+                let mut columns = HashMap::new();
 
-            for (col_name, array) in &self.data {
-                let column_data = array.column(asset_idx).to_vec();
-                columns.insert(col_name.clone(), Series::new(column_data));
-            }
-
-            // Evaluate expression
-            if let Ok(df) = DataFrame::from_series_map(columns) {
-                if let Ok(series) = evaluate_expr_on_dataframe(expr, &df) {
-                    return series.data().to_vec();
+                for (col_name, array) in &self.data {
+                    let column_data = array.column(asset_idx).to_vec();
+                    columns.insert(col_name.clone(), Series::new(column_data));
                 }
-            }
-            vec![f64::NAN; n_days]
-        }).collect();
+
+                // Evaluate expression
+                if let Ok(df) = DataFrame::from_series_map(columns) {
+                    if let Ok(series) = evaluate_expr_on_dataframe(expr, &df) {
+                        return series.data().to_vec();
+                    }
+                }
+                vec![f64::NAN; n_days]
+            })
+            .collect();
 
         // Check if we have enough valid values
-        let valid_count = results.iter()
+        let valid_count = results
+            .iter()
             .flat_map(|v| v.iter())
             .filter(|&&v| !v.is_nan())
             .count();
@@ -959,22 +1000,30 @@ impl RealBacktestFitnessEvaluator {
     }
 
     /// Run backtest on a specific data split
-    fn run_backtest_on_split(&self, factor: &Array2<f64>, indices: &[usize]) -> Option<BacktestResult> {
+    fn run_backtest_on_split(
+        &self,
+        factor: &Array2<f64>,
+        indices: &[usize],
+    ) -> Option<BacktestResult> {
         let split_factor = self.extract_split_data(factor, indices);
         let split_returns = self.extract_split_data(&self.returns, indices);
         self.run_backtest_internal(&split_factor, &split_returns)
     }
 
     /// Internal backtest implementation using enhanced BacktestEngine
-    fn run_backtest_internal(&self, factor: &Array2<f64>, returns: &Array2<f64>) -> Option<BacktestResult> {
+    fn run_backtest_internal(
+        &self,
+        factor: &Array2<f64>,
+        returns: &Array2<f64>,
+    ) -> Option<BacktestResult> {
         // Use the enhanced BacktestEngine with fee and position config
         let engine = BacktestEngine::new(
             factor.clone(),
             returns.clone(),
             10, // quantiles
             WeightMethod::Equal,
-            1,  // long_top_n
-            1,  // short_top_n
+            1, // long_top_n
+            1, // short_top_n
             self.fee_config.clone(),
             self.position_config.clone(),
             None, // weights
@@ -1062,7 +1111,11 @@ impl RealBacktestFitnessEvaluator {
             for asset in 0..n_assets {
                 let f_today = today[asset];
                 let f_yesterday = yesterday[asset];
-                if !f_today.is_nan() && !f_yesterday.is_nan() && !f_today.is_infinite() && !f_yesterday.is_infinite() {
+                if !f_today.is_nan()
+                    && !f_yesterday.is_nan()
+                    && !f_today.is_infinite()
+                    && !f_yesterday.is_infinite()
+                {
                     valid_indices.push(asset);
                 }
             }
@@ -1072,14 +1125,10 @@ impl RealBacktestFitnessEvaluator {
             }
 
             // Compute ranks for valid assets
-            let mut yesterday_ranks: Vec<(usize, f64)> = valid_indices
-                .iter()
-                .map(|&i| (i, yesterday[i]))
-                .collect();
-            let mut today_ranks: Vec<(usize, f64)> = valid_indices
-                .iter()
-                .map(|&i| (i, today[i]))
-                .collect();
+            let mut yesterday_ranks: Vec<(usize, f64)> =
+                valid_indices.iter().map(|&i| (i, yesterday[i])).collect();
+            let mut today_ranks: Vec<(usize, f64)> =
+                valid_indices.iter().map(|&i| (i, today[i])).collect();
 
             // Sort by factor values (descending)
             yesterday_ranks.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
@@ -1088,20 +1137,23 @@ impl RealBacktestFitnessEvaluator {
             // Compute top 20% turnover
             let top_n = std::cmp::max(1, valid_indices.len() / 5);
 
-            let prev_top: std::collections::HashSet<usize> = yesterday_ranks.iter()
+            let prev_top: std::collections::HashSet<usize> = yesterday_ranks
+                .iter()
                 .take(top_n)
                 .map(|(i, _)| *i)
                 .collect();
-            let curr_top: std::collections::HashSet<usize> = today_ranks.iter()
-                .take(top_n)
-                .map(|(i, _)| *i)
-                .collect();
+            let curr_top: std::collections::HashSet<usize> =
+                today_ranks.iter().take(top_n).map(|(i, _)| *i).collect();
 
             // Compute Jaccard distance: |A ∩ B| / |A ∪ B|
             // Turnover = 1 - similarity
             let intersection: usize = prev_top.intersection(&curr_top).count();
             let union = prev_top.len() + curr_top.len() - intersection;
-            let similarity = if union > 0 { intersection as f64 / union as f64 } else { 1.0 };
+            let similarity = if union > 0 {
+                intersection as f64 / union as f64
+            } else {
+                1.0
+            };
             let day_turnover = 1.0 - similarity;
 
             total_turnover += day_turnover;
@@ -1114,30 +1166,41 @@ impl RealBacktestFitnessEvaluator {
             total_turnover / valid_days as f64
         }
     }
-    
+
     /// Compute complexity of an expression (number of nodes)
     fn compute_complexity(&self, expr: &Expr) -> usize {
         match expr {
             Expr::Literal(_) => 1,
             Expr::Column(_) => 1,
             Expr::UnaryExpr { expr, .. } => 1 + self.compute_complexity(expr),
-            Expr::BinaryExpr { left, right, .. } => 1 + self.compute_complexity(left) + self.compute_complexity(right),
+            Expr::BinaryExpr { left, right, .. } => {
+                1 + self.compute_complexity(left) + self.compute_complexity(right)
+            }
             Expr::FunctionCall { args, .. } => {
-                1 + args.iter().map(|arg| self.compute_complexity(arg)).sum::<usize>()
+                1 + args
+                    .iter()
+                    .map(|arg| self.compute_complexity(arg))
+                    .sum::<usize>()
             }
             Expr::Aggregate { expr, .. } => 1 + self.compute_complexity(expr),
-            Expr::Conditional { condition, then_expr, else_expr } => {
-                1 + self.compute_complexity(condition) + self.compute_complexity(then_expr) + self.compute_complexity(else_expr)
+            Expr::Conditional {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                1 + self.compute_complexity(condition)
+                    + self.compute_complexity(then_expr)
+                    + self.compute_complexity(else_expr)
             }
             Expr::Cast { expr, .. } => 1 + self.compute_complexity(expr),
         }
     }
-    
+
     /// Check expression constraints (e.g., prevent division by zero, extreme values)
     fn check_constraints(&self, expr: &Expr) -> bool {
         self.check_division_by_zero(expr) && self.check_extreme_operations(expr)
     }
-    
+
     /// Check for potential division by zero
     fn check_division_by_zero(&self, expr: &Expr) -> bool {
         match expr {
@@ -1149,18 +1212,24 @@ impl RealBacktestFitnessEvaluator {
                 self.check_division_by_zero(left) && self.check_division_by_zero(right)
             }
             Expr::UnaryExpr { expr, .. } => self.check_division_by_zero(expr),
-            Expr::FunctionCall { args, .. } => args.iter().all(|arg| self.check_division_by_zero(arg)),
-            Expr::Conditional { condition, then_expr, else_expr } => {
-                self.check_division_by_zero(condition) && 
-                self.check_division_by_zero(then_expr) && 
-                self.check_division_by_zero(else_expr)
+            Expr::FunctionCall { args, .. } => {
+                args.iter().all(|arg| self.check_division_by_zero(arg))
+            }
+            Expr::Conditional {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                self.check_division_by_zero(condition)
+                    && self.check_division_by_zero(then_expr)
+                    && self.check_division_by_zero(else_expr)
             }
             Expr::Aggregate { expr, .. } => self.check_division_by_zero(expr),
             Expr::Cast { expr, .. } => self.check_division_by_zero(expr),
             _ => true,
         }
     }
-    
+
     /// Check if an expression could evaluate to zero
     fn could_be_zero(&self, expr: &Expr) -> bool {
         match expr {
@@ -1171,9 +1240,7 @@ impl RealBacktestFitnessEvaluator {
                     BinaryOp::Add | BinaryOp::Subtract => {
                         self.could_be_zero(left) && self.could_be_zero(right)
                     }
-                    BinaryOp::Multiply => {
-                        self.could_be_zero(left) || self.could_be_zero(right)
-                    }
+                    BinaryOp::Multiply => self.could_be_zero(left) || self.could_be_zero(right),
                     BinaryOp::Divide => {
                         // Division by something that could be zero is dangerous
                         self.could_be_zero(right)
@@ -1181,11 +1248,14 @@ impl RealBacktestFitnessEvaluator {
                     _ => false,
                 }
             }
-            Expr::UnaryExpr { op: UnaryOp::Negate, expr } => self.could_be_zero(expr),
+            Expr::UnaryExpr {
+                op: UnaryOp::Negate,
+                expr,
+            } => self.could_be_zero(expr),
             _ => false,
         }
     }
-    
+
     /// Check for extreme operations (e.g., log of negative, sqrt of negative)
     fn check_extreme_operations(&self, expr: &Expr) -> bool {
         match expr {
@@ -1199,18 +1269,24 @@ impl RealBacktestFitnessEvaluator {
             Expr::BinaryExpr { left, right, .. } => {
                 self.check_extreme_operations(left) && self.check_extreme_operations(right)
             }
-            Expr::FunctionCall { args, .. } => args.iter().all(|arg| self.check_extreme_operations(arg)),
-            Expr::Conditional { condition, then_expr, else_expr } => {
-                self.check_extreme_operations(condition) && 
-                self.check_extreme_operations(then_expr) && 
-                self.check_extreme_operations(else_expr)
+            Expr::FunctionCall { args, .. } => {
+                args.iter().all(|arg| self.check_extreme_operations(arg))
+            }
+            Expr::Conditional {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                self.check_extreme_operations(condition)
+                    && self.check_extreme_operations(then_expr)
+                    && self.check_extreme_operations(else_expr)
             }
             Expr::Aggregate { expr, .. } => self.check_extreme_operations(expr),
             Expr::Cast { expr, .. } => self.check_extreme_operations(expr),
             _ => true,
         }
     }
-    
+
     /// Check if an expression could be negative
     fn could_be_negative(&self, expr: &Expr) -> bool {
         match expr {
@@ -1222,19 +1298,22 @@ impl RealBacktestFitnessEvaluator {
                     BinaryOp::Subtract => true, // Subtraction could always result in negative
                     BinaryOp::Multiply => {
                         // Multiplication could be negative if one is negative and one positive
-                        (self.could_be_negative(left) && !self.could_be_positive(right)) ||
-                        (self.could_be_negative(right) && !self.could_be_positive(left))
+                        (self.could_be_negative(left) && !self.could_be_positive(right))
+                            || (self.could_be_negative(right) && !self.could_be_positive(left))
                     }
                     BinaryOp::Divide => true, // Division could result in negative
                     _ => false,
                 }
             }
-            Expr::UnaryExpr { op: UnaryOp::Negate, expr } => !self.could_be_negative(expr),
+            Expr::UnaryExpr {
+                op: UnaryOp::Negate,
+                expr,
+            } => !self.could_be_negative(expr),
             Expr::Column(_) => true, // Column values could be negative
             _ => false,
         }
     }
-    
+
     /// Check if an expression could be positive
     fn could_be_positive(&self, expr: &Expr) -> bool {
         match expr {
@@ -1246,14 +1325,17 @@ impl RealBacktestFitnessEvaluator {
                     BinaryOp::Subtract => true, // Subtraction could result in positive
                     BinaryOp::Multiply => {
                         // Multiplication could be positive if both positive or both negative
-                        (self.could_be_positive(left) && self.could_be_positive(right)) ||
-                        (self.could_be_negative(left) && self.could_be_negative(right))
+                        (self.could_be_positive(left) && self.could_be_positive(right))
+                            || (self.could_be_negative(left) && self.could_be_negative(right))
                     }
                     BinaryOp::Divide => true, // Division could result in positive
                     _ => false,
                 }
             }
-            Expr::UnaryExpr { op: UnaryOp::Negate, expr } => !self.could_be_positive(expr),
+            Expr::UnaryExpr {
+                op: UnaryOp::Negate,
+                expr,
+            } => !self.could_be_positive(expr),
             Expr::Column(_) => true, // Column values could be positive
             _ => false,
         }
@@ -1266,16 +1348,16 @@ impl FitnessEvaluator for RealBacktestFitnessEvaluator {
         if !self.check_constraints(expr) {
             return -1e9; // Very low fitness for invalid expressions
         }
-        
+
         // Run real backtest evaluation
         match self.evaluate_with_backtest(expr) {
             Some(fitness_metrics) => {
                 let base_fitness = fitness_metrics.fitness();
-                
+
                 // Apply penalty for extreme complexity
                 let complexity = self.compute_complexity(expr);
                 let complexity_penalty = (complexity as f64).powi(2) / 1000.0;
-                
+
                 base_fitness - complexity_penalty
             }
             None => -1e6, // Lower fitness for failed evaluation
@@ -1294,20 +1376,31 @@ impl BacktestFitnessEvaluator {
     pub fn new(data: HashMap<String, Array2<f64>>, returns: Array2<f64>) -> Self {
         Self { data, returns }
     }
-    
+
     /// Compute complexity of an expression (number of nodes)
     fn compute_complexity(&self, expr: &Expr) -> usize {
         match expr {
             Expr::Literal(_) => 1,
             Expr::Column(_) => 1,
             Expr::UnaryExpr { expr, .. } => 1 + self.compute_complexity(expr),
-            Expr::BinaryExpr { left, right, .. } => 1 + self.compute_complexity(left) + self.compute_complexity(right),
+            Expr::BinaryExpr { left, right, .. } => {
+                1 + self.compute_complexity(left) + self.compute_complexity(right)
+            }
             Expr::FunctionCall { args, .. } => {
-                1 + args.iter().map(|arg| self.compute_complexity(arg)).sum::<usize>()
+                1 + args
+                    .iter()
+                    .map(|arg| self.compute_complexity(arg))
+                    .sum::<usize>()
             }
             Expr::Aggregate { expr, .. } => 1 + self.compute_complexity(expr),
-            Expr::Conditional { condition, then_expr, else_expr } => {
-                1 + self.compute_complexity(condition) + self.compute_complexity(then_expr) + self.compute_complexity(else_expr)
+            Expr::Conditional {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                1 + self.compute_complexity(condition)
+                    + self.compute_complexity(then_expr)
+                    + self.compute_complexity(else_expr)
             }
             Expr::Cast { expr, .. } => 1 + self.compute_complexity(expr),
         }
@@ -1319,7 +1412,7 @@ impl FitnessEvaluator for BacktestFitnessEvaluator {
         // For now, return a simple fitness based on expression complexity
         // In real implementation, this would run actual backtest
         let complexity = self.compute_complexity(expr);
-        
+
         // Higher fitness for simpler expressions (encourage parsimony)
         1.0 / (complexity as f64 + 1.0)
     }
@@ -1340,17 +1433,17 @@ impl<E: FitnessEvaluator> CachedFitnessEvaluator<E> {
             cache: Mutex::new(LruCache::new(cap)),
         }
     }
-    
+
     /// Clear the cache
     pub fn clear_cache(&self) {
         self.cache.lock().unwrap().clear();
     }
-    
+
     /// Get cache size
     pub fn cache_size(&self) -> usize {
         self.cache.lock().unwrap().len()
     }
-    
+
     /// Get cache hit rate statistics
     pub fn cache_stats(&self) -> (usize, usize) {
         // For simplicity, just return cache size and capacity
@@ -1362,7 +1455,7 @@ impl<E: FitnessEvaluator> CachedFitnessEvaluator<E> {
 impl<E: FitnessEvaluator> FitnessEvaluator for CachedFitnessEvaluator<E> {
     fn fitness(&self, expr: &Expr) -> f64 {
         let key = format!("{:?}", expr);
-        
+
         // Check cache first
         {
             let mut cache = self.cache.lock().unwrap();
@@ -1370,27 +1463,27 @@ impl<E: FitnessEvaluator> FitnessEvaluator for CachedFitnessEvaluator<E> {
                 return cached;
             }
         }
-        
+
         // Compute fitness
         let fitness = self.evaluator.fitness(expr);
-        
+
         // Store in cache
         {
             let mut cache = self.cache.lock().unwrap();
             cache.put(key, fitness);
         }
-        
+
         fitness
     }
-    
+
     fn fitness_batch(&self, exprs: &[Expr]) -> Vec<f64> {
         let mut results = Vec::with_capacity(exprs.len());
         let mut to_compute = Vec::new();
-        
+
         // First pass: check cache
         {
             let mut cache = self.cache.lock().unwrap();
-            
+
             for (idx, expr) in exprs.iter().enumerate() {
                 let key = format!("{:?}", expr);
                 if let Some(&cached) = cache.get(&key) {
@@ -1401,26 +1494,27 @@ impl<E: FitnessEvaluator> FitnessEvaluator for CachedFitnessEvaluator<E> {
                 }
             }
         }
-        
+
         // Compute missing fitness values
         if !to_compute.is_empty() {
-            let exprs_to_compute: Vec<Expr> = to_compute.iter().map(|(_, expr, _)| expr.clone()).collect();
+            let exprs_to_compute: Vec<Expr> =
+                to_compute.iter().map(|(_, expr, _)| expr.clone()).collect();
             let computed = self.evaluator.fitness_batch(&exprs_to_compute);
-            
+
             // Update cache and results
             {
                 let mut cache = self.cache.lock().unwrap();
-                
+
                 for ((idx, _, key), fitness) in to_compute.into_iter().zip(computed.into_iter()) {
                     cache.put(key, fitness);
                     results[idx] = fitness;
                 }
             }
         }
-        
+
         results
     }
-    
+
     fn supports_batch(&self) -> bool {
         true
     }
@@ -1446,19 +1540,17 @@ impl<E: FitnessEvaluator + Clone> FitnessEvaluator for BatchFitnessEvaluator<E> 
     fn fitness(&self, expr: &Expr) -> f64 {
         self.evaluator.fitness(expr)
     }
-    
+
     fn fitness_batch(&self, exprs: &[Expr]) -> Vec<f64> {
         use rayon::prelude::*;
-        
+
         // Process in parallel batches
         exprs
             .par_chunks(self.batch_size)
-            .flat_map(|chunk| {
-                self.evaluator.fitness_batch(chunk)
-            })
+            .flat_map(|chunk| self.evaluator.fitness_batch(chunk))
             .collect()
     }
-    
+
     fn supports_batch(&self) -> bool {
         true
     }
@@ -1468,63 +1560,58 @@ impl<E: FitnessEvaluator + Clone> FitnessEvaluator for BatchFitnessEvaluator<E> 
 mod tests {
     use super::*;
     use rand::rngs::StdRng;
-    
+
     #[test]
     fn test_expression_generation() {
         let config = GPConfig::default();
         let mut rng = StdRng::seed_from_u64(42);
-        
+
         let terminals = vec![
             Terminal::Variable("x".to_string()),
             Terminal::Constant(1.0),
             Terminal::Ephemeral,
         ];
-        
-        let functions = vec![
-            Function::add(),
-            Function::mul(),
-        ];
-        
-        let generator = ExpressionGenerator::new(
-            &config,
-            terminals,
-            functions,
-        );
-        
+
+        let functions = vec![Function::add(), Function::mul()];
+
+        let generator = ExpressionGenerator::new(&config, terminals, functions);
+
         let expr = generator.generate_random_expr(3, &mut rng);
-        assert!(matches!(expr, Expr::BinaryExpr { .. } | Expr::Literal(_) | Expr::Column(_)));
+        assert!(matches!(
+            expr,
+            Expr::BinaryExpr { .. } | Expr::Literal(_) | Expr::Column(_)
+        ));
     }
-    
+
     #[test]
     fn test_tree_operations() {
         // Create a simple expression: (x + 1) * 2
         let expr = Expr::Column("x".to_string())
             .add(Expr::Literal(Literal::Float(1.0)))
             .mul(Expr::Literal(Literal::Float(2.0)));
-        
+
         // Test path collection
         let mut paths = Vec::new();
         tree_ops::collect_paths(&expr, &mut Vec::new(), &mut paths);
         assert!(!paths.is_empty());
-        
+
         // Test get node at path
         if let Some(node) = tree_ops::get_node_at_path(&expr, &[0]) {
             assert!(matches!(node, Expr::BinaryExpr { .. }));
         }
     }
-    
+
     #[test]
     fn test_fitness_evaluator() {
         let mut data = HashMap::new();
         data.insert("x".to_string(), Array2::<f64>::zeros((10, 5)));
-        
+
         let returns = Array2::<f64>::zeros((10, 5));
-        
+
         let evaluator = BacktestFitnessEvaluator::new(data, returns);
-        
-        let expr = Expr::Column("x".to_string())
-            .add(Expr::Literal(Literal::Float(1.0)));
-        
+
+        let expr = Expr::Column("x".to_string()).add(Expr::Literal(Literal::Float(1.0)));
+
         let fitness = evaluator.fitness(&expr);
         assert!(fitness > 0.0);
     }

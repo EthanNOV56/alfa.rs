@@ -43,28 +43,22 @@ def quantile_backtest(
     commission_rate: float = 0.0,
     weights: Optional[npt.NDArray] = None,
 ) -> BacktestResult: ...
-
 def compute_information_coefficient(
     factor: npt.NDArray,
     returns: npt.NDArray,
 ) -> Tuple[float, float]: ...
-
 def compute_ic(
     factor: npt.NDArray,
     returns: npt.NDArray,
 ) -> Tuple[float, float]: ...
-
 def evaluate_expression(
     expr: Expr,
     data: Dict[str, npt.NDArray],
     n_days: int,
     n_assets: int,
 ) -> npt.NDArray: ...
-
 def parse_expression(expression: str) -> Expr: ...
-
 def optimize_expression(expr: Expr) -> Expr: ...
-
 def create_factor_tear_sheet(
     factor: pd.Series,
     forward_returns: pd.Series,
@@ -74,7 +68,6 @@ def create_factor_tear_sheet(
     by_group: bool = False,
     **kwargs: Any,
 ) -> None: ...
-
 def factor_returns(
     factor: pd.Series,
     forward_returns: pd.Series,
@@ -109,12 +102,10 @@ def power(expr: Expr, exponent: float) -> Expr: ...
 def decay_linear(expr: Expr, periods: int) -> Expr: ...
 def cumsum(expr: Expr) -> Expr: ...
 def cumprod(expr: Expr) -> Expr: ...
-
 def rolling_window(
     size: int,
     min_periods: Optional[int] = None,
 ) -> Any: ...
-
 def expanding_window(
     min_periods: Optional[int] = None,
 ) -> Any: ...
@@ -185,11 +176,9 @@ class BacktestEngine:
         commission_rate: float = 0.0,
         weights: Optional[npt.NDArray] = None,
     ) -> None: ...
-
     def run(self) -> BacktestResult:
         """Execute the backtest and return results."""
         ...
-
 
 class BacktestResult:
     """Container for backtest results."""
@@ -223,22 +212,18 @@ class Series:
     """Series data structure for expression evaluation."""
 
     def __init__(self, data: npt.NDArray) -> None: ...
-
     def len(self) -> int: ...
     def is_empty(self) -> bool: ...
     def to_list(self) -> List[float]: ...
-
 
 class DataFrame:
     """DataFrame structure for expression evaluation."""
 
     def __init__(self, columns: Dict[str, npt.NDArray]) -> None: ...
-
     def n_rows(self) -> int: ...
     def n_cols(self) -> int: ...
     def column_names(self) -> List[str]: ...
     def evaluate(self, expr: Expr) -> npt.NDArray: ...
-
 
 class LazyFrame:
     """Lazy evaluation frame for query optimization."""
@@ -286,8 +271,9 @@ class GpEngine:
         max_depth: int = 6,
         allow_ephemeral: bool = True,
     ) -> None: ...
-
-    def set_columns(self, columns: List[str], allow_ephemeral: Optional[bool] = None) -> None:
+    def set_columns(
+        self, columns: List[str], allow_ephemeral: Optional[bool] = None
+    ) -> None:
         """Set available column names for GP."""
         ...
 
@@ -320,7 +306,6 @@ class PersistenceManager:
     """Factor library persistence manager."""
 
     def __init__(self, path: str) -> None: ...
-
     def save_factor(self, metadata: FactorMetadata) -> None:
         """Save a factor to the library."""
         ...
@@ -335,16 +320,12 @@ class PersistenceManager:
         max_complexity: Optional[float] = None,
         tags: Optional[List[str]] = None,
     ) -> List[FactorMetadata]: ...
-
     def get_all_factors(self) -> List[FactorMetadata]: ...
     def get_all_history(self) -> List[GPHistoryRecord]: ...
-
     def load_all_factors(self) -> int: ...
     def load_all_history(self) -> int: ...
-
     def clear_memory(self) -> None: ...
     def cache_stats(self) -> Dict[str, Any]: ...
-
 
 class FactorMetadata:
     """Metadata container for factors."""
@@ -362,7 +343,6 @@ class FactorMetadata:
     metrics: Dict[str, float]
     tags: List[str]
 
-
 class GPHistoryRecord:
     """Container for GP run history."""
 
@@ -378,31 +358,25 @@ class MetaLearningAnalyzer:
     """Meta-learning analyzer for GP recommendations."""
 
     def __init__(self) -> None: ...
-
     def set_high_perf_threshold(self, threshold: float) -> None: ...
     def set_min_data_points(self, min_points: int) -> None: ...
     def get_high_perf_threshold(self) -> float: ...
     def get_min_data_points(self) -> int: ...
-
     def train(
         self,
         factors: List[FactorMetadata],
         history: List[GPHistoryRecord],
     ) -> None: ...
-
     def is_trained(self) -> bool: ...
     def version(self) -> str: ...
     def confidence_score(self) -> float: ...
-
     def get_recommendations(
         self,
         target_complexity: Optional[float] = None,
     ) -> GPRecommendations: ...
-
     def save_model(self, path: str) -> None: ...
     @staticmethod
     def load_model(path: str) -> MetaLearningAnalyzer: ...
-
 
 class GPRecommendations:
     """GP configuration recommendations."""
@@ -424,7 +398,6 @@ class AlphaRegistry:
     """Registry for factor management."""
 
     def __init__(self, storage_dir: Optional[str] = None) -> None: ...
-
     def register(
         self,
         name: str,
@@ -452,12 +425,12 @@ class AlphaRegistry:
     def delete(self, factor_id: str) -> bool: ...
     def list(self, category: Optional[str] = None) -> List[Dict[str, Any]]: ...
 
-
 class FactorRegistry:
     """Rust-backed factor registry with expression parsing and compute."""
 
-    def __init__(self, mode: Literal["default", "conservative", "high_performance"] = "default") -> None: ...
-
+    def __init__(
+        self, mode: Literal["default", "conservative", "high_performance"] = "default"
+    ) -> None: ...
     def set_columns(self, columns: List[str]) -> None:
         """Set available column names (e.g., ['close', 'volume', 'open'])."""
         ...
@@ -486,7 +459,9 @@ class FactorRegistry:
         """
         ...
 
-    def compute(self, name: str, data: Dict[str, Union[npt.NDArray, List[float]]]) -> FactorResult:
+    def compute(
+        self, name: str, data: Dict[str, Union[npt.NDArray, List[float]]]
+    ) -> FactorResult:
         """
         Compute factor values with provided data.
 
@@ -553,7 +528,6 @@ class FactorRegistry:
         """Get compute configuration."""
         ...
 
-
 class FactorInfo:
     """
     Factor information container.
@@ -567,7 +541,6 @@ class FactorInfo:
     category: str
 
     def __repr__(self) -> str: ...
-
 
 class FactorResult:
     """

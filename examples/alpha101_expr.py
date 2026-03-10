@@ -8,7 +8,21 @@ using the exprs expression system with the newly added functions.
 
 import numpy as np
 import alfars as ae
-from alfars import Expr, lag, diff, rolling_mean, ts_rank, ts_argmax, ts_argmin, rank, ts_corr, scale, decay_linear, sign, power
+from alfars import (
+    Expr,
+    lag,
+    diff,
+    rolling_mean,
+    ts_rank,
+    ts_argmax,
+    ts_argmin,
+    rank,
+    ts_corr,
+    scale,
+    decay_linear,
+    sign,
+    power,
+)
 
 
 def create_sample_data(n_days: int = 100, n_assets: int = 50) -> dict:
@@ -17,18 +31,22 @@ def create_sample_data(n_days: int = 100, n_assets: int = 50) -> dict:
 
     close = np.random.randn(n_days, n_assets).cumsum(axis=0) + 100
     open_price = close * (1 + np.random.randn(n_days, n_assets) * 0.01)
-    high = np.maximum(open_price, close) * (1 + np.abs(np.random.randn(n_days, n_assets) * 0.01))
-    low = np.minimum(open_price, close) * (1 - np.abs(np.random.randn(n_days, n_assets) * 0.01))
+    high = np.maximum(open_price, close) * (
+        1 + np.abs(np.random.randn(n_days, n_assets) * 0.01)
+    )
+    low = np.minimum(open_price, close) * (
+        1 - np.abs(np.random.randn(n_days, n_assets) * 0.01)
+    )
     volume = np.random.randint(1000000, 10000000, size=(n_days, n_assets)).astype(float)
     vwap = (open_price + high + low + close) / 4
 
     return {
-        'close': close,
-        'open': open_price,
-        'high': high,
-        'low': low,
-        'volume': volume,
-        'vwap': vwap,
+        "close": close,
+        "open": open_price,
+        "high": high,
+        "low": low,
+        "volume": volume,
+        "vwap": vwap,
     }
 
 
@@ -38,15 +56,15 @@ def main():
     print("=" * 70)
 
     data = create_sample_data(100, 50)
-    n_days, n_assets = data['close'].shape
+    n_days, n_assets = data["close"].shape
 
     # Column references
-    close = Expr.col('close')
-    open_price = Expr.col('open')
-    high = Expr.col('high')
-    low = Expr.col('low')
-    volume = Expr.col('volume')
-    vwap = Expr.col('vwap')
+    close = Expr.col("close")
+    open_price = Expr.col("open")
+    high = Expr.col("high")
+    low = Expr.col("low")
+    volume = Expr.col("volume")
+    vwap = Expr.col("vwap")
 
     print("\n1. Alpha001: rank(ts_argmax(power(returns, 2), 5)) - 0.5")
     print("-" * 50)
@@ -136,5 +154,5 @@ New functions added to exprs:
 """)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

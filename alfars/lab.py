@@ -24,11 +24,12 @@ FRONTEND_PORT = 5173
 def find_free_port(start_port: int = 8000) -> int:
     """Find a free port starting from start_port."""
     import socket
+
     port = start_port
     while port < start_port + 100:
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.bind(('127.0.0.1', port))
+                s.bind(("127.0.0.1", port))
                 return port
         except OSError:
             port += 1
@@ -39,10 +40,7 @@ def check_cargo_available() -> bool:
     """Check if cargo is available."""
     try:
         subprocess.run(
-            ["cargo", "--version"],
-            capture_output=True,
-            check=True,
-            cwd=PROJECT_ROOT
+            ["cargo", "--version"], capture_output=True, check=True, cwd=PROJECT_ROOT
         )
         return True
     except (subprocess.CalledProcessError, FileNotFoundError):
@@ -83,8 +81,16 @@ def start_backend(backend_type: str = "auto") -> Optional[subprocess.Popen]:
     else:
         # Start Python FastAPI server
         process = subprocess.Popen(
-            [sys.executable, "-m", "uvicorn", "alfars.server:app",
-             "--host", "0.0.0.0", "--port", str(BACKEND_PORT)],
+            [
+                sys.executable,
+                "-m",
+                "uvicorn",
+                "alfars.server:app",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                str(BACKEND_PORT),
+            ],
             cwd=PROJECT_ROOT,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -132,12 +138,13 @@ def start_frontend() -> Optional[subprocess.Popen]:
 def wait_for_server(port: int, timeout: int = 30) -> bool:
     """Wait for a server to become available."""
     import socket
+
     start_time = time.time()
     while time.time() - start_time < timeout:
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.settimeout(1)
-                s.connect(('127.0.0.1', port))
+                s.connect(("127.0.0.1", port))
                 return True
         except (socket.error, socket.timeout):
             time.sleep(0.5)
@@ -168,7 +175,7 @@ def print_output(process: subprocess.Popen, name: str) -> None:
 
     def _print():
         try:
-            for line in iter(process.stdout.readline, ''):
+            for line in iter(process.stdout.readline, ""):
                 if line:
                     print(f"[{name}] {line.rstrip()}")
                 if process.poll() is not None:
@@ -272,24 +279,18 @@ def main(backend_type: str = "auto", open_browser: bool = True, wait: bool = Tru
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(
-        description="Start alfars lab environment"
-    )
+    parser = argparse.ArgumentParser(description="Start alfars lab environment")
     parser.add_argument(
         "--backend",
         choices=["rust", "python", "auto"],
         default="auto",
-        help="Backend type (default: auto)"
+        help="Backend type (default: auto)",
     )
     parser.add_argument(
-        "--no-browser",
-        action="store_true",
-        help="Don't open browser automatically"
+        "--no-browser", action="store_true", help="Don't open browser automatically"
     )
     parser.add_argument(
-        "--no-wait",
-        action="store_true",
-        help="Don't wait for processes"
+        "--no-wait", action="store_true", help="Don't wait for processes"
     )
 
     args = parser.parse_args()
@@ -297,5 +298,5 @@ if __name__ == "__main__":
     main(
         backend_type=args.backend,
         open_browser=not args.no_browser,
-        wait=not args.no_wait
+        wait=not args.no_wait,
     )

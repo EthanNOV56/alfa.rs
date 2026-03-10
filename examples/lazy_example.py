@@ -11,6 +11,7 @@ import numpy as np
 # Import exprs
 try:
     from exprs._core import LazyFrame, Expr, rolling_window, expanding_window
+
     print("Successfully imported exprs lazy modules")
 except ImportError:
     print("Warning: Could not import from exprs._core. Building extension first...")
@@ -18,20 +19,23 @@ except ImportError:
     import subprocess
     import sys
     import os
-    
+
     # Change to the project directory
     project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     os.chdir(project_dir)
-    
+
     # Build the extension
     print("Building extension with maturin...")
-    result = subprocess.run([sys.executable, "-m", "maturin", "develop", "--release"], 
-                          capture_output=True, text=True)
-    
+    result = subprocess.run(
+        [sys.executable, "-m", "maturin", "develop", "--release"],
+        capture_output=True,
+        text=True,
+    )
+
     if result.returncode != 0:
         print(f"Build failed: {result.stderr}")
         sys.exit(1)
-    
+
     print("Build successful, trying to import again...")
     from exprs._core import LazyFrame, Expr, rolling_window, expanding_window
 
@@ -50,11 +54,7 @@ returns[1:] = prices[1:] / prices[:-1] - 1.0
 returns[0] = np.nan
 
 # Create data dictionary for LazyFrame
-data = {
-    "close": prices,
-    "volume": volumes,
-    "returns": returns
-}
+data = {"close": prices, "volume": volumes, "returns": returns}
 
 print(f"Created sample data: {n_days} days × {n_assets} assets")
 
@@ -62,9 +62,9 @@ print(f"Created sample data: {n_days} days × {n_assets} assets")
 # Example 1: Basic lazy factor construction
 # ============================================================================
 
-print("\n" + "="*80)
+print("\n" + "=" * 80)
 print("Example 1: Basic lazy factor construction")
-print("="*80)
+print("=" * 80)
 
 # Create a LazyFrame from the data
 lazy_df = LazyFrame.scan(data)
@@ -104,9 +104,9 @@ print(f"  Max: {np.nanmax(momentum_factor):.6f}")
 # Example 2: Complex factor with multiple operations
 # ============================================================================
 
-print("\n" + "="*80)
+print("\n" + "=" * 80)
 print("Example 2: Complex factor with multiple operations")
-print("="*80)
+print("=" * 80)
 
 # Start fresh
 lazy_df2 = LazyFrame.scan(data)
@@ -128,13 +128,15 @@ std_20_expr = volume_adj_expr.rolling_std(20)
 zscore_expr = (ma_10_expr - ma_20_expr) / std_20_expr
 
 # Add all intermediate columns and final factor
-lazy_complex = lazy_df2.with_columns([
-    ("volume_adj_price", volume_adj_expr),
-    ("ma_10d", ma_10_expr),
-    ("ma_20d", ma_20_expr),
-    ("std_20d", std_20_expr),
-    ("volume_zscore", zscore_expr)
-])
+lazy_complex = lazy_df2.with_columns(
+    [
+        ("volume_adj_price", volume_adj_expr),
+        ("ma_10d", ma_10_expr),
+        ("ma_20d", ma_20_expr),
+        ("std_20d", std_20_expr),
+        ("volume_zscore", zscore_expr),
+    ]
+)
 
 print("\nExecuting complex factor computation...")
 complex_results = lazy_complex.collect()
@@ -153,9 +155,9 @@ for col_name in ["volume_adj_price", "ma_10d", "ma_20d", "std_20d", "volume_zsco
 # Example 3: Stateful operations (cumulative, EMA)
 # ============================================================================
 
-print("\n" + "="*80)
+print("\n" + "=" * 80)
 print("Example 3: Stateful operations")
-print("="*80)
+print("=" * 80)
 
 # Note: Stateful operations need to be implemented in the execution engine
 # For now, we'll demonstrate the API
@@ -167,10 +169,12 @@ lazy_df3 = LazyFrame.scan(data)
 cumsum_expr = Expr.col("returns").cumsum()
 # ema_expr = Expr.col("close").ema(20)  # 20-day EMA
 
-lazy_stateful = lazy_df3.with_columns([
-    ("cumulative_returns", cumsum_expr),
-    # ("ema_20d", ema_expr)  # Would need EMA implementation
-])
+lazy_stateful = lazy_df3.with_columns(
+    [
+        ("cumulative_returns", cumsum_expr),
+        # ("ema_20d", ema_expr)  # Would need EMA implementation
+    ]
+)
 
 print("\nLogical plan for stateful operations:")
 print(lazy_stateful.explain(optimized=True))
@@ -189,9 +193,9 @@ except Exception as e:
 # Example 4: Window operations with specification
 # ============================================================================
 
-print("\n" + "="*80)
+print("\n" + "=" * 80)
 print("Example 4: Window operations with specification")
-print("="*80)
+print("=" * 80)
 
 # Create window specifications
 rolling_20d = rolling_window(20, min_periods=10)
@@ -204,9 +208,9 @@ print(f"Expanding window spec: {expanding}")
 # Example 5: Realistic factor - Reference Price (RP) and CGO
 # ============================================================================
 
-print("\n" + "="*80)
+print("\n" + "=" * 80)
 print("Example 5: Realistic factor - Reference Price and CGO")
-print("="*80)
+print("=" * 80)
 
 """
 Reference Price (RP) factor formula:
@@ -237,17 +241,19 @@ ref_price_expr = weighted_price_expr.rolling_sum(10) / norm_volume_expr.rolling_
 # CGO calculation
 cgo_expr = (Expr.col("close") - ref_price_expr) / Expr.col("close")
 
-lazy_cgo = lazy_df5.with_columns([
-    ("norm_volume", norm_volume_expr),
-    ("ref_price", ref_price_expr),
-    ("CGO", cgo_expr)
-])
+lazy_cgo = lazy_df5.with_columns(
+    [
+        ("norm_volume", norm_volume_expr),
+        ("ref_price", ref_price_expr),
+        ("CGO", cgo_expr),
+    ]
+)
 
 print("\nExecuting CGO factor computation...")
 try:
     cgo_results = lazy_cgo.collect()
     print(f"Successfully computed CGO factor")
-    
+
     if "CGO" in cgo_results:
         cgo_factor = cgo_results["CGO"]
         valid_cgo = cgo_factor[~np.isnan(cgo_factor)]
@@ -257,16 +263,16 @@ try:
             print(f"  Std: {np.std(valid_cgo):.6f}")
             print(f"  Min: {np.min(valid_cgo):.6f}")
             print(f"  Max: {np.max(valid_cgo):.6f}")
-            
+
             # Check if CGO has predictive power for returns
             # (simplified correlation calculation)
             returns_next_day = np.roll(data["returns"], -1, axis=0)
             returns_next_day[-1, :] = np.nan
-            
+
             # Flatten and correlate
             cgo_flat = cgo_factor[:-1].flatten()
             returns_flat = returns_next_day[:-1].flatten()
-            
+
             mask = ~np.isnan(cgo_flat) & ~np.isnan(returns_flat)
             if np.sum(mask) > 10:
                 corr = np.corrcoef(cgo_flat[mask], returns_flat[mask])[0, 1]
@@ -274,15 +280,16 @@ try:
 except Exception as e:
     print(f"CGO computation failed: {e}")
     import traceback
+
     traceback.print_exc()
 
 # ============================================================================
 # Summary
 # ============================================================================
 
-print("\n" + "="*80)
+print("\n" + "=" * 80)
 print("Summary")
-print("="*80)
+print("=" * 80)
 
 print("\nLazy evaluation system provides:")
 print("1. Declarative factor construction")

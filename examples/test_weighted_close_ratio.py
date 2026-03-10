@@ -21,10 +21,7 @@ print()
 print("=== Test 1: ts_sum with expanding window (window=0) ===")
 data = {"close": close, "volume": volume}
 result = al.evaluate_expression(
-    al.ts_sum(al.Expr.col("close"), 0),
-    data,
-    n_days,
-    n_assets
+    al.ts_sum(al.Expr.col("close"), 0), data, n_days, n_assets
 )
 print("ts_sum(close, 0) - cumulative sum from start:")
 print(result)
@@ -33,10 +30,7 @@ print()
 # Test 2: ts_count with window=0
 print("=== Test 2: ts_count with expanding window (window=0) ===")
 result = al.evaluate_expression(
-    al.ts_count(al.Expr.col("close"), 0),
-    data,
-    n_days,
-    n_assets
+    al.ts_count(al.Expr.col("close"), 0), data, n_days, n_assets
 )
 print("ts_count(close, 0) - cumulative count from start:")
 print(result)

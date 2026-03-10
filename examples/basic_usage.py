@@ -28,7 +28,7 @@ n_assets = 200
 factor = np.zeros((n_days, n_assets))
 factor[0] = np.random.randn(n_assets)
 for t in range(1, n_days):
-    factor[t] = 0.7 * factor[t-1] + 0.3 * np.random.randn(n_assets)
+    factor[t] = 0.7 * factor[t - 1] + 0.3 * np.random.randn(n_assets)
 
 # 收益率数据（包含因子信号和噪声）
 signal_strength = 0.05
@@ -66,17 +66,17 @@ print(f"  IC 信息比率: {result.ic_ir:+.4f}")
 print("\n分组平均收益 (1=最低, 10=最高):")
 group_means = result.group_returns.mean(axis=0)
 for i, mean in enumerate(group_means):
-    print(f"  第{i+1}组: {mean:+.6%}")
+    print(f"  第{i + 1}组: {mean:+.6%}")
 
 # 方法2：使用 BacktestEngine（更多控制）
 print("\n3. 使用 BacktestEngine 进行高级回测...")
 engine = BacktestEngine(
     factor=factor,
     returns=returns,
-    quantiles=5,            # 五分组
+    quantiles=5,  # 五分组
     weight_method="equal",
-    long_top_n=2,           # 做多前2组
-    short_top_n=2,          # 做空前2组
+    long_top_n=2,  # 做多前2组
+    short_top_n=2,  # 做空前2组
     commission_rate=0.0005,
 )
 
@@ -134,7 +134,7 @@ for _ in range(10):
     _ = quantile_backtest(small_factor, small_returns, quantiles=5)
 rust_time = time.time() - start
 
-print(f"  Rust 实现 (10次平均): {rust_time/10:.4f} 秒")
+print(f"  Rust 实现 (10次平均): {rust_time / 10:.4f} 秒")
 
 print("\n" + "=" * 60)
 print("示例完成！")

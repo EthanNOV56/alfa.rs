@@ -98,10 +98,14 @@ impl Dimension {
                 }
             }
             BinaryOp::Modulo => Dimension::Dimensionless, // Modulo always dimensionless
-            BinaryOp::Equal | BinaryOp::NotEqual
-            | BinaryOp::GreaterThan | BinaryOp::GreaterThanOrEqual
-            | BinaryOp::LessThan | BinaryOp::LessThanOrEqual
-            | BinaryOp::And | BinaryOp::Or => Dimension::Dimensionless, // Comparison/logical result
+            BinaryOp::Equal
+            | BinaryOp::NotEqual
+            | BinaryOp::GreaterThan
+            | BinaryOp::GreaterThanOrEqual
+            | BinaryOp::LessThan
+            | BinaryOp::LessThanOrEqual
+            | BinaryOp::And
+            | BinaryOp::Or => Dimension::Dimensionless, // Comparison/logical result
         }
     }
 
@@ -195,15 +199,9 @@ pub enum Expr {
         right: Arc<Expr>,
     },
     /// Unary operation on an expression
-    UnaryExpr {
-        op: UnaryOp,
-        expr: Arc<Expr>,
-    },
+    UnaryExpr { op: UnaryOp, expr: Arc<Expr> },
     /// Function call with arguments
-    FunctionCall {
-        name: String,
-        args: Vec<Expr>,
-    },
+    FunctionCall { name: String, args: Vec<Expr> },
     /// Aggregate expression (e.g., sum, mean)
     Aggregate {
         op: AggregateOp,
@@ -448,7 +446,11 @@ impl fmt::Debug for Expr {
                 condition,
                 then_expr,
                 else_expr,
-            } => write!(f, "if {:?} then {:?} else {:?}", condition, then_expr, else_expr),
+            } => write!(
+                f,
+                "if {:?} then {:?} else {:?}",
+                condition, then_expr, else_expr
+            ),
             Expr::Cast { expr, data_type } => write!(f, "cast({:?} as {:?})", expr, data_type),
         }
     }
@@ -512,7 +514,7 @@ mod tests {
             .add(Expr::lit_int(5))
             .mul(Expr::col("y"))
             .gt(Expr::lit_float(10.0));
-        
+
         println!("Expression: {}", expr);
         assert!(matches!(expr, Expr::BinaryExpr { .. }));
     }
@@ -529,7 +531,7 @@ mod tests {
         let int_lit = Expr::lit_int(42);
         let float_lit = Expr::lit_float(3.14);
         let string_lit = Expr::lit_string("hello");
-        
+
         assert!(matches!(bool_lit, Expr::Literal(Literal::Boolean(true))));
         assert!(matches!(int_lit, Expr::Literal(Literal::Integer(42))));
         assert!(matches!(float_lit, Expr::Literal(Literal::Float(x)) if (x - 3.14).abs() < 1e-10));
@@ -545,13 +547,31 @@ mod tests {
     #[test]
     fn test_unary_operators() {
         let expr = Expr::lit_int(5).neg();
-        assert!(matches!(expr, Expr::UnaryExpr { op: UnaryOp::Negate, .. }));
-        
+        assert!(matches!(
+            expr,
+            Expr::UnaryExpr {
+                op: UnaryOp::Negate,
+                ..
+            }
+        ));
+
         let expr2 = Expr::lit_bool(false).not();
-        assert!(matches!(expr2, Expr::UnaryExpr { op: UnaryOp::Not, .. }));
-        
+        assert!(matches!(
+            expr2,
+            Expr::UnaryExpr {
+                op: UnaryOp::Not,
+                ..
+            }
+        ));
+
         let expr3 = Expr::lit_float(4.0).sqrt();
-        assert!(matches!(expr3, Expr::UnaryExpr { op: UnaryOp::Sqrt, .. }));
+        assert!(matches!(
+            expr3,
+            Expr::UnaryExpr {
+                op: UnaryOp::Sqrt,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -563,26 +583,40 @@ mod tests {
     #[test]
     fn test_aggregate_expression() {
         let expr = Expr::col("value").sum();
-        assert!(matches!(expr, Expr::Aggregate { op: AggregateOp::Sum, .. }));
-        
+        assert!(matches!(
+            expr,
+            Expr::Aggregate {
+                op: AggregateOp::Sum,
+                ..
+            }
+        ));
+
         let expr2 = Expr::col("value").mean();
-        assert!(matches!(expr2, Expr::Aggregate { op: AggregateOp::Mean, .. }));
+        assert!(matches!(
+            expr2,
+            Expr::Aggregate {
+                op: AggregateOp::Mean,
+                ..
+            }
+        ));
     }
 
     #[test]
     fn test_conditional_expression() {
-        let expr = Expr::conditional(
-            Expr::lit_bool(true),
-            Expr::lit_int(1),
-            Expr::lit_int(0),
-        );
+        let expr = Expr::conditional(Expr::lit_bool(true), Expr::lit_int(1), Expr::lit_int(0));
         assert!(matches!(expr, Expr::Conditional { .. }));
     }
 
     #[test]
     fn test_cast_expression() {
         let expr = Expr::lit_int(5).cast(DataType::Float);
-        assert!(matches!(expr, Expr::Cast { data_type: DataType::Float, .. }));
+        assert!(matches!(
+            expr,
+            Expr::Cast {
+                data_type: DataType::Float,
+                ..
+            }
+        ));
     }
 
     #[test]
