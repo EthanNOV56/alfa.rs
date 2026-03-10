@@ -10,6 +10,7 @@ mod gp;
 mod persistence;
 mod metalearning;
 mod factor;
+mod backtest;
 
 use pyo3::prelude::*;
 use pyo3::exceptions::{PyValueError, PyRuntimeError};
@@ -41,6 +42,7 @@ fn set_num_threads(n_threads: usize) -> PyResult<()> {
 use crate::expr::{Expr, Literal, BinaryOp, UnaryOp};
 use crate::polars_style::{DataFrame, Series, evaluate_expr_on_dataframe};
 use crate::lazy::{LazyFrame, DataSource, JoinType};
+use crate::backtest::{BacktestEngine, BacktestResult, FeeConfig, PositionConfig, SlippageConfig};
 
 /// Weight allocation method
 #[derive(Debug, Clone, Copy)]
@@ -49,307 +51,11 @@ pub enum WeightMethod {
     Weighted,
 }
 
-/// Backtest result (Rust internal representation)
-#[derive(Debug, Clone)]
-pub struct BacktestResult {
-    pub group_returns: Array2<f64>,
-    pub group_cum_returns: Array2<f64>,
-    pub long_short_returns: Array1<f64>,
-    pub long_short_cum_return: f64,
-    pub ic_series: Array1<f64>,
-    pub ic_mean: f64,
-    pub ic_ir: f64,
-}
+// ============================================================================
+// Expression System Python Bindings
+// ============================================================================
 
-/// Backtest engine (core Rust implementation)
-pub struct BacktestEngine {
-    factor: Array2<f64>,
-    returns: Array2<f64>,
-    weights: Option<Array2<f64>>,
-    quantiles: usize,
-    weight_method: WeightMethod,
-    long_top_n: usize,
-    short_top_n: usize,
-    commission_rate: f64,
-}
-
-impl BacktestEngine {
-    pub fn new(
-        factor: Array2<f64>,
-        returns: Array2<f64>,
-        quantiles: usize,
-        weight_method: WeightMethod,
-        long_top_n: usize,
-        short_top_n: usize,
-        commission_rate: f64,
-        weights: Option<Array2<f64>>,
-    ) -> Self {
-        assert_eq!(factor.shape(), returns.shape());
-        if let Some(ref w) = weights {
-            assert_eq!(w.shape(), factor.shape());
-        }
-        
-        Self {
-            factor,
-            returns,
-            weights,
-            quantiles,
-            weight_method,
-            long_top_n,
-            short_top_n,
-            commission_rate,
-        }
-    }
-    
-    pub fn run(&self) -> Result<BacktestResult, String> {
-        // Implementation from backtest_rs
-        // For brevity, including core logic only
-        let (n_days, n_assets) = self.factor.dim();
-        
-        // Compute quantile groups
-        let group_labels = self.compute_quantile_groups()?;
-        
-        // Compute group returns
-        let (_, group_returns) = self.compute_group_returns(&group_labels)?;
-        
-        // Compute long-short returns
-        let long_short_returns = self.compute_long_short_returns(&group_returns);
-        
-        // Compute cumulative returns
-        let group_cum_returns = self.compute_cumulative_returns(&group_returns);
-        let long_short_cum_return = (1.0 + &long_short_returns).fold(1.0, |acc, &r| acc * (1.0 + r)) - 1.0;
-        
-        // Compute IC series
-        let (ic_series, ic_mean, ic_ir) = self.compute_ic_series()?;
-        
-        Ok(BacktestResult {
-            group_returns,
-            group_cum_returns,
-            long_short_returns,
-            long_short_cum_return,
-            ic_series,
-            ic_mean,
-            ic_ir,
-        })
-    }
-    
-    fn compute_quantile_groups(&self) -> Result<Array2<usize>, String> {
-        let (n_days, n_assets) = self.factor.dim();
-        let mut groups = Array2::<usize>::zeros((n_days, n_assets));
-        
-        // Parallel processing (simplified)
-        for day in 0..n_days {
-            let factor_row = self.factor.row(day);
-            let mut valid_data: Vec<(usize, f64)> = factor_row
-                .iter()
-                .enumerate()
-                .filter(|&(_, &v)| !v.is_nan())
-                .map(|(i, &v)| (i, v))
-                .collect();
-            
-            if valid_data.len() < self.quantiles {
-                continue;
-            }
-            
-            valid_data.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-            
-            let n_valid = valid_data.len();
-            let group_size = n_valid / self.quantiles;
-            
-            for (group_idx, &(asset_idx, _)) in valid_data.iter().enumerate() {
-                let quantile = (group_idx / group_size).min(self.quantiles - 1) + 1;
-                groups[[day, asset_idx]] = quantile;
-            }
-        }
-        
-        Ok(groups)
-    }
-    
-    fn compute_group_returns(
-        &self,
-        group_labels: &Array2<usize>
-    ) -> Result<(Array2<f64>, Array2<f64>), String> {
-        let (n_days, n_assets) = self.factor.dim();
-        let mut group_weights = Array2::<f64>::zeros((n_days, self.quantiles));
-        let mut group_returns = Array2::<f64>::zeros((n_days - 1, self.quantiles));
-        
-        for day in 0..(n_days - 1) {
-            let labels_today = group_labels.row(day);
-            let returns_tomorrow = self.returns.row(day + 1);
-            
-            for group in 1..=self.quantiles {
-                // Get indices of assets in this group
-                let mut asset_indices = Vec::new();
-                for asset in 0..n_assets {
-                    if labels_today[asset] == group {
-                        asset_indices.push(asset);
-                    }
-                }
-                
-                if asset_indices.is_empty() {
-                    continue;
-                }
-                
-                // Compute weights
-                let weights = match self.weight_method {
-                    WeightMethod::Equal => {
-                        let w = 1.0 / asset_indices.len() as f64;
-                        vec![w; asset_indices.len()]
-                    }
-                    WeightMethod::Weighted => {
-                        if let Some(ref weight_data) = self.weights {
-                            let total_weight: f64 = asset_indices.iter()
-                                .map(|&idx| weight_data[[day, idx]])
-                                .filter(|&w| !w.is_nan())
-                                .sum();
-                            if total_weight == 0.0 {
-                                vec![0.0; asset_indices.len()]
-                            } else {
-                                asset_indices.iter()
-                                    .map(|&idx| weight_data[[day, idx]] / total_weight)
-                                    .collect()
-                            }
-                        } else {
-                            return Err("Weighted method requires weight data".to_string());
-                        }
-                    }
-                };
-                
-                // Store group weight (sum of weights within group)
-                group_weights[[day, group - 1]] = weights.iter().sum();
-                
-                // Compute weighted return
-                let weighted_return: f64 = asset_indices.iter()
-                    .zip(weights.iter())
-                    .map(|(&idx, &w)| {
-                        let ret = returns_tomorrow[idx];
-                        if ret.is_nan() { 0.0 } else { w * ret }
-                    })
-                    .sum();
-                
-                group_returns[[day, group - 1]] = weighted_return;
-            }
-        }
-        
-        Ok((group_weights, group_returns))
-    }
-    
-    fn compute_long_short_returns(&self, group_returns: &Array2<f64>) -> Array1<f64> {
-        let n_days = group_returns.dim().0;
-        let mut long_short = Array1::<f64>::zeros(n_days);
-        
-        let long_groups: Vec<usize> = (self.quantiles - self.long_top_n + 1..=self.quantiles).collect();
-        let short_groups: Vec<usize> = (1..=self.short_top_n).collect();
-        
-        for day in 0..n_days {
-            let long_return: f64 = long_groups.iter()
-                .map(|&g| group_returns[[day, g - 1]])
-                .sum::<f64>() / long_groups.len() as f64;
-            
-            let short_return: f64 = short_groups.iter()
-                .map(|&g| group_returns[[day, g - 1]])
-                .sum::<f64>() / short_groups.len() as f64;
-            
-            long_short[day] = long_return - short_return - self.commission_rate;
-        }
-        
-        long_short
-    }
-    
-    fn compute_cumulative_returns(&self, daily_returns: &Array2<f64>) -> Array2<f64> {
-        let (n_days, n_groups) = daily_returns.dim();
-        let mut cum_returns = Array2::<f64>::zeros((n_days, n_groups));
-        
-        for g in 0..n_groups {
-            let mut cum = 1.0;
-            for d in 0..n_days {
-                cum *= 1.0 + daily_returns[[d, g]];
-                cum_returns[[d, g]] = cum - 1.0;
-            }
-        }
-        
-        cum_returns
-    }
-    
-    fn compute_ic_series(&self) -> Result<(Array1<f64>, f64, f64), String> {
-        let (n_days, n_assets) = self.factor.dim();
-        let mut ic_series = Array1::<f64>::zeros(n_days - 1);
-        
-        for day in 0..(n_days - 1) {
-            let factor_today = self.factor.row(day);
-            let returns_tomorrow = self.returns.row(day + 1);
-            
-            let mut factor_vals = Vec::new();
-            let mut return_vals = Vec::new();
-            
-            for asset in 0..n_assets {
-                let f = factor_today[asset];
-                let r = returns_tomorrow[asset];
-                if !f.is_nan() && !r.is_nan() {
-                    factor_vals.push(f);
-                    return_vals.push(r);
-                }
-            }
-            
-            if factor_vals.len() < 2 {
-                ic_series[day] = NAN;
-                continue;
-            }
-            
-            ic_series[day] = self.pearson_correlation(&factor_vals, &return_vals);
-        }
-        
-        let valid_ic: Vec<f64> = ic_series.iter()
-            .filter(|&&v| !v.is_nan())
-            .cloned()
-            .collect();
-        
-        if valid_ic.is_empty() {
-            return Err("No valid IC values".to_string());
-        }
-        
-        let ic_mean = valid_ic.mean();
-        let ic_std = valid_ic.std_dev();
-        let ic_ir = if ic_std == 0.0 { NAN } else { ic_mean / ic_std };
-        
-        Ok((ic_series, ic_mean, ic_ir))
-    }
-    
-    fn pearson_correlation(&self, x: &[f64], y: &[f64]) -> f64 {
-        let n = x.len() as f64;
-        let sum_x: f64 = x.iter().sum();
-        let sum_y: f64 = y.iter().sum();
-        let sum_xy: f64 = x.iter().zip(y).map(|(&a, &b)| a * b).sum();
-        let sum_x2: f64 = x.iter().map(|&a| a * a).sum();
-        let sum_y2: f64 = y.iter().map(|&b| b * b).sum();
-        
-        let numerator = n * sum_xy - sum_x * sum_y;
-        let denominator = ((n * sum_x2 - sum_x * sum_x) * (n * sum_y2 - sum_y * sum_y)).sqrt();
-        
-        if denominator == 0.0 { 0.0 } else { numerator / denominator }
-    }
-}
-
-trait StatsExt {
-    fn mean(&self) -> f64;
-    fn std_dev(&self) -> f64;
-}
-
-impl StatsExt for Vec<f64> {
-    fn mean(&self) -> f64 {
-        if self.is_empty() { 0.0 } else { self.iter().sum::<f64>() / self.len() as f64 }
-    }
-    
-    fn std_dev(&self) -> f64 {
-        if self.len() <= 1 { 0.0 } else {
-            let mean = self.mean();
-            let variance = self.iter()
-                .map(|&x| (x - mean) * (x - mean))
-                .sum::<f64>() / (self.len() - 1) as f64;
-            variance.sqrt()
-        }
-    }
-}
+/// Python-exposed expression
 
 // ============================================================================
 // Expression System Python Bindings
@@ -1037,6 +743,11 @@ fn ts_min(expr: &PyExpr, window: usize) -> PyResult<PyExpr> {
 // PyO3 bindings
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // Backtest configuration
+    m.add_class::<PySlippageConfig>()?;
+    m.add_class::<PyFeeConfig>()?;
+    m.add_class::<PyPositionConfig>()?;
+
     // Backtest functionality
     m.add_class::<PyBacktestEngine>()?;
     m.add_function(wrap_pyfunction!(quantile_backtest, m)?)?;
@@ -1101,6 +812,129 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
+/// Volume-based slippage configuration
+#[pyclass]
+struct PySlippageConfig {
+    #[pyo3(get, set)]
+    large_volume_threshold: f64,
+    #[pyo3(get, set)]
+    large_slippage_rate: f64,
+    #[pyo3(get, set)]
+    normal_slippage_rate: f64,
+}
+
+#[pymethods]
+impl PySlippageConfig {
+    #[new]
+    fn new(
+        large_volume_threshold: f64,
+        large_slippage_rate: f64,
+        normal_slippage_rate: f64,
+    ) -> Self {
+        Self {
+            large_volume_threshold,
+            large_slippage_rate,
+            normal_slippage_rate,
+        }
+    }
+}
+
+impl From<PySlippageConfig> for SlippageConfig {
+    fn from(py_config: PySlippageConfig) -> Self {
+        SlippageConfig {
+            large_volume_threshold: py_config.large_volume_threshold,
+            large_slippage_rate: py_config.large_slippage_rate,
+            normal_slippage_rate: py_config.normal_slippage_rate,
+        }
+    }
+}
+
+/// Fee configuration
+#[pyclass]
+struct PyFeeConfig {
+    #[pyo3(get, set)]
+    commission_rate: f64,
+    #[pyo3(get, set)]
+    large_volume_threshold: f64,
+    #[pyo3(get, set)]
+    large_slippage_rate: f64,
+    #[pyo3(get, set)]
+    normal_slippage_rate: f64,
+    #[pyo3(get, set)]
+    min_commission: f64,
+}
+
+#[pymethods]
+impl PyFeeConfig {
+    #[new]
+    fn new(
+        commission_rate: f64,
+        large_volume_threshold: f64,
+        large_slippage_rate: f64,
+        normal_slippage_rate: f64,
+        min_commission: f64,
+    ) -> Self {
+        Self {
+            commission_rate,
+            large_volume_threshold,
+            large_slippage_rate,
+            normal_slippage_rate,
+            min_commission,
+        }
+    }
+}
+
+impl From<PyFeeConfig> for FeeConfig {
+    fn from(py_config: PyFeeConfig) -> Self {
+        FeeConfig {
+            commission_rate: py_config.commission_rate,
+            slippage: SlippageConfig {
+                large_volume_threshold: py_config.large_volume_threshold,
+                large_slippage_rate: py_config.large_slippage_rate,
+                normal_slippage_rate: py_config.normal_slippage_rate,
+            },
+            min_commission: py_config.min_commission,
+        }
+    }
+}
+
+/// Position configuration
+#[pyclass]
+struct PyPositionConfig {
+    #[pyo3(get, set)]
+    long_ratio: f64,
+    #[pyo3(get, set)]
+    short_ratio: f64,
+    #[pyo3(get, set)]
+    market_neutral: bool,
+}
+
+#[pymethods]
+impl PyPositionConfig {
+    #[new]
+    fn new(
+        long_ratio: f64,
+        short_ratio: f64,
+        market_neutral: bool,
+    ) -> Self {
+        Self {
+            long_ratio,
+            short_ratio,
+            market_neutral,
+        }
+    }
+}
+
+impl From<PyPositionConfig> for PositionConfig {
+    fn from(py_config: PyPositionConfig) -> Self {
+        PositionConfig {
+            long_ratio: py_config.long_ratio,
+            short_ratio: py_config.short_ratio,
+            market_neutral: py_config.market_neutral,
+        }
+    }
+}
+
 /// Python-exposed backtest engine
 #[pyclass]
 struct PyBacktestEngine {
@@ -1133,7 +967,7 @@ impl PyBacktestEngine {
             )),
         };
 
-        let engine = BacktestEngine::new(
+        let engine = BacktestEngine::new_simple(
             factor_array,
             returns_array,
             quantiles,
@@ -1172,6 +1006,27 @@ struct PyBacktestResult {
     ic_mean: f64,
     #[pyo3(get)]
     ic_ir: f64,
+    /// Total return
+    #[pyo3(get)]
+    total_return: f64,
+    /// Annualized return
+    #[pyo3(get)]
+    annualized_return: f64,
+    /// Sharpe ratio (annualized)
+    #[pyo3(get)]
+    sharpe_ratio: f64,
+    /// Maximum drawdown
+    #[pyo3(get)]
+    max_drawdown: f64,
+    /// Turnover rate
+    #[pyo3(get)]
+    turnover: f64,
+    /// Long-only returns
+    #[pyo3(get)]
+    long_returns: Py<PyArray1<f64>>,
+    /// Short-only returns
+    #[pyo3(get)]
+    short_returns: Py<PyArray1<f64>>,
 }
 
 impl From<BacktestResult> for PyBacktestResult {
@@ -1185,6 +1040,13 @@ impl From<BacktestResult> for PyBacktestResult {
                 ic_series: result.ic_series.into_pyarray(py).into(),
                 ic_mean: result.ic_mean,
                 ic_ir: result.ic_ir,
+                total_return: result.total_return,
+                annualized_return: result.annualized_return,
+                sharpe_ratio: result.sharpe_ratio,
+                max_drawdown: result.max_drawdown,
+                turnover: result.turnover,
+                long_returns: result.long_returns.into_pyarray(py).into(),
+                short_returns: result.short_returns.into_pyarray(py).into(),
             }
         }).unwrap()
     }
@@ -1437,7 +1299,7 @@ fn expanding_window(min_periods: Option<usize>) -> PyResult<Py<PyDict>> {
 // Genetic Programming (GP) Module Python Bindings
 // ============================================================================
 
-use crate::gp::{GPConfig, Terminal, Function, BacktestFitnessEvaluator, run_gp};
+use crate::gp::{GPConfig, Terminal, Function, BacktestFitnessEvaluator, RealBacktestFitnessEvaluator, run_gp, DataSplitConfig};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use std::collections::HashMap;
@@ -1454,6 +1316,7 @@ pub struct PyGpEngine {
 #[pymethods]
 impl PyGpEngine {
     #[new]
+    #[pyo3(signature = (population_size=100, max_generations=50, tournament_size=7, crossover_prob=0.8, mutation_prob=0.2, max_depth=6, allow_ephemeral=true))]
     fn new(
         population_size: usize,
         max_generations: usize,
@@ -1461,14 +1324,19 @@ impl PyGpEngine {
         crossover_prob: f64,
         mutation_prob: f64,
         max_depth: usize,
+        allow_ephemeral: bool,
     ) -> Self {
+
         // Create default terminals (will be updated later)
-        let terminals = vec![
-            Terminal::Ephemeral,
+        let mut terminals = vec![
             Terminal::Constant(1.0),
             Terminal::Constant(2.0),
         ];
-        
+
+        if allow_ephemeral {
+            terminals.insert(0, Terminal::Ephemeral);
+        }
+
         // Create default functions
         let functions = vec![
             Function::add(),
@@ -1479,7 +1347,7 @@ impl PyGpEngine {
             Function::abs(),
             Function::neg(),
         ];
-        
+
         let config = GPConfig {
             population_size,
             max_generations,
@@ -1488,20 +1356,27 @@ impl PyGpEngine {
             mutation_prob,
             max_depth,
         };
-        
+
         let rng = StdRng::from_entropy();
-        
+
         PyGpEngine { config, terminals, functions, rng }
     }
-    
+
     /// Set available columns (variables) for expression generation
-    fn set_columns(&mut self, py: Python<'_>, columns: Bound<'_, PyList>) {
+    #[pyo3(signature = (columns, allow_ephemeral = None))]
+    fn set_columns(&mut self, py: Python<'_>, columns: Bound<'_, PyList>, allow_ephemeral: Option<bool>) {
+        // Check if ephemeral is allowed (default to true if not specified)
+        let allow_ephemeral = allow_ephemeral.unwrap_or(true);
+
         // Update terminals with column variables
         let mut new_terminals = vec![
-            Terminal::Ephemeral,
             Terminal::Constant(1.0),
             Terminal::Constant(2.0),
         ];
+
+        if allow_ephemeral {
+            new_terminals.insert(0, Terminal::Ephemeral);
+        }
 
         for item in columns.iter() {
             let col: String = item.extract().unwrap_or_default();
@@ -1511,14 +1386,18 @@ impl PyGpEngine {
         self.terminals = new_terminals;
     }
     
-    /// Run genetic programming for factor mining
+    /// Run genetic programming for factor mining (backward compatible)
     fn mine_factors(
         &mut self,
         py: Python<'_>,
         data: Bound<'_, PyDict>,
         returns: Bound<'_, PyArray2<f64>>,
         num_factors: usize,
-    ) -> PyResult<Vec<(String, f64)>> {
+        weight_ic: Option<f64>,
+        weight_ir: Option<f64>,
+        weight_turnover: Option<f64>,
+        weight_complexity: Option<f64>,
+    ) -> PyResult<Vec<(String, f64, f64, f64, f64, usize)>> {
         use numpy::PyArray2;
 
         // Extract data arrays
@@ -1540,13 +1419,27 @@ impl PyGpEngine {
         // Extract returns array
         let returns_array = returns.readonly().as_array().to_owned();
 
-        // Create fitness evaluator
-        let evaluator = BacktestFitnessEvaluator::new(data_arrays, returns_array);
+        // Create multi-objective fitness evaluator (without split - backward compatible)
+        let mut evaluator = RealBacktestFitnessEvaluator::new(data_arrays, returns_array);
+
+        // Set weights for multi-objective optimization
+        let w_ic = weight_ic.unwrap_or(0.4);
+        let w_ir = weight_ir.unwrap_or(0.3);
+        let w_to = weight_turnover.unwrap_or(0.15);
+        let w_comp = weight_complexity.unwrap_or(0.15);
+
+        let weights = HashMap::from([
+            ("ic".to_string(), w_ic),
+            ("ir".to_string(), w_ir),
+            ("turnover".to_string(), w_to),
+            ("complexity".to_string(), w_comp),
+        ]);
+        evaluator.set_weights(weights);
 
         // Run GP multiple times to get multiple factors
         let mut results = Vec::new();
 
-        for _ in 0..num_factors {
+        for i in 0..num_factors {
             let (best_expr, best_fitness) = run_gp(
                 &self.config,
                 &evaluator,
@@ -1557,7 +1450,124 @@ impl PyGpEngine {
 
             // Convert expression to string representation
             let expr_str = format!("{:?}", best_expr);
-            results.push((expr_str, best_fitness));
+
+            // Get additional metrics from evaluator
+            let ic = evaluator.get_last_ic();
+            let ir = evaluator.get_last_ir();
+            let turnover = evaluator.get_last_turnover();
+            let complexity = evaluator.get_last_complexity();
+
+            results.push((expr_str, best_fitness, ic, ir, turnover, complexity));
+        }
+
+        Ok(results)
+    }
+
+    /// Run genetic programming with train/test/validation split
+    fn mine_factors_with_split(
+        &mut self,
+        py: Python<'_>,
+        data: Bound<'_, PyDict>,
+        returns: Bound<'_, PyArray2<f64>>,
+        num_factors: usize,
+        train_ratio: f64,
+        validation_ratio: f64,
+        weight_ic: Option<f64>,
+        weight_ir: Option<f64>,
+        weight_turnover: Option<f64>,
+        weight_complexity: Option<f64>,
+    ) -> PyResult<Vec<(String, f64, f64, f64, f64, usize, Vec<f64>, Vec<f64>, Vec<f64>)>> {
+        use numpy::PyArray2;
+
+        // Validate split ratios
+        if train_ratio <= 0.0 || validation_ratio <= 0.0 {
+            return Err(PyValueError::new_err("train_ratio and validation_ratio must be positive"));
+        }
+        if train_ratio + validation_ratio >= 1.0 {
+            return Err(PyValueError::new_err("train_ratio + validation_ratio must be < 1.0"));
+        }
+
+        // Extract data arrays
+        let mut data_arrays = HashMap::new();
+
+        for (key, value) in data.iter() {
+            let col_name: String = key.extract()?;
+
+            if let Ok(arr) = value.extract::<Bound<'_, PyArray2<f64>>>() {
+                let array = arr.readonly().as_array().to_owned();
+                data_arrays.insert(col_name, array);
+            } else {
+                return Err(PyValueError::new_err(
+                    format!("Column '{}' must be a 2D numpy array", col_name)
+                ));
+            }
+        }
+
+        // Extract returns array
+        let returns_array = returns.readonly().as_array().to_owned();
+
+        // Create split config
+        let split_config = DataSplitConfig {
+            train_ratio,
+            validation_ratio,
+            test_ratio: Some(1.0 - train_ratio - validation_ratio),
+        };
+
+        // Create evaluator with split
+        let mut evaluator = RealBacktestFitnessEvaluator::with_split(
+            data_arrays,
+            returns_array,
+            split_config,
+        );
+
+        // Set weights for multi-objective optimization
+        let w_ic = weight_ic.unwrap_or(0.4);
+        let w_ir = weight_ir.unwrap_or(0.3);
+        let w_to = weight_turnover.unwrap_or(0.15);
+        let w_comp = weight_complexity.unwrap_or(0.15);
+
+        let weights = HashMap::from([
+            ("ic".to_string(), w_ic),
+            ("ir".to_string(), w_ir),
+            ("turnover".to_string(), w_to),
+            ("complexity".to_string(), w_comp),
+        ]);
+        evaluator.set_weights(weights);
+
+        // Run GP multiple times to get multiple factors
+        let mut results = Vec::new();
+
+        for i in 0..num_factors {
+            let (best_expr, best_fitness) = run_gp(
+                &self.config,
+                &evaluator,
+                self.terminals.clone(),
+                self.functions.clone(),
+                &mut self.rng,
+            );
+
+            // Convert expression to string representation
+            let expr_str = format!("{:?}", best_expr);
+
+            // Get additional metrics from evaluator
+            let ic = evaluator.get_last_ic();
+            let ir = evaluator.get_last_ir();
+            let turnover = evaluator.get_last_turnover();
+            let complexity = evaluator.get_last_complexity();
+
+            // Get split evaluation results
+            let split_result = evaluator.get_last_split_result();
+            let (train_metrics, validation_metrics, test_metrics) = if let Some(ref sr) = split_result {
+                (
+                    vec![sr.train.ic_mean, sr.train.ic_ir, sr.train.sharpe_ratio, sr.train.max_drawdown],
+                    vec![sr.validation.ic_mean, sr.validation.ic_ir, sr.validation.sharpe_ratio, sr.validation.max_drawdown],
+                    vec![sr.test.ic_mean, sr.test.ic_ir, sr.test.sharpe_ratio, sr.test.max_drawdown],
+                )
+            } else {
+                (vec![0.0, 0.0, 0.0, 0.0], vec![0.0, 0.0, 0.0, 0.0], vec![0.0, 0.0, 0.0, 0.0])
+            };
+
+            results.push((expr_str, best_fitness, ic, ir, turnover, complexity, train_metrics, validation_metrics, test_metrics));
         }
 
         Ok(results)

@@ -284,9 +284,10 @@ class GpEngine:
         crossover_prob: float = 0.8,
         mutation_prob: float = 0.2,
         max_depth: int = 6,
+        allow_ephemeral: bool = True,
     ) -> None: ...
 
-    def set_columns(self, columns: List[str]) -> None:
+    def set_columns(self, columns: List[str], allow_ephemeral: Optional[bool] = None) -> None:
         """Set available column names for GP."""
         ...
 
@@ -295,8 +296,16 @@ class GpEngine:
         data: Dict[str, npt.NDArray],
         returns: npt.NDArray,
         num_factors: int = 10,
-    ) -> List[Tuple[str, float]]:
-        """Mine for factors using genetic programming."""
+        weight_ic: Optional[float] = None,
+        weight_ir: Optional[float] = None,
+        weight_turnover: Optional[float] = None,
+        weight_complexity: Optional[float] = None,
+    ) -> List[Tuple[str, float, float, float, float, int]]:
+        """
+        Mine for factors using genetic programming with multi-objective optimization.
+
+        Returns list of (expression, fitness, ic, ir, turnover, complexity)
+        """
         ...
 
     def test_run(self) -> Dict[str, Any]:

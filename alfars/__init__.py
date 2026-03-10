@@ -44,7 +44,11 @@ try:
         MetaLearningAnalyzer,
         # Persistence system
         PersistenceManager,
+        # Backtest configuration
         PyBacktestEngine,
+        PyFeeConfig,
+        PyPositionConfig,
+        PySlippageConfig,
         Series,
         compute_ic,
         cumprod,
@@ -185,6 +189,10 @@ __all__ = [
     "BacktestEngine",
     "BacktestResult",
     "compute_information_coefficient",
+    # Backtest configuration
+    "FeeConfig",
+    "PositionConfig",
+    "SlippageConfig",
     # Expression system
     "Expr",
     "Series",
@@ -557,6 +565,13 @@ class BacktestResult:
         ic_series: np.ndarray,
         ic_mean: float,
         ic_ir: float,
+        total_return: float = 0.0,
+        annualized_return: float = 0.0,
+        sharpe_ratio: float = 0.0,
+        max_drawdown: float = 0.0,
+        turnover: float = 0.0,
+        long_returns: np.ndarray = None,
+        short_returns: np.ndarray = None,
     ):
         self.group_returns = group_returns
         self.group_cum_returns = group_cum_returns
@@ -565,6 +580,13 @@ class BacktestResult:
         self.ic_series = ic_series
         self.ic_mean = ic_mean
         self.ic_ir = ic_ir
+        self.total_return = total_return
+        self.annualized_return = annualized_return
+        self.sharpe_ratio = sharpe_ratio
+        self.max_drawdown = max_drawdown
+        self.turnover = turnover
+        self.long_returns = long_returns if long_returns is not None else np.array([])
+        self.short_returns = short_returns if short_returns is not None else np.array([])
 
     @classmethod
     def from_rust_result(cls, rust_result: Any) -> "BacktestResult":
@@ -577,6 +599,13 @@ class BacktestResult:
             ic_series=np.array(rust_result.ic_series),
             ic_mean=rust_result.ic_mean,
             ic_ir=rust_result.ic_ir,
+            total_return=getattr(rust_result, 'total_return', 0.0),
+            annualized_return=getattr(rust_result, 'annualized_return', 0.0),
+            sharpe_ratio=getattr(rust_result, 'sharpe_ratio', 0.0),
+            max_drawdown=getattr(rust_result, 'max_drawdown', 0.0),
+            turnover=getattr(rust_result, 'turnover', 0.0),
+            long_returns=getattr(rust_result, 'long_returns', np.array([])),
+            short_returns=getattr(rust_result, 'short_returns', np.array([])),
         )
 
     def to_dict(self) -> Dict[str, Union[np.ndarray, float]]:
@@ -589,6 +618,13 @@ class BacktestResult:
             "ic_series": self.ic_series,
             "ic_mean": self.ic_mean,
             "ic_ir": self.ic_ir,
+            "total_return": self.total_return,
+            "annualized_return": self.annualized_return,
+            "sharpe_ratio": self.sharpe_ratio,
+            "max_drawdown": self.max_drawdown,
+            "turnover": self.turnover,
+            "long_returns": self.long_returns,
+            "short_returns": self.short_returns,
         }
 
     def summary(self) -> str:
@@ -599,6 +635,11 @@ Groups: {self.group_returns.shape[1]}
 Days: {self.group_returns.shape[0]}
 
 Long-Short Cumulative Return: {self.long_short_cum_return:.4%}
+Total Return: {self.total_return:.4%}
+Annualized Return: {self.annualized_return:.4%}
+Sharpe Ratio: {self.sharpe_ratio:.4f}
+Max Drawdown: {self.max_drawdown:.4%}
+Turnover: {self.turnover:.4%}
 IC Mean: {self.ic_mean:.4f}
 IC IR: {self.ic_ir:.4f}
 
@@ -613,6 +654,12 @@ Group Mean Returns:
         for i, mean in enumerate(group_means):
             lines.append(f"  Group {i+1}: {mean:.6%}")
         return "\n".join(lines)
+
+
+# Alias for Python wrapper
+SlippageConfig = PySlippageConfig
+FeeConfig = PyFeeConfig
+PositionConfig = PyPositionConfig
 
 
 def factor_returns(

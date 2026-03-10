@@ -3,17 +3,141 @@
 //! This module provides genetic programming functionality specifically designed
 //! for discovering alpha factors by evolving expression trees and evaluating
 //! them through backtesting.
+//!
+//! Key features:
+//! - Train/Test/Validation split for robust factor evaluation
+//! - Multi-objective optimization (IC, IR, turnover, complexity)
+//! - Enhanced backtest engine with fee and position configuration
 
 use crate::expr::{Expr, Literal, BinaryOp, UnaryOp};
 use crate::polars_style::{DataFrame, Series, evaluate_expr_on_dataframe};
-use crate::{BacktestEngine, BacktestResult, WeightMethod};
+use crate::backtest::{BacktestEngine, BacktestResult, FeeConfig, PositionConfig};
+use crate::WeightMethod;
 use lru::LruCache;
 use ndarray::Array2;
 use rand::prelude::*;
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
+
+/// Data split configuration for train/test/validation
+#[derive(Clone, Debug)]
+pub struct DataSplitConfig {
+    /// Training set ratio (e.g., 0.6 for 60%)
+    pub train_ratio: f64,
+    /// Validation set ratio (e.g., 0.2 for 20%)
+    pub validation_ratio: f64,
+    /// Test set ratio (e.g., 0.2 for 20%)
+    /// If not specified, remaining data goes to test
+    pub test_ratio: Option<f64>,
+}
+
+impl Default for DataSplitConfig {
+    fn default() -> Self {
+        Self {
+            train_ratio: 0.6,
+            validation_ratio: 0.2,
+            test_ratio: Some(0.2),
+        }
+    }
+}
+
+impl DataSplitConfig {
+    /// Validate the split configuration
+    pub fn validate(&self) -> bool {
+        let total = self.train_ratio + self.validation_ratio + self.test_ratio.unwrap_or(0.0);
+        (total - 1.0).abs() < 1e-6
+    }
+
+    /// Get the actual test ratio (computed from remaining if not specified)
+    pub fn get_test_ratio(&self) -> f64 {
+        self.test_ratio.unwrap_or(1.0 - self.train_ratio - self.validation_ratio)
+    }
+}
+
+/// Data split indices
+#[derive(Clone, Debug)]
+pub struct DataSplit {
+    /// Training set day indices
+    pub train_indices: Vec<usize>,
+    /// Validation set day indices
+    pub validation_indices: Vec<usize>,
+    /// Test set day indices
+    pub test_indices: Vec<usize>,
+}
+
+impl DataSplit {
+    /// Create a new data split
+    pub fn new(train_indices: Vec<usize>, validation_indices: Vec<usize>, test_indices: Vec<usize>) -> Self {
+        Self {
+            train_indices,
+            validation_indices,
+            test_indices,
+        }
+    }
+
+    /// Create a split from config
+    pub fn from_config(n_days: usize, config: &DataSplitConfig) -> Self {
+        let train_end = (n_days as f64 * config.train_ratio) as usize;
+        let validation_end = train_end + (n_days as f64 * config.validation_ratio) as usize;
+
+        let train_indices: Vec<usize> = (0..train_end).collect();
+        let validation_indices: Vec<usize> = (train_end..validation_end).collect();
+        let test_indices: Vec<usize> = (validation_end..n_days).collect();
+
+        Self {
+            train_indices,
+            validation_indices,
+            test_indices,
+        }
+    }
+}
+
+/// Evaluation result for a factor on different splits
+#[derive(Clone, Debug)]
+pub struct SplitEvaluationResult {
+    /// Training set metrics
+    pub train: SplitMetrics,
+    /// Validation set metrics
+    pub validation: SplitMetrics,
+    /// Test set metrics
+    pub test: SplitMetrics,
+}
+
+/// Metrics for a single data split
+#[derive(Clone, Debug, Default)]
+pub struct SplitMetrics {
+    /// IC (Information Coefficient) mean
+    pub ic_mean: f64,
+    /// IC IR (Information Ratio)
+    pub ic_ir: f64,
+    /// Total return
+    pub total_return: f64,
+    /// Annualized return
+    pub annualized_return: f64,
+    /// Sharpe ratio
+    pub sharpe_ratio: f64,
+    /// Maximum drawdown
+    pub max_drawdown: f64,
+    /// Turnover rate
+    pub turnover: f64,
+}
+
+impl SplitMetrics {
+    /// Create from BacktestResult
+    pub fn from_backtest(result: &BacktestResult) -> Self {
+        Self {
+            ic_mean: result.ic_mean,
+            ic_ir: result.ic_ir,
+            total_return: result.total_return,
+            annualized_return: result.annualized_return,
+            sharpe_ratio: result.sharpe_ratio,
+            max_drawdown: result.max_drawdown,
+            turnover: result.turnover,
+        }
+    }
+}
 
 /// Fitness evaluator trait for evaluating expression fitness
 pub trait FitnessEvaluator: Send + Sync {
@@ -484,7 +608,8 @@ pub fn run_gp<R: Rng + ?Sized>(
     let mut scores: Vec<f64> = if evaluator.supports_batch() {
         evaluator.fitness_batch(&population)
     } else {
-        population.iter().map(|e| evaluator.fitness(e)).collect()
+        // Use parallel iteration for better performance
+        population.par_iter().map(|e| evaluator.fitness(e)).collect()
     };
     
     let mut best_idx = 0;
@@ -541,7 +666,8 @@ pub fn run_gp<R: Rng + ?Sized>(
         scores = if evaluator.supports_batch() {
             evaluator.fitness_batch(&population)
         } else {
-            population.iter().map(|e| evaluator.fitness(e)).collect()
+            // Use parallel iteration for better performance
+            population.par_iter().map(|e| evaluator.fitness(e)).collect()
         };
         
         // Update best individual
@@ -584,16 +710,29 @@ impl MultiObjectiveFitness {
         weights: Option<(f64, f64, f64, f64)>, // (ic_weight, ir_weight, turnover_weight, complexity_weight)
     ) -> Self {
         let (w_ic, w_ir, w_to, w_comp) = weights.unwrap_or((0.5, 0.3, 0.1, 0.1));
-        
+
+        // Minimum IC threshold - penalize factors with near-zero IC
+        let min_ic_threshold = 0.001;
+        let ic_penalty = if ic_score < min_ic_threshold {
+            // Heavily penalize factors with IC below threshold
+            (min_ic_threshold - ic_score) * 100.0
+        } else {
+            0.0
+        };
+
+        // Only count IR if IC is above threshold (avoid artificial high IR from near-zero IC)
+        let effective_ir = if ic_score >= min_ic_threshold { ir_score } else { 0.0 };
+
         // Normalize turnover (exponential penalty for high turnover)
         let turnover_penalty = (-turnover / 0.1).exp(); // Decay factor
-        
+
         // Complexity penalty (logarithmic scaling)
         let complexity_penalty = (complexity as f64).ln() / 10.0;
-        
+
         // Combined weighted score
-        let combined_score = w_ic * ic_score + w_ir * ir_score - w_to * turnover_penalty - w_comp * complexity_penalty;
-        
+        let combined_score = w_ic * (ic_score - ic_penalty) + w_ir * effective_ir
+            - w_to * turnover_penalty - w_comp * complexity_penalty;
+
         Self {
             ic_score,
             ir_score,
@@ -602,7 +741,7 @@ impl MultiObjectiveFitness {
             combined_score,
         }
     }
-    
+
     /// Get the main fitness value for selection
     pub fn fitness(&self) -> f64 {
         self.combined_score
@@ -610,22 +749,92 @@ impl MultiObjectiveFitness {
 }
 
 /// Fitness evaluator for factor mining based on actual backtest performance
+/// with support for train/test/validation split
 pub struct RealBacktestFitnessEvaluator {
     data: HashMap<String, Array2<f64>>,
     returns: Array2<f64>,
     weights: HashMap<String, f64>, // Feature weights for multi-objective optimization
     min_valid_days: usize, // Minimum days required for valid backtest
+    // Data split configuration
+    data_split: Option<DataSplit>,
+    // Fee configuration for backtest
+    fee_config: FeeConfig,
+    // Position configuration for backtest
+    position_config: PositionConfig,
+    // Store last computed metrics (using RwLock for thread safety)
+    last_metrics: RwLock<(f64, f64, f64, usize)>, // (ic, ir, turnover, complexity)
+    // Store last split evaluation result
+    last_split_result: RwLock<Option<SplitEvaluationResult>>,
 }
 
 impl RealBacktestFitnessEvaluator {
-    /// Create a new real backtest fitness evaluator
+    /// Create a new real backtest fitness evaluator (backward compatible)
     pub fn new(data: HashMap<String, Array2<f64>>, returns: Array2<f64>) -> Self {
         Self {
             data,
             returns,
             weights: HashMap::new(),
-            min_valid_days: 50, // Default minimum days
+            min_valid_days: 50,
+            data_split: None,
+            fee_config: FeeConfig::default(),
+            position_config: PositionConfig::default(),
+            last_metrics: RwLock::new((0.0, 0.0, 0.0, 0)),
+            last_split_result: RwLock::new(None),
         }
+    }
+
+    /// Create a new evaluator with train/test/validation split
+    pub fn with_split(
+        data: HashMap<String, Array2<f64>>,
+        returns: Array2<f64>,
+        split_config: DataSplitConfig,
+    ) -> Self {
+        let n_days = returns.shape()[0];
+        let data_split = DataSplit::from_config(n_days, &split_config);
+
+        Self {
+            data,
+            returns,
+            weights: HashMap::new(),
+            min_valid_days: 50,
+            data_split: Some(data_split),
+            fee_config: FeeConfig::default(),
+            position_config: PositionConfig::default(),
+            last_metrics: RwLock::new((0.0, 0.0, 0.0, 0)),
+            last_split_result: RwLock::new(None),
+        }
+    }
+
+    /// Set fee configuration
+    pub fn with_fee_config(mut self, fee_config: FeeConfig) -> Self {
+        self.fee_config = fee_config;
+        self
+    }
+
+    /// Set position configuration
+    pub fn with_position_config(mut self, position_config: PositionConfig) -> Self {
+        self.position_config = position_config;
+        self
+    }
+
+    /// Get last computed IC
+    pub fn get_last_ic(&self) -> f64 {
+        self.last_metrics.read().unwrap().0
+    }
+
+    /// Get last computed IR
+    pub fn get_last_ir(&self) -> f64 {
+        self.last_metrics.read().unwrap().1
+    }
+
+    /// Get last computed turnover
+    pub fn get_last_turnover(&self) -> f64 {
+        self.last_metrics.read().unwrap().2
+    }
+
+    /// Get last computed complexity
+    pub fn get_last_complexity(&self) -> usize {
+        self.last_metrics.read().unwrap().3
     }
     
     /// Set feature weights for multi-objective optimization
@@ -639,35 +848,55 @@ impl RealBacktestFitnessEvaluator {
         self.min_valid_days = days;
         self
     }
-    
+
     /// Evaluate expression and run backtest with multiple objectives
     fn evaluate_with_backtest(&self, expr: &Expr) -> Option<MultiObjectiveFitness> {
-        
+
         let n_days = self.returns.shape()[0];
-        
+
         if n_days < self.min_valid_days {
             return None; // Not enough data for valid backtest
         }
-        
-        // Evaluate expression to get factor matrix
+
+        // Evaluate expression to get factor matrix (full data)
         let factor_matrix = self.evaluate_expression(expr)?;
-        
-        // Run backtest on the factor matrix
+
+        // Run backtest on the factor matrix (uses training data if split is configured)
         let backtest_result = self.run_backtest(&factor_matrix)?;
-        
+
+        // Evaluate on all splits if configured (for tracking purposes)
+        if self.data_split.is_some() {
+            // Evaluate on all splits and store results
+            let _ = self.evaluate_on_all_splits(&factor_matrix);
+        }
+
         // Compute turnover (simplified - based on factor value changes)
         let turnover = self.compute_turnover(&factor_matrix);
-        
+
         // Compute complexity
         let complexity = self.compute_complexity(expr);
-        
+
+        // Store last computed metrics
+        *self.last_metrics.write().unwrap() = (
+            backtest_result.ic_mean.abs(),
+            backtest_result.ic_ir.abs(),
+            turnover,
+            complexity,
+        );
+
+        // Get weights
+        let w_ic = *self.weights.get("ic").unwrap_or(&0.4);
+        let w_ir = *self.weights.get("ir").unwrap_or(&0.3);
+        let w_to = *self.weights.get("turnover").unwrap_or(&0.15);
+        let w_comp = *self.weights.get("complexity").unwrap_or(&0.15);
+
         // Create multi-objective fitness
         Some(MultiObjectiveFitness::new(
             backtest_result.ic_mean.abs(), // Use absolute IC (direction doesn't matter)
             backtest_result.ic_ir.abs(),   // Use absolute IR
             turnover,
             complexity,
-            None, // Use default weights
+            Some((w_ic, w_ir, w_to, w_comp)),
         ))
     }
     
@@ -675,54 +904,84 @@ impl RealBacktestFitnessEvaluator {
     fn evaluate_expression(&self, expr: &Expr) -> Option<Array2<f64>> {
         let n_days = self.returns.shape()[0];
         let n_assets = self.returns.shape()[1];
-        let mut factor_matrix = Array2::<f64>::zeros((n_days, n_assets));
-        
-        // Evaluate expression for each asset
-        for asset_idx in 0..n_assets {
+
+        // Parallel evaluation across assets
+        let results: Vec<Vec<f64>> = (0..n_assets).into_par_iter().map(|asset_idx| {
             // Create DataFrame for this asset
             let mut columns = HashMap::new();
-            
+
             for (col_name, array) in &self.data {
                 let column_data = array.column(asset_idx).to_vec();
                 columns.insert(col_name.clone(), Series::new(column_data));
             }
-            
+
             // Evaluate expression
             if let Ok(df) = DataFrame::from_series_map(columns) {
                 if let Ok(series) = evaluate_expr_on_dataframe(expr, &df) {
-                    for day_idx in 0..n_days {
-                        factor_matrix[[day_idx, asset_idx]] = series.data()[day_idx];
-                    }
+                    return series.data().to_vec();
                 }
             }
-        }
-        
+            vec![f64::NAN; n_days]
+        }).collect();
+
         // Check if we have enough valid values
-        let valid_count = factor_matrix.iter().filter(|&&v| !v.is_nan()).count();
+        let valid_count = results.iter()
+            .flat_map(|v| v.iter())
+            .filter(|&&v| !v.is_nan())
+            .count();
+
         if valid_count < self.min_valid_days * n_assets / 2 {
             return None; // Too many NaN values
         }
-        
+
+        // Convert to Array2
+        let mut factor_matrix = Array2::<f64>::zeros((n_days, n_assets));
+        for (asset_idx, values) in results.iter().enumerate() {
+            for (day_idx, &value) in values.iter().enumerate() {
+                factor_matrix[[day_idx, asset_idx]] = value;
+            }
+        }
+
         Some(factor_matrix)
     }
-    
-    /// Run backtest on factor matrix
+
+    /// Run backtest on factor matrix (uses training data if split is configured)
     fn run_backtest(&self, factor: &Array2<f64>) -> Option<BacktestResult> {
-        // Use the existing BacktestEngine
-        let returns = self.returns.clone();
-        
-        // Create backtest engine with default parameters
+        // If split is configured, use training data only
+        if let Some(ref split) = self.data_split {
+            let train_factor = self.extract_split_data(factor, &split.train_indices);
+            let train_returns = self.extract_split_data(&self.returns, &split.train_indices);
+            return self.run_backtest_internal(&train_factor, &train_returns);
+        }
+
+        // No split - use all data (backward compatible)
+        self.run_backtest_internal(factor, &self.returns)
+    }
+
+    /// Run backtest on a specific data split
+    fn run_backtest_on_split(&self, factor: &Array2<f64>, indices: &[usize]) -> Option<BacktestResult> {
+        let split_factor = self.extract_split_data(factor, indices);
+        let split_returns = self.extract_split_data(&self.returns, indices);
+        self.run_backtest_internal(&split_factor, &split_returns)
+    }
+
+    /// Internal backtest implementation using enhanced BacktestEngine
+    fn run_backtest_internal(&self, factor: &Array2<f64>, returns: &Array2<f64>) -> Option<BacktestResult> {
+        // Use the enhanced BacktestEngine with fee and position config
         let engine = BacktestEngine::new(
             factor.clone(),
-            returns,
+            returns.clone(),
             10, // quantiles
             WeightMethod::Equal,
             1,  // long_top_n
             1,  // short_top_n
-            0.0, // commission_rate
+            self.fee_config.clone(),
+            self.position_config.clone(),
             None, // weights
+            None, // adj_factor
+            None, // volume
         );
-        
+
         match engine.run() {
             Ok(result) => {
                 // Check for valid results
@@ -735,36 +994,124 @@ impl RealBacktestFitnessEvaluator {
             Err(_) => None,
         }
     }
-    
-    /// Compute simplified turnover based on factor value changes
+
+    /// Extract data for a specific set of indices
+    fn extract_split_data(&self, data: &Array2<f64>, indices: &[usize]) -> Array2<f64> {
+        let n_cols = data.shape()[1];
+        let mut result = Array2::<f64>::zeros((indices.len(), n_cols));
+
+        for (i, &idx) in indices.iter().enumerate() {
+            for j in 0..n_cols {
+                result[[i, j]] = data[[idx, j]];
+            }
+        }
+
+        result
+    }
+
+    /// Evaluate factor on all splits and return comprehensive results
+    pub fn evaluate_on_all_splits(&self, factor: &Array2<f64>) -> Option<SplitEvaluationResult> {
+        let split = self.data_split.as_ref()?;
+
+        // Evaluate on training set
+        let train_result = self.run_backtest_on_split(factor, &split.train_indices)?;
+        let train_metrics = SplitMetrics::from_backtest(&train_result);
+
+        // Evaluate on validation set
+        let validation_result = self.run_backtest_on_split(factor, &split.validation_indices)?;
+        let validation_metrics = SplitMetrics::from_backtest(&validation_result);
+
+        // Evaluate on test set
+        let test_result = self.run_backtest_on_split(factor, &split.test_indices)?;
+        let test_metrics = SplitMetrics::from_backtest(&test_result);
+
+        let result = SplitEvaluationResult {
+            train: train_metrics,
+            validation: validation_metrics,
+            test: test_metrics,
+        };
+
+        // Store the result
+        *self.last_split_result.write().unwrap() = Some(result.clone());
+
+        Some(result)
+    }
+
+    /// Get last split evaluation result
+    pub fn get_last_split_result(&self) -> Option<SplitEvaluationResult> {
+        self.last_split_result.read().unwrap().clone()
+    }
+
+    /// Compute turnover based on rank changes (percentage of assets changing position)
+    /// This is a more reasonable measure that gives values between 0 and 1
     fn compute_turnover(&self, factor: &Array2<f64>) -> f64 {
         let (n_days, n_assets) = factor.dim();
-        if n_days < 2 {
+        if n_days < 2 || n_assets < 2 {
             return 0.0;
         }
-        
-        let mut total_change = 0.0;
-        let mut valid_pairs = 0;
-        
+
+        let mut total_turnover = 0.0;
+        let mut valid_days = 0;
+
         for day in 1..n_days {
             let today = factor.row(day);
             let yesterday = factor.row(day - 1);
-            
+
+            // Get valid assets for both days
+            let mut valid_indices = Vec::new();
             for asset in 0..n_assets {
                 let f_today = today[asset];
                 let f_yesterday = yesterday[asset];
-                
-                if !f_today.is_nan() && !f_yesterday.is_nan() {
-                    total_change += (f_today - f_yesterday).abs();
-                    valid_pairs += 1;
+                if !f_today.is_nan() && !f_yesterday.is_nan() && !f_today.is_infinite() && !f_yesterday.is_infinite() {
+                    valid_indices.push(asset);
                 }
             }
+
+            if valid_indices.len() < 2 {
+                continue;
+            }
+
+            // Compute ranks for valid assets
+            let mut yesterday_ranks: Vec<(usize, f64)> = valid_indices
+                .iter()
+                .map(|&i| (i, yesterday[i]))
+                .collect();
+            let mut today_ranks: Vec<(usize, f64)> = valid_indices
+                .iter()
+                .map(|&i| (i, today[i]))
+                .collect();
+
+            // Sort by factor values (descending)
+            yesterday_ranks.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+            today_ranks.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+            // Compute top 20% turnover
+            let top_n = std::cmp::max(1, valid_indices.len() / 5);
+
+            let prev_top: std::collections::HashSet<usize> = yesterday_ranks.iter()
+                .take(top_n)
+                .map(|(i, _)| *i)
+                .collect();
+            let curr_top: std::collections::HashSet<usize> = today_ranks.iter()
+                .take(top_n)
+                .map(|(i, _)| *i)
+                .collect();
+
+            // Compute Jaccard distance: |A ∩ B| / |A ∪ B|
+            // Turnover = 1 - similarity
+            let intersection: usize = prev_top.intersection(&curr_top).count();
+            let union = prev_top.len() + curr_top.len() - intersection;
+            let similarity = if union > 0 { intersection as f64 / union as f64 } else { 1.0 };
+            let day_turnover = 1.0 - similarity;
+
+            total_turnover += day_turnover;
+            valid_days += 1;
         }
-        
-        if valid_pairs == 0 {
+
+        if valid_days == 0 {
             0.0
         } else {
-            total_change / valid_pairs as f64
+            total_turnover / valid_days as f64
         }
     }
     
