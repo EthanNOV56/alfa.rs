@@ -32,8 +32,8 @@
 
 ```bash
 # 克隆仓库
-git clone https://github.com/EthanNOV56/exp.rs.git
-cd exp.rs
+git clone https://github.com/EthanNOV56/alfa.rs.git
+cd alfa.rs
 
 # 安装 Rust 工具链（如未安装）
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
