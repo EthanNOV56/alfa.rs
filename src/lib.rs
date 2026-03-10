@@ -1,22 +1,22 @@
 //! exprs core library: high-performance factor backtesting and expression evaluation
 //! Exposed as Python extension via PyO3
 
-// Core modules
-mod expr;
-mod expr_optimizer;
-mod lazy;
-mod polars_style;
-mod gp;
-mod persistence;
-mod metalearning;
-mod factor;
-mod backtest;
+// Core modules (public for binary usage)
+pub mod backtest;
+pub mod expr;
+pub mod expr_optimizer;
+pub mod factor;
+pub mod gp;
+pub mod lazy;
+pub mod metalearning;
+pub mod persistence;
+pub mod polars_style;
 
+use ndarray::{Array1, Array2};
+use numpy::{IntoPyArray, PyArray1, PyArray2, PyArrayMethods, PyUntypedArrayMethods};
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::exceptions::{PyValueError, PyRuntimeError};
 use pyo3::types::{PyDict, PyList, PyTuple};
-use ndarray::{Array2, Array1};
-use numpy::{PyArray2, PyArray1, PyArrayMethods, PyUntypedArrayMethods, IntoPyArray};
 use std::f64::NAN;
 use std::sync::Arc;
 
@@ -39,10 +39,10 @@ fn set_num_threads(n_threads: usize) -> PyResult<()> {
 }
 
 // Re-exports for internal use
-use crate::expr::{Expr, Literal, BinaryOp, UnaryOp};
-use crate::polars_style::{DataFrame, Series, evaluate_expr_on_dataframe};
-use crate::lazy::{LazyFrame, DataSource, JoinType};
 use crate::backtest::{BacktestEngine, BacktestResult, FeeConfig, PositionConfig, SlippageConfig};
+use crate::expr::{BinaryOp, Expr, Literal, UnaryOp};
+use crate::lazy::{DataSource, JoinType, LazyFrame};
+use crate::polars_style::{evaluate_expr_on_dataframe, DataFrame, Series};
 
 /// Weight allocation method
 #[derive(Debug, Clone, Copy)]
@@ -62,7 +62,7 @@ pub enum WeightMethod {
 // ============================================================================
 
 /// Python-exposed expression
-#[pyclass(name = "Expr")]
+#[pyclass(name = "Expr", from_py_object)]
 #[derive(Clone)]
 pub struct PyExpr {
     inner: Expr,
@@ -283,7 +283,7 @@ impl PyExpr {
 }
 
 /// Python-exposed Series for vectorized operations
-#[pyclass(name = "Series")]
+#[pyclass(name = "Series", from_py_object)]
 #[derive(Clone)]
 pub struct PySeries {
     inner: Series,
@@ -343,9 +343,10 @@ impl PyDataFrame {
                 } else if let Ok(list) = value.extract::<Vec<f64>>() {
                     inner_columns.insert(col_name, Series::new(list));
                 } else {
-                    return Err(PyValueError::new_err(
-                        format!("Column '{}' must be a Series or list of floats", col_name)
-                    ));
+                    return Err(PyValueError::new_err(format!(
+                        "Column '{}' must be a Series or list of floats",
+                        col_name
+                    )));
                 }
             }
 
@@ -423,61 +424,62 @@ fn evaluate_expression(
             let array = arr.readonly();
             let shape = array.shape();
             if shape[0] != n_days || shape[1] != n_assets {
-                return Err(PyValueError::new_err(
-                    format!("Column '{}' has shape {:?}, expected ({}, {})",
-                           col_name, shape, n_days, n_assets)
-                ));
+                return Err(PyValueError::new_err(format!(
+                    "Column '{}' has shape {:?}, expected ({}, {})",
+                    col_name, shape, n_days, n_assets
+                )));
             }
             column_arrays.insert(col_name, array.as_array().to_owned());
         } else {
-            return Err(PyValueError::new_err(
-                    format!("Column '{}' must be a 2D numpy array", col_name)
-                ));
-            }
+            return Err(PyValueError::new_err(format!(
+                "Column '{}' must be a 2D numpy array",
+                col_name
+            )));
         }
-        
-        // Create result array
-        let mut result = Array2::<f64>::zeros((n_days, n_assets));
-        
-        // Process each asset in parallel using Rayon's parallel iterator
-        use rayon::prelude::*;
-        
-        // Clone necessary data for parallel processing
-        let column_arrays_clone = column_arrays.clone();
-        let expr_inner = expr.inner.clone();
-        
-        // Process assets in parallel and collect results
-        let asset_results: Vec<_> = (0..n_assets)
-            .into_par_iter()
-            .map(|asset_idx| {
-                // Create DataFrame for this asset
-                let mut columns = std::collections::HashMap::new();
-                
-                for (col_name, array) in &column_arrays_clone {
-                    let column_data = array.column(asset_idx).to_owned();
-                    columns.insert(col_name.clone(), Series::new(column_data.to_vec()));
-                }
-                
-                // Evaluate expression for this asset
-                if let Ok(df) = DataFrame::from_series_map(columns) {
-                    if let Ok(series) = evaluate_expr_on_dataframe(&expr_inner, &df) {
-                        return series.data().to_vec();
-                    }
-                }
-                
-                // Return NaN-filled vector if evaluation failed
-                vec![f64::NAN; n_days]
-            })
-            .collect();
-        
-        // Assemble results into the 2D array
-        for (asset_idx, asset_result) in asset_results.into_iter().enumerate() {
-            for day_idx in 0..n_days {
-                result[[day_idx, asset_idx]] = asset_result[day_idx];
+    }
+
+    // Create result array
+    let mut result = Array2::<f64>::zeros((n_days, n_assets));
+
+    // Process each asset in parallel using Rayon's parallel iterator
+    use rayon::prelude::*;
+
+    // Clone necessary data for parallel processing
+    let column_arrays_clone = column_arrays.clone();
+    let expr_inner = expr.inner.clone();
+
+    // Process assets in parallel and collect results
+    let asset_results: Vec<_> = (0..n_assets)
+        .into_par_iter()
+        .map(|asset_idx| {
+            // Create DataFrame for this asset
+            let mut columns = std::collections::HashMap::new();
+
+            for (col_name, array) in &column_arrays_clone {
+                let column_data = array.column(asset_idx).to_owned();
+                columns.insert(col_name.clone(), Series::new(column_data.to_vec()));
             }
+
+            // Evaluate expression for this asset
+            if let Ok(df) = DataFrame::from_series_map(columns) {
+                if let Ok(series) = evaluate_expr_on_dataframe(&expr_inner, &df) {
+                    return series.data().to_vec();
+                }
+            }
+
+            // Return NaN-filled vector if evaluation failed
+            vec![f64::NAN; n_days]
+        })
+        .collect();
+
+    // Assemble results into the 2D array
+    for (asset_idx, asset_result) in asset_results.into_iter().enumerate() {
+        for day_idx in 0..n_days {
+            result[[day_idx, asset_idx]] = asset_result[day_idx];
         }
-        
-        Ok(result.into_pyarray(py).into())
+    }
+
+    Ok(result.into_pyarray(py).into())
 }
 
 /// Create a lag expression
@@ -536,7 +538,9 @@ fn cumprod(expr: &PyExpr) -> PyResult<PyExpr> {
         name: "cumprod".to_string(),
         args: vec![expr.inner.clone()],
     };
-    Ok(PyExpr { inner: cumprod_expr })
+    Ok(PyExpr {
+        inner: cumprod_expr,
+    })
 }
 
 /// Create a rolling standard deviation expression
@@ -566,7 +570,9 @@ fn ts_rank(expr: &PyExpr, window: usize) -> PyResult<PyExpr> {
             Expr::Literal(Literal::Integer(window as i64)),
         ],
     };
-    Ok(PyExpr { inner: ts_rank_expr })
+    Ok(PyExpr {
+        inner: ts_rank_expr,
+    })
 }
 
 /// Time series argmax - index of maximum value in the last `window` time periods
@@ -579,7 +585,9 @@ fn ts_argmax(expr: &PyExpr, window: usize) -> PyResult<PyExpr> {
             Expr::Literal(Literal::Integer(window as i64)),
         ],
     };
-    Ok(PyExpr { inner: ts_argmax_expr })
+    Ok(PyExpr {
+        inner: ts_argmax_expr,
+    })
 }
 
 /// Time series argmin - index of minimum value in the last `window` time periods
@@ -592,7 +600,9 @@ fn ts_argmin(expr: &PyExpr, window: usize) -> PyResult<PyExpr> {
             Expr::Literal(Literal::Integer(window as i64)),
         ],
     };
-    Ok(PyExpr { inner: ts_argmin_expr })
+    Ok(PyExpr {
+        inner: ts_argmin_expr,
+    })
 }
 
 /// Cross-sectional rank - rank of the value across assets at each time point
@@ -616,7 +626,9 @@ fn ts_corr(expr1: &PyExpr, expr2: &PyExpr, window: usize) -> PyResult<PyExpr> {
             Expr::Literal(Literal::Integer(window as i64)),
         ],
     };
-    Ok(PyExpr { inner: ts_corr_expr })
+    Ok(PyExpr {
+        inner: ts_corr_expr,
+    })
 }
 
 /// Time series covariance - rolling covariance between two series
@@ -674,10 +686,7 @@ fn sign(expr: &PyExpr) -> PyResult<PyExpr> {
 fn power(expr: &PyExpr, exponent: f64) -> PyResult<PyExpr> {
     let power_expr = Expr::FunctionCall {
         name: "power".to_string(),
-        args: vec![
-            expr.inner.clone(),
-            Expr::Literal(Literal::Float(exponent)),
-        ],
+        args: vec![expr.inner.clone(), Expr::Literal(Literal::Float(exponent))],
     };
     Ok(PyExpr { inner: power_expr })
 }
@@ -707,7 +716,9 @@ fn ts_count(expr: &PyExpr, window: usize) -> PyResult<PyExpr> {
             Expr::Literal(Literal::Integer(window as i64)),
         ],
     };
-    Ok(PyExpr { inner: ts_count_expr })
+    Ok(PyExpr {
+        inner: ts_count_expr,
+    })
 }
 
 /// Time series max - rolling maximum over `window` time periods
@@ -912,11 +923,7 @@ struct PyPositionConfig {
 #[pymethods]
 impl PyPositionConfig {
     #[new]
-    fn new(
-        long_ratio: f64,
-        short_ratio: f64,
-        market_neutral: bool,
-    ) -> Self {
+    fn new(long_ratio: f64, short_ratio: f64, market_neutral: bool) -> Self {
         Self {
             long_ratio,
             short_ratio,
@@ -962,9 +969,11 @@ impl PyBacktestEngine {
         let wmethod = match weight_method {
             "equal" => WeightMethod::Equal,
             "weighted" => WeightMethod::Weighted,
-            _ => return Err(pyo3::exceptions::PyValueError::new_err(
-                "weight_method must be 'equal' or 'weighted'"
-            )),
+            _ => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "weight_method must be 'equal' or 'weighted'",
+                ))
+            }
         };
 
         let engine = BacktestEngine::new_simple(
@@ -1031,24 +1040,23 @@ struct PyBacktestResult {
 
 impl From<BacktestResult> for PyBacktestResult {
     fn from(result: BacktestResult) -> Self {
-        pyo3::Python::try_attach(|py| {
-            Self {
-                group_returns: result.group_returns.into_pyarray(py).into(),
-                group_cum_returns: result.group_cum_returns.into_pyarray(py).into(),
-                long_short_returns: result.long_short_returns.into_pyarray(py).into(),
-                long_short_cum_return: result.long_short_cum_return,
-                ic_series: result.ic_series.into_pyarray(py).into(),
-                ic_mean: result.ic_mean,
-                ic_ir: result.ic_ir,
-                total_return: result.total_return,
-                annualized_return: result.annualized_return,
-                sharpe_ratio: result.sharpe_ratio,
-                max_drawdown: result.max_drawdown,
-                turnover: result.turnover,
-                long_returns: result.long_returns.into_pyarray(py).into(),
-                short_returns: result.short_returns.into_pyarray(py).into(),
-            }
-        }).unwrap()
+        pyo3::Python::try_attach(|py| Self {
+            group_returns: result.group_returns.into_pyarray(py).into(),
+            group_cum_returns: result.group_cum_returns.into_pyarray(py).into(),
+            long_short_returns: result.long_short_returns.into_pyarray(py).into(),
+            long_short_cum_return: result.long_short_cum_return,
+            ic_series: result.ic_series.into_pyarray(py).into(),
+            ic_mean: result.ic_mean,
+            ic_ir: result.ic_ir,
+            total_return: result.total_return,
+            annualized_return: result.annualized_return,
+            sharpe_ratio: result.sharpe_ratio,
+            max_drawdown: result.max_drawdown,
+            turnover: result.turnover,
+            long_returns: result.long_returns.into_pyarray(py).into(),
+            short_returns: result.short_returns.into_pyarray(py).into(),
+        })
+        .unwrap()
     }
 }
 
@@ -1067,8 +1075,14 @@ fn quantile_backtest(
 ) -> PyResult<PyBacktestResult> {
     let engine = PyBacktestEngine::new(
         py,
-        factor, returns, quantiles, weight_method,
-        long_top_n, short_top_n, commission_rate, weights
+        factor,
+        returns,
+        quantiles,
+        weight_method,
+        long_top_n,
+        short_top_n,
+        commission_rate,
+        weights,
     )?;
     engine.run()
 }
@@ -1084,14 +1098,14 @@ fn compute_ic(
     let factor_array = factor_guard.as_array();
     let returns_guard = returns.readonly();
     let returns_array = returns_guard.as_array();
-    
+
     let (n_days, n_assets) = factor_array.dim();
     let mut ic_vals = Vec::new();
-    
+
     for day in 0..(n_days - 1) {
         let mut factor_vals = Vec::new();
         let mut return_vals = Vec::new();
-        
+
         for asset in 0..n_assets {
             let f = factor_array[[day, asset]];
             let r = returns_array[[day + 1, asset]];
@@ -1100,23 +1114,23 @@ fn compute_ic(
                 return_vals.push(r);
             }
         }
-        
+
         if factor_vals.len() >= 2 {
             let ic = compute_pearson(&factor_vals, &return_vals);
             ic_vals.push(ic);
         }
     }
-    
+
     if ic_vals.is_empty() {
         return Ok((0.0, 0.0));
     }
-    
+
     let ic_mean = ic_vals.iter().sum::<f64>() / ic_vals.len() as f64;
-    let ic_std = (ic_vals.iter()
-        .map(|&x| (x - ic_mean).powi(2))
-        .sum::<f64>() / (ic_vals.len() - 1) as f64).sqrt();
+    let ic_std = (ic_vals.iter().map(|&x| (x - ic_mean).powi(2)).sum::<f64>()
+        / (ic_vals.len() - 1) as f64)
+        .sqrt();
     let ic_ir = if ic_std == 0.0 { 0.0 } else { ic_mean / ic_std };
-    
+
     Ok((ic_mean, ic_ir))
 }
 
@@ -1127,11 +1141,15 @@ fn compute_pearson(x: &[f64], y: &[f64]) -> f64 {
     let sum_xy: f64 = x.iter().zip(y).map(|(&a, &b)| a * b).sum();
     let sum_x2: f64 = x.iter().map(|&a| a * a).sum();
     let sum_y2: f64 = y.iter().map(|&b| b * b).sum();
-    
+
     let numerator = n * sum_xy - sum_x * sum_y;
     let denominator = ((n * sum_x2 - sum_x * sum_x) * (n * sum_y2 - sum_y * sum_y)).sqrt();
-    
-    if denominator == 0.0 { 0.0 } else { numerator / denominator }
+
+    if denominator == 0.0 {
+        0.0
+    } else {
+        numerator / denominator
+    }
 }
 
 // ============================================================================
@@ -1160,9 +1178,10 @@ impl PyLazyFrame {
                 let array = arr.readonly().as_array().to_owned();
                 arrays.insert(col_name, array);
             } else {
-                return Err(PyValueError::new_err(
-                    format!("Column '{}' must be a 2D numpy array", col_name)
-                ));
+                return Err(PyValueError::new_err(format!(
+                    "Column '{}' must be a 2D numpy array",
+                    col_name
+                )));
             }
         }
 
@@ -1173,7 +1192,7 @@ impl PyLazyFrame {
             inner: Some(lazy_frame),
         })
     }
-    
+
     /// Add new columns to the LazyFrame
     fn with_columns(&self, py: Python<'_>, exprs: Bound<'_, PyList>) -> PyResult<Self> {
         let Some(ref inner) = self.inner else {
@@ -1183,7 +1202,7 @@ impl PyLazyFrame {
         // Convert Python expressions to Rust expressions
         let mut rust_exprs = Vec::new();
         for item in exprs.iter() {
-            let tuple = item.downcast::<PyTuple>()?;
+            let tuple = item.cast::<PyTuple>()?;
             let name: String = tuple.get_item(0)?.extract()?;
             let py_expr: PyExpr = tuple.get_item(1)?.extract()?;
             rust_exprs.push((name, py_expr.inner));
@@ -1196,66 +1215,67 @@ impl PyLazyFrame {
             inner: Some(new_lazy_frame),
         })
     }
-    
+
     /// Join with another LazyFrame
     fn join(&self, other: &PyLazyFrame, on: Vec<String>, how: &str) -> PyResult<Self> {
         let Some(ref inner) = self.inner else {
             return Err(PyValueError::new_err("LazyFrame is already consumed"));
         };
-        
+
         let Some(ref other_inner) = other.inner else {
             return Err(PyValueError::new_err("Other LazyFrame is already consumed"));
         };
-        
+
         // Convert string join type to JoinType enum
         let join_type = match how.to_lowercase().as_str() {
             "inner" => JoinType::Inner,
             "left" => JoinType::Left,
             "right" => JoinType::Right,
             "outer" => JoinType::Outer,
-            _ => return Err(PyValueError::new_err(
-                "Join type must be 'inner', 'left', 'right', or 'outer'"
-            )),
+            _ => {
+                return Err(PyValueError::new_err(
+                    "Join type must be 'inner', 'left', 'right', or 'outer'",
+                ))
+            }
         };
-        
+
         // Create new LazyFrame with join
         let new_lazy_frame = inner.clone().join(other_inner.clone(), on, join_type);
-        
+
         Ok(PyLazyFrame {
             inner: Some(new_lazy_frame),
         })
     }
-    
+
     /// Collect (execute) the lazy computation
     fn collect(&mut self) -> PyResult<Py<PyDict>> {
         let Some(lazy_frame) = self.inner.take() else {
             return Err(PyValueError::new_err("LazyFrame is already consumed"));
         };
 
-        pyo3::Python::try_attach(|py| {
-            match lazy_frame.collect() {
-                Ok(result) => {
-                    let dict = PyDict::new(py);
-                    for (key, array) in result {
-                        let py_array = array.into_pyarray(py);
-                        dict.set_item(key, py_array)?;
-                    }
-                    Ok(dict.into())
+        pyo3::Python::try_attach(|py| match lazy_frame.collect() {
+            Ok(result) => {
+                let dict = PyDict::new(py);
+                for (key, array) in result {
+                    let py_array = array.into_pyarray(py);
+                    dict.set_item(key, py_array)?;
                 }
-                Err(e) => Err(PyValueError::new_err(e)),
+                Ok(dict.into())
             }
-        }).ok_or_else(|| PyRuntimeError::new_err("Failed to attach to Python"))?
+            Err(e) => Err(PyValueError::new_err(e)),
+        })
+        .ok_or_else(|| PyRuntimeError::new_err("Failed to attach to Python"))?
     }
-    
+
     /// Explain the logical plan
     fn explain(&self, optimized: bool) -> PyResult<String> {
         let Some(ref inner) = self.inner else {
             return Err(PyValueError::new_err("LazyFrame is already consumed"));
         };
-        
+
         Ok(inner.explain(optimized))
     }
-    
+
     /// Get string representation
     fn __repr__(&self) -> String {
         if self.inner.is_some() {
@@ -1264,7 +1284,7 @@ impl PyLazyFrame {
             "LazyFrame(consumed)".to_string()
         }
     }
-    
+
     fn __str__(&self) -> String {
         self.__repr__()
     }
@@ -1280,7 +1300,8 @@ fn rolling_window(size: usize, min_periods: Option<usize>) -> PyResult<Py<PyDict
         dict.set_item("size", size)?;
         dict.set_item("min_periods", min_periods.unwrap_or(1))?;
         Ok(dict.into())
-    }).ok_or_else(|| PyRuntimeError::new_err("Failed to attach to Python"))?
+    })
+    .ok_or_else(|| PyRuntimeError::new_err("Failed to attach to Python"))?
 }
 
 /// Create an expanding window specification for lazy evaluation
@@ -1292,14 +1313,18 @@ fn expanding_window(min_periods: Option<usize>) -> PyResult<Py<PyDict>> {
         dict.set_item("kind", "expanding")?;
         dict.set_item("min_periods", min_periods.unwrap_or(1))?;
         Ok(dict.into())
-    }).ok_or_else(|| PyRuntimeError::new_err("Failed to attach to Python"))?
+    })
+    .ok_or_else(|| PyRuntimeError::new_err("Failed to attach to Python"))?
 }
 
 // ============================================================================
 // Genetic Programming (GP) Module Python Bindings
 // ============================================================================
 
-use crate::gp::{GPConfig, Terminal, Function, BacktestFitnessEvaluator, RealBacktestFitnessEvaluator, run_gp, DataSplitConfig};
+use crate::gp::{
+    run_gp, BacktestFitnessEvaluator, DataSplitConfig, Function, GPConfig,
+    RealBacktestFitnessEvaluator, Terminal,
+};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use std::collections::HashMap;
@@ -1326,12 +1351,8 @@ impl PyGpEngine {
         max_depth: usize,
         allow_ephemeral: bool,
     ) -> Self {
-
         // Create default terminals (will be updated later)
-        let mut terminals = vec![
-            Terminal::Constant(1.0),
-            Terminal::Constant(2.0),
-        ];
+        let mut terminals = vec![Terminal::Constant(1.0), Terminal::Constant(2.0)];
 
         if allow_ephemeral {
             terminals.insert(0, Terminal::Ephemeral);
@@ -1359,20 +1380,27 @@ impl PyGpEngine {
 
         let rng = StdRng::from_entropy();
 
-        PyGpEngine { config, terminals, functions, rng }
+        PyGpEngine {
+            config,
+            terminals,
+            functions,
+            rng,
+        }
     }
 
     /// Set available columns (variables) for expression generation
     #[pyo3(signature = (columns, allow_ephemeral = None))]
-    fn set_columns(&mut self, py: Python<'_>, columns: Bound<'_, PyList>, allow_ephemeral: Option<bool>) {
+    fn set_columns(
+        &mut self,
+        py: Python<'_>,
+        columns: Bound<'_, PyList>,
+        allow_ephemeral: Option<bool>,
+    ) {
         // Check if ephemeral is allowed (default to true if not specified)
         let allow_ephemeral = allow_ephemeral.unwrap_or(true);
 
         // Update terminals with column variables
-        let mut new_terminals = vec![
-            Terminal::Constant(1.0),
-            Terminal::Constant(2.0),
-        ];
+        let mut new_terminals = vec![Terminal::Constant(1.0), Terminal::Constant(2.0)];
 
         if allow_ephemeral {
             new_terminals.insert(0, Terminal::Ephemeral);
@@ -1385,7 +1413,7 @@ impl PyGpEngine {
 
         self.terminals = new_terminals;
     }
-    
+
     /// Run genetic programming for factor mining (backward compatible)
     fn mine_factors(
         &mut self,
@@ -1410,9 +1438,10 @@ impl PyGpEngine {
                 let array = arr.readonly().as_array().to_owned();
                 data_arrays.insert(col_name, array);
             } else {
-                return Err(PyValueError::new_err(
-                    format!("Column '{}' must be a 2D numpy array", col_name)
-                ));
+                return Err(PyValueError::new_err(format!(
+                    "Column '{}' must be a 2D numpy array",
+                    col_name
+                )));
             }
         }
 
@@ -1476,15 +1505,31 @@ impl PyGpEngine {
         weight_ir: Option<f64>,
         weight_turnover: Option<f64>,
         weight_complexity: Option<f64>,
-    ) -> PyResult<Vec<(String, f64, f64, f64, f64, usize, Vec<f64>, Vec<f64>, Vec<f64>)>> {
+    ) -> PyResult<
+        Vec<(
+            String,
+            f64,
+            f64,
+            f64,
+            f64,
+            usize,
+            Vec<f64>,
+            Vec<f64>,
+            Vec<f64>,
+        )>,
+    > {
         use numpy::PyArray2;
 
         // Validate split ratios
         if train_ratio <= 0.0 || validation_ratio <= 0.0 {
-            return Err(PyValueError::new_err("train_ratio and validation_ratio must be positive"));
+            return Err(PyValueError::new_err(
+                "train_ratio and validation_ratio must be positive",
+            ));
         }
         if train_ratio + validation_ratio >= 1.0 {
-            return Err(PyValueError::new_err("train_ratio + validation_ratio must be < 1.0"));
+            return Err(PyValueError::new_err(
+                "train_ratio + validation_ratio must be < 1.0",
+            ));
         }
 
         // Extract data arrays
@@ -1497,9 +1542,10 @@ impl PyGpEngine {
                 let array = arr.readonly().as_array().to_owned();
                 data_arrays.insert(col_name, array);
             } else {
-                return Err(PyValueError::new_err(
-                    format!("Column '{}' must be a 2D numpy array", col_name)
-                ));
+                return Err(PyValueError::new_err(format!(
+                    "Column '{}' must be a 2D numpy array",
+                    col_name
+                )));
             }
         }
 
@@ -1514,11 +1560,8 @@ impl PyGpEngine {
         };
 
         // Create evaluator with split
-        let mut evaluator = RealBacktestFitnessEvaluator::with_split(
-            data_arrays,
-            returns_array,
-            split_config,
-        );
+        let mut evaluator =
+            RealBacktestFitnessEvaluator::with_split(data_arrays, returns_array, split_config);
 
         // Set weights for multi-objective optimization
         let w_ic = weight_ic.unwrap_or(0.4);
@@ -1557,37 +1600,67 @@ impl PyGpEngine {
 
             // Get split evaluation results
             let split_result = evaluator.get_last_split_result();
-            let (train_metrics, validation_metrics, test_metrics) = if let Some(ref sr) = split_result {
-                (
-                    vec![sr.train.ic_mean, sr.train.ic_ir, sr.train.sharpe_ratio, sr.train.max_drawdown],
-                    vec![sr.validation.ic_mean, sr.validation.ic_ir, sr.validation.sharpe_ratio, sr.validation.max_drawdown],
-                    vec![sr.test.ic_mean, sr.test.ic_ir, sr.test.sharpe_ratio, sr.test.max_drawdown],
-                )
-            } else {
-                (vec![0.0, 0.0, 0.0, 0.0], vec![0.0, 0.0, 0.0, 0.0], vec![0.0, 0.0, 0.0, 0.0])
-            };
+            let (train_metrics, validation_metrics, test_metrics) =
+                if let Some(ref sr) = split_result {
+                    (
+                        vec![
+                            sr.train.ic_mean,
+                            sr.train.ic_ir,
+                            sr.train.sharpe_ratio,
+                            sr.train.max_drawdown,
+                        ],
+                        vec![
+                            sr.validation.ic_mean,
+                            sr.validation.ic_ir,
+                            sr.validation.sharpe_ratio,
+                            sr.validation.max_drawdown,
+                        ],
+                        vec![
+                            sr.test.ic_mean,
+                            sr.test.ic_ir,
+                            sr.test.sharpe_ratio,
+                            sr.test.max_drawdown,
+                        ],
+                    )
+                } else {
+                    (
+                        vec![0.0, 0.0, 0.0, 0.0],
+                        vec![0.0, 0.0, 0.0, 0.0],
+                        vec![0.0, 0.0, 0.0, 0.0],
+                    )
+                };
 
-            results.push((expr_str, best_fitness, ic, ir, turnover, complexity, train_metrics, validation_metrics, test_metrics));
+            results.push((
+                expr_str,
+                best_fitness,
+                ic,
+                ir,
+                turnover,
+                complexity,
+                train_metrics,
+                validation_metrics,
+                test_metrics,
+            ));
         }
 
         Ok(results)
     }
-    
+
     /// Run a simple test to verify GP functionality
     fn test_run(&mut self) -> PyResult<String> {
         // Create simple test data
         let mut test_data = HashMap::new();
         test_data.insert("x".to_string(), ndarray::Array2::<f64>::zeros((10, 5)));
         test_data.insert("y".to_string(), ndarray::Array2::<f64>::ones((10, 5)));
-        
+
         let test_returns = ndarray::Array2::<f64>::zeros((10, 5));
         let evaluator = BacktestFitnessEvaluator::new(test_data, test_returns);
-        
+
         // Set test terminals
         let mut test_terminals = self.terminals.clone();
         test_terminals.push(Terminal::Variable("x".to_string()));
         test_terminals.push(Terminal::Variable("y".to_string()));
-        
+
         // Run GP
         let (best_expr, fitness) = run_gp(
             &self.config,
@@ -1596,8 +1669,11 @@ impl PyGpEngine {
             self.functions.clone(),
             &mut self.rng,
         );
-        
-        Ok(format!("Best expression: {:?}, Fitness: {:.6}", best_expr, fitness))
+
+        Ok(format!(
+            "Best expression: {:?}, Fitness: {:.6}",
+            best_expr, fitness
+        ))
     }
 }
 
@@ -1605,8 +1681,8 @@ impl PyGpEngine {
 // Persistence Module Python Bindings
 // ============================================================================
 
-use crate::persistence::{PersistenceManager, FactorMetadata, GPHistoryRecord};
-use crate::metalearning::{MetaLearningAnalyzer, GPRecommendations};
+use crate::metalearning::{GPRecommendations, MetaLearningAnalyzer};
+use crate::persistence::{FactorMetadata, GPHistoryRecord, PersistenceManager};
 
 /// Python-exposed Persistence Manager for factor storage and retrieval
 #[pyclass(name = "PersistenceManager")]
@@ -1620,25 +1696,32 @@ impl PyPersistenceManager {
     fn new(path: &str) -> PyResult<Self> {
         match PersistenceManager::new(path) {
             Ok(manager) => Ok(PyPersistenceManager { inner: manager }),
-            Err(e) => Err(PyValueError::new_err(format!("Failed to create persistence manager: {}", e))),
+            Err(e) => Err(PyValueError::new_err(format!(
+                "Failed to create persistence manager: {}",
+                e
+            ))),
         }
     }
-    
+
     /// Save a factor to disk
     fn save_factor(&mut self, factor: &PyFactorMetadata) -> PyResult<()> {
-        self.inner.save_factor(&factor.inner)
+        self.inner
+            .save_factor(&factor.inner)
             .map_err(|e| PyValueError::new_err(format!("Failed to save factor: {}", e)))
     }
-    
+
     /// Load a factor from disk
     fn load_factor(&mut self, factor_id: &str) -> PyResult<Option<PyFactorMetadata>> {
         match self.inner.load_factor(factor_id) {
             Ok(Some(factor)) => Ok(Some(PyFactorMetadata { inner: factor })),
             Ok(None) => Ok(None),
-            Err(e) => Err(PyValueError::new_err(format!("Failed to load factor: {}", e))),
+            Err(e) => Err(PyValueError::new_err(format!(
+                "Failed to load factor: {}",
+                e
+            ))),
         }
     }
-    
+
     /// Search factors by criteria
     #[pyo3(signature = (min_ic = None, max_complexity = None, tags = Vec::new()))]
     fn search_factors(
@@ -1647,43 +1730,52 @@ impl PyPersistenceManager {
         max_complexity: Option<f64>,
         tags: Vec<String>,
     ) -> PyResult<Vec<PyFactorMetadata>> {
-        let factors = self.inner.search_factors(min_ic, None, max_complexity, &tags);
-        Ok(factors.into_iter().map(|f| PyFactorMetadata { inner: f }).collect())
+        let factors = self
+            .inner
+            .search_factors(min_ic, None, max_complexity, &tags);
+        Ok(factors
+            .into_iter()
+            .map(|f| PyFactorMetadata { inner: f })
+            .collect())
     }
-    
+
     /// Load all factors from disk
     fn load_all_factors(&mut self) -> PyResult<usize> {
-        self.inner.load_all_factors()
+        self.inner
+            .load_all_factors()
             .map_err(|e| PyValueError::new_err(format!("Failed to load factors: {}", e)))
     }
-    
+
     /// Load all GP history records from disk
     fn load_all_history(&mut self) -> PyResult<usize> {
-        self.inner.load_all_history()
+        self.inner
+            .load_all_history()
             .map_err(|e| PyValueError::new_err(format!("Failed to load history: {}", e)))
     }
-    
+
     /// Get all loaded factors
     fn get_all_factors(&self) -> Vec<PyFactorMetadata> {
-        self.inner.get_all_factors()
+        self.inner
+            .get_all_factors()
             .into_iter()
             .map(|f| PyFactorMetadata { inner: f })
             .collect()
     }
-    
+
     /// Get all loaded GP history records
     fn get_all_history(&self) -> Vec<PyGpHistoryRecord> {
-        self.inner.get_all_history()
+        self.inner
+            .get_all_history()
             .into_iter()
             .map(|r| PyGpHistoryRecord { inner: r })
             .collect()
     }
-    
+
     /// Clear all in-memory data (but not disk)
     fn clear_memory(&mut self) {
         self.inner.clear_memory();
     }
-    
+
     /// Get cache statistics
     fn cache_stats(&self) -> PyResult<Py<PyAny>> {
         use crate::persistence::CacheStats;
@@ -1698,13 +1790,19 @@ impl PyPersistenceManager {
                     dict.set_item("max_size", stats.max_size)?;
                     Ok(dict.into())
                 }
-                Err(e) => Err(PyValueError::new_err(format!("Failed to get cache stats: {}", e))),
+                Err(e) => Err(PyValueError::new_err(format!(
+                    "Failed to get cache stats: {}",
+                    e
+                ))),
             }
         }
     }
-    
+
     fn __repr__(&self) -> String {
-        format!("PersistenceManager({} factors loaded)", self.inner.get_all_factors().len())
+        format!(
+            "PersistenceManager({} factors loaded)",
+            self.inner.get_all_factors().len()
+        )
     }
 }
 
@@ -1720,12 +1818,12 @@ impl PyFactorMetadata {
     fn id(&self) -> String {
         self.inner.id.clone()
     }
-    
+
     #[getter]
     fn expression(&self) -> String {
         self.inner.expression.clone()
     }
-    
+
     #[getter]
     fn metrics(&self) -> PyResult<Py<PyAny>> {
         unsafe {
@@ -1739,14 +1837,17 @@ impl PyFactorMetadata {
             Ok(dict.into())
         }
     }
-    
+
     #[getter]
     fn tags(&self) -> Vec<String> {
         self.inner.tags.clone()
     }
-    
+
     fn __repr__(&self) -> String {
-        format!("FactorMetadata(id={}, ic={:.4})", self.inner.id, self.inner.metrics.ic_mean)
+        format!(
+            "FactorMetadata(id={}, ic={:.4})",
+            self.inner.id, self.inner.metrics.ic_mean
+        )
     }
 }
 
@@ -1762,12 +1863,14 @@ impl PyGpHistoryRecord {
     fn run_id(&self) -> String {
         self.inner.run_id.clone()
     }
-    
+
     #[getter]
     fn best_factor(&self) -> PyFactorMetadata {
-        PyFactorMetadata { inner: self.inner.best_factor.clone() }
+        PyFactorMetadata {
+            inner: self.inner.best_factor.clone(),
+        }
     }
-    
+
     #[getter]
     fn config(&self) -> PyResult<Py<PyAny>> {
         unsafe {
@@ -1782,7 +1885,7 @@ impl PyGpHistoryRecord {
             Ok(dict.into())
         }
     }
-    
+
     fn __repr__(&self) -> String {
         format!("GPHistoryRecord(id={})", self.inner.run_id)
     }
@@ -1802,82 +1905,96 @@ pub struct PyMetaLearningAnalyzer {
 impl PyMetaLearningAnalyzer {
     #[new]
     fn new() -> Self {
-        PyMetaLearningAnalyzer { inner: MetaLearningAnalyzer::new() }
+        PyMetaLearningAnalyzer {
+            inner: MetaLearningAnalyzer::new(),
+        }
     }
-    
+
     /// Train the meta-learning model on historical data
     fn train(
         &mut self,
         factors: Vec<PyRef<PyFactorMetadata>>,
         gp_runs: Vec<PyRef<PyGpHistoryRecord>>,
     ) -> PyResult<()> {
-        let factors_rust: Vec<FactorMetadata> = factors.into_iter().map(|f| f.inner.clone()).collect();
-        let gp_runs_rust: Vec<GPHistoryRecord> = gp_runs.into_iter().map(|r| r.inner.clone()).collect();
-        
-        self.inner.train(&factors_rust, &gp_runs_rust)
-            .map_err(|e| PyValueError::new_err(format!("Failed to train meta-learning model: {}", e)))
+        let factors_rust: Vec<FactorMetadata> =
+            factors.into_iter().map(|f| f.inner.clone()).collect();
+        let gp_runs_rust: Vec<GPHistoryRecord> =
+            gp_runs.into_iter().map(|r| r.inner.clone()).collect();
+
+        self.inner.train(&factors_rust, &gp_runs_rust).map_err(|e| {
+            PyValueError::new_err(format!("Failed to train meta-learning model: {}", e))
+        })
     }
-    
+
     /// Get recommendations for next GP run
     fn get_recommendations(&self, target_complexity: Option<f64>) -> PyResult<PyGpRecommendations> {
         let recommendations = self.inner.get_recommendations(target_complexity);
-        Ok(PyGpRecommendations { inner: recommendations })
+        Ok(PyGpRecommendations {
+            inner: recommendations,
+        })
     }
-    
+
     /// Check if model is trained
     fn is_trained(&self) -> bool {
         self.inner.is_trained()
     }
-    
+
     /// Get model version
     fn version(&self) -> u32 {
         self.inner.version()
     }
-    
+
     /// Get confidence score of recommendations
     fn confidence_score(&self) -> f64 {
         let recommendations = self.inner.get_recommendations(None);
         recommendations.confidence_score
     }
-    
+
     /// Save model to file
     fn save_model(&self, path: &str) -> PyResult<()> {
-        self.inner.save_model(path)
+        self.inner
+            .save_model(path)
             .map_err(|e| PyValueError::new_err(format!("Failed to save model: {}", e)))
     }
-    
+
     /// Load model from file
     #[staticmethod]
     fn load_model(path: &str) -> PyResult<Self> {
         match MetaLearningAnalyzer::load_model(path) {
             Ok(analyzer) => Ok(PyMetaLearningAnalyzer { inner: analyzer }),
-            Err(e) => Err(PyValueError::new_err(format!("Failed to load model: {}", e))),
+            Err(e) => Err(PyValueError::new_err(format!(
+                "Failed to load model: {}",
+                e
+            ))),
         }
     }
-    
+
     /// Get high performance threshold
     fn get_high_perf_threshold(&self) -> f64 {
         self.inner.get_high_perf_threshold()
     }
-    
+
     /// Set high performance threshold
     fn set_high_perf_threshold(&mut self, threshold: f64) {
         self.inner.set_high_perf_threshold(threshold);
     }
-    
+
     /// Get minimum data points required for training
     fn get_min_data_points(&self) -> u32 {
         self.inner.get_min_data_points()
     }
-    
+
     /// Set minimum data points required for training
     fn set_min_data_points(&mut self, min_points: u32) {
         self.inner.set_min_data_points(min_points);
     }
-    
+
     fn __repr__(&self) -> String {
-        format!("MetaLearningAnalyzer(trained={}, version={})", 
-                self.is_trained(), self.version())
+        format!(
+            "MetaLearningAnalyzer(trained={}, version={})",
+            self.is_trained(),
+            self.version()
+        )
     }
 }
 
@@ -1893,27 +2010,27 @@ impl PyGpRecommendations {
     fn recommended_functions(&self) -> Vec<String> {
         self.inner.recommended_functions.clone()
     }
-    
+
     #[getter]
     fn recommended_terminals(&self) -> Vec<String> {
         self.inner.recommended_terminals.clone()
     }
-    
+
     #[getter]
     fn target_complexity(&self) -> f64 {
         self.inner.target_complexity
     }
-    
+
     #[getter]
     fn confidence_score(&self) -> f64 {
         self.inner.confidence_score
     }
-    
+
     #[getter]
     fn confidence_level(&self) -> &'static str {
         self.inner.confidence_level()
     }
-    
+
     /// Convert recommendations to a GPConfig (using midpoint of ranges)
     fn to_gp_config(&self) -> PyResult<Py<PyAny>> {
         unsafe {
@@ -1929,15 +2046,18 @@ impl PyGpRecommendations {
             Ok(dict.into())
         }
     }
-    
+
     /// Check if recommendations are valid
     fn is_valid(&self) -> bool {
         self.inner.is_valid()
     }
 
     fn __repr__(&self) -> String {
-        format!("GPRecommendations(functions={}, confidence={:.2})",
-                self.inner.recommended_functions.len(), self.inner.confidence_score)
+        format!(
+            "GPRecommendations(functions={}, confidence={:.2})",
+            self.inner.recommended_functions.len(),
+            self.inner.confidence_score
+        )
     }
 }
 
@@ -1945,7 +2065,7 @@ impl PyGpRecommendations {
 // Factor Registry Python Bindings
 // ============================================================================
 
-use crate::factor::{FactorRegistry, ComputeConfig};
+use crate::factor::{ComputeConfig, FactorRegistry};
 
 /// Python wrapper for FactorRegistry
 #[pyclass(name = "FactorRegistry")]
@@ -1989,7 +2109,12 @@ impl PyFactorRegistry {
     /// Compute factor with data (with timeout protection)
     /// data: dict of column_name -> list of values
     /// Returns FactorResult with values array
-    fn compute(&self, py: Python<'_>, name: &str, data: Bound<'_, PyDict>) -> PyResult<PyFactorResult> {
+    fn compute(
+        &self,
+        py: Python<'_>,
+        name: &str,
+        data: Bound<'_, PyDict>,
+    ) -> PyResult<PyFactorResult> {
         // Convert Python dict to HashMap
         let mut hashmap = std::collections::HashMap::new();
         for (key, value) in data.iter() {
@@ -2135,7 +2260,10 @@ impl PyFactorInfo {
     }
 
     fn __repr__(&self) -> String {
-        format!("FactorInfo(name={}, expression={})", self.name, self.expression)
+        format!(
+            "FactorInfo(name={}, expression={})",
+            self.name, self.expression
+        )
     }
 }
 
@@ -2177,7 +2305,9 @@ impl PyFactorResult {
     }
 
     fn __repr__(&self) -> String {
-        format!("FactorResult(name={}, n_rows={}, time_ms={})",
-            self.name, self.n_rows, self.compute_time_ms)
+        format!(
+            "FactorResult(name={}, n_rows={}, time_ms={})",
+            self.name, self.n_rows, self.compute_time_ms
+        )
     }
 }
