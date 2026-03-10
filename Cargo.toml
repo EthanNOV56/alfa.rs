@@ -1,7 +1,7 @@
 [package]
 name = "alfars"
-version = "0.2.11"
-edition = "2024"
+version = "0.3.0"
+edition = "2021"
 description = "High-performance factor expression and backtesting library (Rust + PyO3)"
 authors = ["EthanNOV56 <yichen_1226@163.com>"]
 license = "MIT"
@@ -12,7 +12,7 @@ categories = ["finance", "science"]
 
 [lib]
 name = "alfars"
-crate-type = ["cdylib"]  # For Python extension
+crate-type = ["cdylib", "rlib"]  # For Python extension and binary
 
 [dependencies]
 pyo3 = { version = "0.28", features = ["extension-module"] }
@@ -33,5 +33,14 @@ tempfile = "3.10"
 lz4 = "1.28"
 uuid = { version = "1.0", features = ["v4"] }
 
+# Web server (optional, for HTTP API)
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.5", features = ["cors"] }
+
 [build-dependencies]
 pyo3-build-config = "0.28"
+
+[[bin]]
+name = "alfars-server"
+path = "examples/server.rs"
