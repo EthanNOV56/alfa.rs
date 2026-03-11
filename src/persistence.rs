@@ -67,46 +67,6 @@ pub struct DatasetInfo {
     pub n_assets: usize,
 }
 
-/// GP evolution history record
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GPHistoryRecord {
-    /// Run identifier
-    pub run_id: String,
-    /// Start timestamp
-    pub start_time: u64,
-    /// End timestamp
-    pub end_time: u64,
-    /// GP configuration used
-    pub config: GPConfig,
-    /// Terminal set used
-    pub terminals: Vec<String>,
-    /// Function set used
-    pub functions: Vec<String>,
-    /// Best factor discovered
-    pub best_factor: FactorMetadata,
-    /// Evolution progress (generation, best_fitness)
-    pub progress: Vec<(usize, f64)>,
-    /// Population statistics
-    pub population_stats: Vec<PopulationStats>,
-}
-
-/// Population statistics for a generation
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PopulationStats {
-    /// Generation number
-    pub generation: usize,
-    /// Average fitness
-    pub avg_fitness: f64,
-    /// Best fitness
-    pub best_fitness: f64,
-    /// Worst fitness
-    pub worst_fitness: f64,
-    /// Average complexity
-    pub avg_complexity: f64,
-    /// Diversity metric
-    pub diversity: f64,
-}
-
 /// Expression cache entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExpressionCacheEntry {
@@ -634,32 +594,11 @@ pub fn create_factor_metadata(
     }
 }
 
-/// Helper function to create GPHistoryRecord
-pub fn create_gp_history_record(
-    config: &GPConfig,
-    terminals: &[String],
-    functions: &[String],
-    best_factor: FactorMetadata,
-    progress: Vec<(usize, f64)>,
-    population_stats: Vec<PopulationStats>,
-) -> GPHistoryRecord {
-    let start_time = PersistenceManager::current_timestamp();
+// Re-export from gp::history
+pub use crate::gp::history::{GPHistoryRecord, PopulationStats, create_gp_history_record};
 
-    GPHistoryRecord {
-        run_id: format!("run_{}", start_time),
-        start_time,
-        end_time: start_time, // Will be updated when run completes
-        config: config.clone(),
-        terminals: terminals.to_vec(),
-        functions: functions.to_vec(),
-        best_factor,
-        progress,
-        population_stats,
-    }
-}
-
-// Re-export al_parser types and functions
-pub use crate::al_parser::{AlFactor, AlParser};
+// Re-export al types and functions
+pub use crate::al::parser::{AlFactor, AlParser};
 
 impl PersistenceManager {
     /// Load factors from .al files in ~/.alfars/ directory

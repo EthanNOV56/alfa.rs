@@ -2,15 +2,15 @@
 //!
 //! Run with: cargo run --release --bin alfars-server
 
-use alfars::backtest::{BacktestEngine, BacktestResult};
-use alfars::factor::FactorRegistry;
 use alfars::WeightMethod;
+use alfars::backtest::{BacktestEngine, BacktestResult};
+use alfars::expr::registry::FactorRegistry;
 use axum::{
+    Router,
     extract::State,
     http::StatusCode,
     response::Json,
     routing::{get, post},
-    Router,
 };
 use ndarray::Array2;
 use rand::Rng;
@@ -32,18 +32,88 @@ fn is_port_in_use(port: u16) -> bool {
 /// Built-in Alpha101/Alpha191 factors (readonly)
 const BUILTIN_ALPHAS: &[(&str, &str, &str, &str, &str, &str)] = &[
     // Alpha001-003
-    ("alpha001", "Alpha001", "rank(ts_argmax(power(returns, 2), 5)) - 0.5", "Time series rank of max power returns over 5 days", "momentum", "Alpha101 factor #001"),
-    ("alpha002", "Alpha002", "-1 * correlation(rank(delta(log(volume), 2)), rank((close - open) / open), 6)", "Volume change correlation with returns", "volume", "Alpha101 factor #002"),
-    ("alpha003", "Alpha003", "-1 * correlation(rank(open), rank(volume), 10)", "Open-volume rank correlation", "volume", "Alpha101 factor #003"),
+    (
+        "alpha001",
+        "Alpha001",
+        "rank(ts_argmax(power(returns, 2), 5)) - 0.5",
+        "Time series rank of max power returns over 5 days",
+        "momentum",
+        "Alpha101 factor #001",
+    ),
+    (
+        "alpha002",
+        "Alpha002",
+        "-1 * correlation(rank(delta(log(volume), 2)), rank((close - open) / open), 6)",
+        "Volume change correlation with returns",
+        "volume",
+        "Alpha101 factor #002",
+    ),
+    (
+        "alpha003",
+        "Alpha003",
+        "-1 * correlation(rank(open), rank(volume), 10)",
+        "Open-volume rank correlation",
+        "volume",
+        "Alpha101 factor #003",
+    ),
     // Alpha101-106
-    ("alpha101", "Alpha101", "(close - open) / ((high - low) + 0.001)", "Price range ratio", "volatility", "Alpha101 factor #101"),
-    ("alpha102", "Alpha102", "-1 * ts_rank(rank(low), 9)", "Low price rank", "value", "Alpha101 factor #102"),
-    ("alpha103", "Alpha103", "-1 * correlation(rank(open), rank(volume), 10)", "Open-volume correlation", "volume", "Alpha101 factor #103"),
-    ("alpha104", "Alpha104", "sign(close - delay(close, 1))", "Price direction", "momentum", "Alpha101 factor #104"),
-    ("alpha105", "Alpha105", "-1 * ts_rank(rank(volume), 5)", "Volume rank", "volume", "Alpha101 factor #105"),
-    ("alpha106", "Alpha106", "-1 * rank(((returns < 0) ? stddev(returns, 20) : close))", "Volatility under negative returns", "volatility", "Alpha101 factor #106"),
+    (
+        "alpha101",
+        "Alpha101",
+        "(close - open) / ((high - low) + 0.001)",
+        "Price range ratio",
+        "volatility",
+        "Alpha101 factor #101",
+    ),
+    (
+        "alpha102",
+        "Alpha102",
+        "-1 * ts_rank(rank(low), 9)",
+        "Low price rank",
+        "value",
+        "Alpha101 factor #102",
+    ),
+    (
+        "alpha103",
+        "Alpha103",
+        "-1 * correlation(rank(open), rank(volume), 10)",
+        "Open-volume correlation",
+        "volume",
+        "Alpha101 factor #103",
+    ),
+    (
+        "alpha104",
+        "Alpha104",
+        "sign(close - delay(close, 1))",
+        "Price direction",
+        "momentum",
+        "Alpha101 factor #104",
+    ),
+    (
+        "alpha105",
+        "Alpha105",
+        "-1 * ts_rank(rank(volume), 5)",
+        "Volume rank",
+        "volume",
+        "Alpha101 factor #105",
+    ),
+    (
+        "alpha106",
+        "Alpha106",
+        "-1 * rank(((returns < 0) ? stddev(returns, 20) : close))",
+        "Volatility under negative returns",
+        "volatility",
+        "Alpha101 factor #106",
+    ),
     // Alpha191
-    ("alpha191", "Alpha191", "rank(correlation(ts_sum(close, 7) / 7, ts_sum(close, 63) / 63, 250)) * rank(correlation(ts_rank(close, 60), ts_rank(adv30, 30), 4))", "Multi-timeframe correlation factor", "composite", "Alpha191 factor"),
+    (
+        "alpha191",
+        "Alpha191",
+        "rank(correlation(ts_sum(close, 7) / 7, ts_sum(close, 63) / 63, 250)) * rank(correlation(ts_rank(close, 60), ts_rank(adv30, 30), 4))",
+        "Multi-timeframe correlation factor",
+        "composite",
+        "Alpha191 factor",
+    ),
 ];
 
 /// Request model for backtest endpoint
@@ -326,17 +396,15 @@ fn load_saved_column_mappings() -> TableColumnMappings {
     let config_path = get_config_dir().join("column_mappings.json");
     if config_path.exists() {
         match fs::read_to_string(&config_path) {
-            Ok(contents) => {
-                match serde_json::from_str::<TableColumnMappings>(&contents) {
-                    Ok(mappings) => {
-                        eprintln!("Loaded saved column mappings from {:?}", config_path);
-                        return mappings;
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to parse saved column mappings: {}", e);
-                    }
+            Ok(contents) => match serde_json::from_str::<TableColumnMappings>(&contents) {
+                Ok(mappings) => {
+                    eprintln!("Loaded saved column mappings from {:?}", config_path);
+                    return mappings;
                 }
-            }
+                Err(e) => {
+                    eprintln!("Failed to parse saved column mappings: {}", e);
+                }
+            },
             Err(e) => {
                 eprintln!("Failed to read saved column mappings: {}", e);
             }
@@ -544,19 +612,40 @@ async fn run_backtest(
 
     // Check if cache_id is provided
     let (factor, returns, dates) = if let Some(cache_id) = &req.cache_id {
-        eprintln!("[run_backtest] Retrieving from cache: {} (factor_id: {:?})", cache_id, cache_id);
+        eprintln!(
+            "[run_backtest] Retrieving from cache: {} (factor_id: {:?})",
+            cache_id, cache_id
+        );
         let cache = state.factor_cache.read().await;
         if let Some(cached) = cache.get(cache_id) {
-            eprintln!("[run_backtest] Cache hit: {}x{}, factor_id={}", cached.factor.len(), cached.factor.first().map(|r| r.len()).unwrap_or(0), cached.factor_id);
-            (cached.factor.clone(), cached.returns.clone(), Some(cached.dates.clone()))
+            eprintln!(
+                "[run_backtest] Cache hit: {}x{}, factor_id={}",
+                cached.factor.len(),
+                cached.factor.first().map(|r| r.len()).unwrap_or(0),
+                cached.factor_id
+            );
+            (
+                cached.factor.clone(),
+                cached.returns.clone(),
+                Some(cached.dates.clone()),
+            )
         } else {
             return Err((
                 StatusCode::NOT_FOUND,
-                format!("Cache not found for id: {}. Please recompute the factor.", cache_id),
+                format!(
+                    "Cache not found for id: {}. Please recompute the factor.",
+                    cache_id
+                ),
             ));
         }
-    } else if let (Some(factor), Some(returns), Some(dates)) = (&req.factor, &req.returns, &req.dates) {
-        eprintln!("[run_backtest] Using pre-computed factor: {}x{}", factor.len(), factor.first().map(|r| r.len()).unwrap_or(0));
+    } else if let (Some(factor), Some(returns), Some(dates)) =
+        (&req.factor, &req.returns, &req.dates)
+    {
+        eprintln!(
+            "[run_backtest] Using pre-computed factor: {}x{}",
+            factor.len(),
+            factor.first().map(|r| r.len()).unwrap_or(0)
+        );
         // Use pre-computed factor and returns
         (factor.clone(), returns.clone(), Some(dates.clone()))
     } else if let Some(data_source) = &req.data_source {
@@ -631,7 +720,10 @@ async fn run_backtest(
     };
 
     // Create and run backtest
-    eprintln!("[run_backtest] Creating backtest engine with {} days, {} assets", n_days, n_assets);
+    eprintln!(
+        "[run_backtest] Creating backtest engine with {} days, {} assets",
+        n_days, n_assets
+    );
     let engine = BacktestEngine::new_simple(
         factor_array,
         returns_array,
@@ -658,7 +750,10 @@ async fn run_backtest(
 
     // Convert to NAV data
     let nav_data = convert_to_nav_data(result, n_days, dates);
-    eprintln!("[run_backtest] Returning nav data with {} dates", nav_data.dates.len());
+    eprintln!(
+        "[run_backtest] Returning nav data with {} dates",
+        nav_data.dates.len()
+    );
 
     Ok(Json(nav_data))
 }
@@ -813,7 +908,10 @@ async fn compute_factor(
     let n_days = loaded.close.len();
     let n_assets = if n_days > 0 { loaded.close[0].len() } else { 0 };
 
-    eprintln!("[compute_factor] Computing factor '{}' with {} days x {} assets", req.factor_id, n_days, n_assets);
+    eprintln!(
+        "[compute_factor] Computing factor '{}' with {} days x {} assets",
+        req.factor_id, n_days, n_assets
+    );
 
     // Prepare data for FactorRegistry: transpose and flatten
     // FactorRegistry expects data in format: each column is flattened [asset0_day0, asset0_day1, ..., asset0_dayN-1, asset1_day0, ...]
@@ -850,7 +948,14 @@ async fn compute_factor(
 
     // Create FactorRegistry and compute factor
     let mut registry = FactorRegistry::new();
-    registry.set_columns(vec!["close".to_string(), "open".to_string(), "high".to_string(), "low".to_string(), "volume".to_string(), "returns".to_string()]);
+    registry.set_columns(vec![
+        "close".to_string(),
+        "open".to_string(),
+        "high".to_string(),
+        "low".to_string(),
+        "volume".to_string(),
+        "returns".to_string(),
+    ]);
 
     // Register the factor expression
     let factor_name = "factor";
@@ -884,7 +989,10 @@ async fn compute_factor(
                     returns: loaded.returns.clone(),
                     dates: loaded.dates.clone(),
                 };
-                eprintln!("[compute_factor] Caching factor for {} with id {}", req.factor_id, cache_id);
+                eprintln!(
+                    "[compute_factor] Caching factor for {} with id {}",
+                    req.factor_id, cache_id
+                );
                 {
                     let mut cache = state.factor_cache.write().await;
                     cache.insert(cache_id.clone(), cached);
@@ -920,7 +1028,10 @@ async fn compute_factor(
         returns: returns.clone(),
         dates: dates.clone(),
     };
-    eprintln!("[compute_factor] Caching factor for {} with id {}", req.factor_id, cache_id);
+    eprintln!(
+        "[compute_factor] Caching factor for {} with id {}",
+        req.factor_id, cache_id
+    );
     {
         let mut cache = state.factor_cache.write().await;
         cache.insert(cache_id.clone(), cached);
@@ -929,9 +1040,9 @@ async fn compute_factor(
     // Return with cache ID - empty arrays to minimize response size
     Ok(Json(FactorComputeResponse {
         factor_id: req.factor_id,
-        factor: vec![], // Empty to minimize response
+        factor: vec![],  // Empty to minimize response
         returns: vec![], // Empty to minimize response
-        dates: vec![], // Empty to minimize response
+        dates: vec![],   // Empty to minimize response
         cache_id: Some(cache_id),
     }))
 }
@@ -953,7 +1064,7 @@ async fn list_alphas() -> Result<Json<AlphaListResponse>, (StatusCode, String)> 
         .collect();
 
     // Then, add user-defined alphas from .al files
-    let user_factors = alfars::al_parser::AlParser::load_all_with_readonly_flag()
+    let user_factors = alfars::al::parser::AlParser::load_all_with_readonly_flag()
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     let user_alphas: Vec<Alpha> = user_factors
@@ -979,7 +1090,7 @@ async fn save_alpha(
     State(_state): State<AppState>,
     Json(req): Json<SaveAlphaRequest>,
 ) -> Result<Json<SaveAlphaResponse>, (StatusCode, String)> {
-    let factor = alfars::al_parser::AlFactor {
+    let factor = alfars::al::parser::AlFactor {
         name: req.name.clone(),
         expression: req.expression,
         description: req.description.unwrap_or_default(),
@@ -988,7 +1099,7 @@ async fn save_alpha(
         readonly: false,
     };
 
-    let path = alfars::al_parser::AlParser::save_to_user_dir(&factor, None)
+    let path = alfars::al::parser::AlParser::save_to_user_dir(&factor, None)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     Ok(Json(SaveAlphaResponse {
@@ -1635,7 +1746,7 @@ async fn load_data_from_config(
                     return Err((
                         StatusCode::BAD_REQUEST,
                         format!("Unsupported operator: {}", filter.operator),
-                    ))
+                    ));
                 }
             };
             where_clauses.push(clause);
@@ -1845,7 +1956,7 @@ async fn load_data(
                     return Err((
                         StatusCode::BAD_REQUEST,
                         format!("Unsupported operator: {}", filter.operator),
-                    ))
+                    ));
                 }
             };
             where_clauses.push(clause);
@@ -2078,7 +2189,10 @@ async fn get_column_mapping(
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Json<ColumnMapping> {
     let mappings = state.column_mappings.read().await;
-    let table = params.get("table").cloned().unwrap_or_else(|| "stock_1d".to_string());
+    let table = params
+        .get("table")
+        .cloned()
+        .unwrap_or_else(|| "stock_1d".to_string());
     Json(mappings.get(&table))
 }
 
@@ -2309,9 +2423,9 @@ fn run_real_gp(
     terminal_set: Vec<String>,
     function_set: Vec<String>,
 ) -> Result<(Vec<GpFactor>, GpFactor), (StatusCode, String)> {
-    use alfars::gp::{run_gp, Function, GPConfig, RealBacktestFitnessEvaluator, Terminal};
-    use rand::rngs::StdRng;
+    use alfars::gp::{Function, GPConfig, RealBacktestFitnessEvaluator, Terminal, run_gp};
     use rand::SeedableRng;
+    use rand::rngs::StdRng;
     use std::collections::HashMap;
 
     // Convert loaded data to HashMap format for the evaluator
@@ -2543,7 +2657,9 @@ async fn main() {
     // Check if port is already in use
     if is_port_in_use(8000) {
         eprintln!("Warning: Port 8000 is already in use. Is another server running?");
-        eprintln!("Run 'pkill -f alfars-server' to stop any existing server, or use a different port.");
+        eprintln!(
+            "Run 'pkill -f alfars-server' to stop any existing server, or use a different port."
+        );
     }
 
     println!("Starting Alfa.rs server on http://{}", addr);
@@ -2552,5 +2668,7 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(addr).await.expect(
         "Failed to bind to port 8000. Is another instance already running? Try: pkill -f alfars-server",
     );
-    axum::serve(listener, app).await.expect("Server failed to run");
+    axum::serve(listener, app)
+        .await
+        .expect("Server failed to run");
 }

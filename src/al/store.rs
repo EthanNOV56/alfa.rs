@@ -4,8 +4,8 @@
 //! for metadata and compressed binary files for factor values.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use std::fs;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -52,7 +52,9 @@ pub struct FactorStoreError {
 
 impl FactorStoreError {
     fn new(msg: &str) -> Self {
-        Self { msg: msg.to_string() }
+        Self {
+            msg: msg.to_string(),
+        }
     }
 }
 
@@ -69,7 +71,8 @@ type Result<T> = std::result::Result<T, FactorStoreError>;
 impl FactorStore {
     /// Create a new FactorStore
     pub fn new(_clickhouse_url: &str, database: &str, data_dir: Option<&Path>) -> Result<Self> {
-        let dir = data_dir.map(|p| p.to_path_buf())
+        let dir = data_dir
+            .map(|p| p.to_path_buf())
             .unwrap_or_else(|| std::env::temp_dir().join(database));
 
         // Create directories
@@ -105,8 +108,7 @@ impl FactorStore {
         let path = self.data_dir.join("factors").join(format!("{}.json", id));
         let json = serde_json::to_string_pretty(&record)
             .map_err(|e| FactorStoreError::new(&format!("JSON error: {}", e)))?;
-        fs::write(&path, json)
-            .map_err(|e| FactorStoreError::new(&format!("IO error: {}", e)))?;
+        fs::write(&path, json).map_err(|e| FactorStoreError::new(&format!("IO error: {}", e)))?;
 
         Ok(id)
     }
@@ -116,8 +118,7 @@ impl FactorStore {
         let path = self.data_dir.join("factors").join(format!("{}.json", id));
         let json = serde_json::to_string_pretty(&record)
             .map_err(|e| FactorStoreError::new(&format!("JSON error: {}", e)))?;
-        fs::write(&path, json)
-            .map_err(|e| FactorStoreError::new(&format!("IO error: {}", e)))?;
+        fs::write(&path, json).map_err(|e| FactorStoreError::new(&format!("IO error: {}", e)))?;
 
         Ok(())
     }
@@ -151,8 +152,10 @@ impl FactorStore {
         let values_dir = self.data_dir.join("values");
         if values_dir.exists() {
             for entry in fs::read_dir(&values_dir)
-                .map_err(|e| FactorStoreError::new(&format!("IO error: {}", e)))? {
-                let entry = entry.map_err(|e| FactorStoreError::new(&format!("IO error: {}", e)))?;
+                .map_err(|e| FactorStoreError::new(&format!("IO error: {}", e)))?
+            {
+                let entry =
+                    entry.map_err(|e| FactorStoreError::new(&format!("IO error: {}", e)))?;
                 let name = entry.file_name().to_string_lossy().to_string();
                 if name.starts_with(id) {
                     fs::remove_file(entry.path())
@@ -165,12 +168,17 @@ impl FactorStore {
     }
 
     /// List factors with optional filters
-    pub fn list_factors(&self, category: Option<&str>, tags: &[String]) -> Result<Vec<FactorRecord>> {
+    pub fn list_factors(
+        &self,
+        category: Option<&str>,
+        tags: &[String],
+    ) -> Result<Vec<FactorRecord>> {
         let factors_dir = self.data_dir.join("factors");
         let mut result = Vec::new();
 
         for entry in fs::read_dir(&factors_dir)
-            .map_err(|e| FactorStoreError::new(&format!("IO error: {}", e)))? {
+            .map_err(|e| FactorStoreError::new(&format!("IO error: {}", e)))?
+        {
             let entry = entry.map_err(|e| FactorStoreError::new(&format!("IO error: {}", e)))?;
             let path = entry.path();
 
@@ -194,7 +202,11 @@ impl FactorStore {
     }
 
     /// Search factors by performance metrics
-    pub fn search_factors(&self, min_ic: Option<f64>, min_ir: Option<f64>) -> Result<Vec<FactorRecord>> {
+    pub fn search_factors(
+        &self,
+        min_ic: Option<f64>,
+        min_ir: Option<f64>,
+    ) -> Result<Vec<FactorRecord>> {
         let mut result = self.list_factors(None, &[])?;
 
         if let Some(ic) = min_ic {
@@ -211,28 +223,40 @@ impl FactorStore {
     }
 
     /// Save factor values to disk
-    pub fn save_values(&mut self, id: &str, version: u32, data: &[f64], shape_days: usize, shape_assets: usize) -> Result<()> {
+    pub fn save_values(
+        &mut self,
+        id: &str,
+        version: u32,
+        data: &[f64],
+        shape_days: usize,
+        shape_assets: usize,
+    ) -> Result<()> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
 
         // Convert f64 to bytes for compression
-        let bytes: Vec<u8> = data.iter()
-            .flat_map(|f| f.to_le_bytes())
-            .collect();
+        let bytes: Vec<u8> = data.iter().flat_map(|f| f.to_le_bytes()).collect();
 
         // Compress data with LZ4
-        let compressed = lz4::block::compress(&bytes, Some(lz4::block::CompressionMode::DEFAULT), true)
-            .map_err(|e| FactorStoreError::new(&format!("LZ4 compress error: {}", e)))?;
+        let compressed =
+            lz4::block::compress(&bytes, Some(lz4::block::CompressionMode::DEFAULT), true)
+                .map_err(|e| FactorStoreError::new(&format!("LZ4 compress error: {}", e)))?;
 
         // Save to file
-        let data_path = self.data_dir.join("values").join(format!("{}_{}.lz4", id, version));
+        let data_path = self
+            .data_dir
+            .join("values")
+            .join(format!("{}_{}.lz4", id, version));
         fs::write(&data_path, &compressed)
             .map_err(|e| FactorStoreError::new(&format!("IO error: {}", e)))?;
 
         // Save metadata
-        let metadata_path = self.data_dir.join("values").join(format!("{}_{}.meta.json", id, version));
+        let metadata_path = self
+            .data_dir
+            .join("values")
+            .join(format!("{}_{}.meta.json", id, version));
         let metadata = serde_json::json!({
             "id": id,
             "version": version,
@@ -251,7 +275,10 @@ impl FactorStore {
 
     /// Load factor values from disk
     pub fn load_values(&self, id: &str, version: u32) -> Result<Option<FactorValues>> {
-        let metadata_path = self.data_dir.join("values").join(format!("{}_{}.meta.json", id, version));
+        let metadata_path = self
+            .data_dir
+            .join("values")
+            .join(format!("{}_{}.meta.json", id, version));
 
         if !metadata_path.exists() {
             return Ok(None);
@@ -294,13 +321,13 @@ impl FactorStore {
 
     /// Export factor to JSON file
     pub fn export_factor(&self, id: &str, path: &Path) -> Result<FactorRecord> {
-        let record = self.get_factor(id)?
+        let record = self
+            .get_factor(id)?
             .ok_or_else(|| FactorStoreError::new(&format!("Factor not found: {}", id)))?;
 
         let json = serde_json::to_string_pretty(&record)
             .map_err(|e| FactorStoreError::new(&format!("JSON error: {}", e)))?;
-        fs::write(path, json)
-            .map_err(|e| FactorStoreError::new(&format!("IO error: {}", e)))?;
+        fs::write(path, json).map_err(|e| FactorStoreError::new(&format!("IO error: {}", e)))?;
 
         Ok(record)
     }

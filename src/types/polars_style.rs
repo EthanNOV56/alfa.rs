@@ -3,8 +3,8 @@
 //! This module provides a Polars-inspired API for building and evaluating
 //! expressions on time series data in a vectorized manner.
 
-use crate::expr::{BinaryOp, Expr, Literal, UnaryOp};
-use crate::expr_optimizer::{optimize_expression, ExpressionOptimizer};
+use crate::expr::ast::{BinaryOp, Expr, Literal, UnaryOp};
+use crate::expr::optimizer::{ExpressionOptimizer, optimize_expression};
 use ndarray::{Array1, Array2};
 use std::collections::HashMap;
 
@@ -123,14 +123,11 @@ impl Series {
                 other.len()
             ));
         }
-        let result: Array1<f64> =
-            Array1::from_iter(self.data.iter().zip(other.data.iter()).map(|(&a, &b)| {
-                if a > b {
-                    1.0
-                } else {
-                    0.0
-                }
-            }));
+        let result: Array1<f64> = Array1::from_iter(self.data.iter().zip(other.data.iter()).map(
+            |(&a, &b)| {
+                if a > b { 1.0 } else { 0.0 }
+            },
+        ));
         Ok(Series::from_array(result))
     }
 

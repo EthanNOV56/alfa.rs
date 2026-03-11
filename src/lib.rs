@@ -2,16 +2,14 @@
 //! Exposed as Python extension via PyO3
 
 // Core modules (public for binary usage)
-pub mod al_parser;
+pub mod al;
 pub mod backtest;
+pub mod data;
 pub mod expr;
-pub mod expr_optimizer;
-pub mod factor;
 pub mod gp;
 pub mod lazy;
-pub mod metalearning;
 pub mod persistence;
-pub mod polars_style;
+pub mod types;
 
 use ndarray::Array2;
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyArrayMethods, PyUntypedArrayMethods};
@@ -34,7 +32,9 @@ fn set_num_threads(n_threads: usize) -> PyResult<()> {
     }
     // Rayon doesn't allow replacing the global pool at runtime
     // Recommend using RAYON_NUM_THREADS env var
-    eprintln!("Warning: set_num_threads() is limited. For better control, set RAYON_NUM_THREADS environment variable before importing the module.");
+    eprintln!(
+        "Warning: set_num_threads() is limited. For better control, set RAYON_NUM_THREADS environment variable before importing the module."
+    );
     Ok(())
 }
 
@@ -42,7 +42,7 @@ fn set_num_threads(n_threads: usize) -> PyResult<()> {
 use crate::backtest::{BacktestEngine, BacktestResult, FeeConfig, PositionConfig, SlippageConfig};
 use crate::expr::{BinaryOp, Expr, Literal, UnaryOp};
 use crate::lazy::{DataSource, JoinType, LazyFrame};
-use crate::polars_style::{evaluate_expr_on_dataframe, DataFrame, Series};
+use crate::types::{DataFrame, Series, evaluate_expr_on_dataframe};
 
 /// Weight allocation method
 #[derive(Debug, Clone, Copy)]
@@ -396,7 +396,7 @@ impl PyDataFrame {
 /// Parse expression string into Expr AST
 #[pyfunction]
 fn parse_expression(expression: &str) -> PyResult<PyExpr> {
-    match factor::parse_expression(expression) {
+    match expr::parse_expression(expression) {
         Ok(expr) => Ok(PyExpr { inner: expr }),
         Err(e) => Err(PyValueError::new_err(e)),
     }
@@ -975,7 +975,7 @@ impl PyBacktestEngine {
             _ => {
                 return Err(pyo3::exceptions::PyValueError::new_err(
                     "weight_method must be 'equal' or 'weighted'",
-                ))
+                ));
             }
         };
 
@@ -1238,7 +1238,7 @@ impl PyLazyFrame {
             _ => {
                 return Err(PyValueError::new_err(
                     "Join type must be 'inner', 'left', 'right', or 'outer'",
-                ))
+                ));
             }
         };
 
@@ -1325,11 +1325,11 @@ fn expanding_window(min_periods: Option<usize>) -> PyResult<Py<PyDict>> {
 // ============================================================================
 
 use crate::gp::{
-    run_gp, BacktestFitnessEvaluator, DataSplitConfig, Function, GPConfig,
-    RealBacktestFitnessEvaluator, Terminal,
+    BacktestFitnessEvaluator, DataSplitConfig, Function, GPConfig, RealBacktestFitnessEvaluator,
+    Terminal, run_gp,
 };
-use rand::rngs::StdRng;
 use rand::SeedableRng;
+use rand::rngs::StdRng;
 use std::collections::HashMap;
 
 /// Python-exposed Genetic Programming engine for factor mining
@@ -1684,7 +1684,7 @@ impl PyGpEngine {
 // Persistence Module Python Bindings
 // ============================================================================
 
-use crate::metalearning::{GPRecommendations, MetaLearningAnalyzer};
+use crate::gp::metalearning::{GPRecommendations, MetaLearningAnalyzer};
 use crate::persistence::{AlFactor, AlParser, FactorMetadata, GPHistoryRecord, PersistenceManager};
 
 /// Python-exposed Persistence Manager for factor storage and retrieval
@@ -2185,7 +2185,7 @@ impl PyGpRecommendations {
 // Factor Registry Python Bindings
 // ============================================================================
 
-use crate::factor::{ComputeConfig, FactorRegistry};
+use crate::expr::registry::{ComputeConfig, FactorRegistry};
 
 /// Python wrapper for FactorRegistry
 #[pyclass(name = "FactorRegistry")]

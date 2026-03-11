@@ -4,7 +4,7 @@
 //! generating computation plans, and executing them efficiently with
 //! timeout protection to prevent system overload.
 
-use crate::expr::{BinaryOp, Expr, Literal, UnaryOp};
+use super::ast::{BinaryOp, Expr, Literal, UnaryOp};
 use crate::lazy::{DataSource, LogicalPlan};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};

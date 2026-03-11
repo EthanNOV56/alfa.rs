@@ -4,8 +4,9 @@
 //! future factor mining through adaptive hyperparameter tuning and
 //! intelligent search guidance.
 
-use crate::gp::GPConfig;
-use crate::persistence::{FactorMetadata, GPHistoryRecord};
+use super::engine::GPConfig;
+use crate::gp::history::GPHistoryRecord;
+use crate::persistence::FactorMetadata;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -948,7 +949,7 @@ impl GPRecommendations {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persistence::{create_factor_metadata, PerformanceMetrics};
+    use crate::persistence::{PerformanceMetrics, create_factor_metadata};
     use std::collections::HashMap;
 
     fn create_test_factor(name: &str, ic: f64, complexity: f64) -> FactorMetadata {

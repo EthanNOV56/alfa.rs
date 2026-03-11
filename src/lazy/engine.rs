@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::expr::Expr;
-use crate::polars_style::DataFrame;
+use crate::types::DataFrame;
 use ndarray::Array2;
 
 // ============================================================================
@@ -603,14 +603,14 @@ impl LazyExecutor {
                         let column_data = array.column(asset_idx).to_owned();
                         columns.insert(
                             col_name.clone(),
-                            crate::polars_style::Series::new(column_data.to_vec()),
+                            crate::types::Series::new(column_data.to_vec()),
                         );
                     }
 
                     // Create DataFrame and evaluate expression
-                    if let Ok(df) = crate::polars_style::DataFrame::from_series_map(columns) {
+                    if let Ok(df) = crate::types::DataFrame::from_series_map(columns) {
                         if let Ok(series) =
-                            crate::polars_style::evaluate_expr_on_dataframe(&expr_clone, &df)
+                            crate::types::evaluate_expr_on_dataframe(&expr_clone, &df)
                         {
                             return series.data().to_vec();
                         }
@@ -671,14 +671,14 @@ impl LazyExecutor {
                     let column_data = array.column(asset_idx).to_owned();
                     columns.insert(
                         col_name.clone(),
-                        crate::polars_style::Series::new(column_data.to_vec()),
+                        crate::types::Series::new(column_data.to_vec()),
                     );
                 }
 
                 // Create DataFrame and evaluate predicate
-                if let Ok(df) = crate::polars_style::DataFrame::from_series_map(columns) {
+                if let Ok(df) = crate::types::DataFrame::from_series_map(columns) {
                     if let Ok(series) =
-                        crate::polars_style::evaluate_expr_on_dataframe(&predicate_clone, &df)
+                        crate::types::evaluate_expr_on_dataframe(&predicate_clone, &df)
                     {
                         // Convert boolean series to mask (1.0 for true, NaN for false)
                         let data = series.data();
@@ -753,15 +753,13 @@ impl LazyExecutor {
                     let column_data = array.column(asset_idx).to_owned();
                     columns.insert(
                         col_name.clone(),
-                        crate::polars_style::Series::new(column_data.to_vec()),
+                        crate::types::Series::new(column_data.to_vec()),
                     );
                 }
 
                 // Create DataFrame and evaluate expression
-                if let Ok(df) = crate::polars_style::DataFrame::from_series_map(columns) {
-                    if let Ok(series) =
-                        crate::polars_style::evaluate_expr_on_dataframe(&expr_clone, &df)
-                    {
+                if let Ok(df) = crate::types::DataFrame::from_series_map(columns) {
+                    if let Ok(series) = crate::types::evaluate_expr_on_dataframe(&expr_clone, &df) {
                         // Apply window operation based on window specification
                         let windowed_series = apply_window_to_series(&series, &window_spec_clone);
                         return windowed_series.data().to_vec();
@@ -824,12 +822,12 @@ impl LazyExecutor {
                     let column_data = array.column(asset_idx).to_owned();
                     columns.insert(
                         col_name.clone(),
-                        crate::polars_style::Series::new(column_data.to_vec()),
+                        crate::types::Series::new(column_data.to_vec()),
                     );
                 }
 
                 // Create DataFrame and evaluate the inner expression
-                if let Ok(df) = crate::polars_style::DataFrame::from_series_map(columns) {
+                if let Ok(df) = crate::types::DataFrame::from_series_map(columns) {
                     // Extract the inner expression from StatefulExpr
                     let inner_expr = match &expr_clone {
                         StatefulExpr::CumSum(expr) => expr,
@@ -839,9 +837,7 @@ impl LazyExecutor {
                         StatefulExpr::Ema(expr, _) => expr,
                     };
 
-                    if let Ok(series) =
-                        crate::polars_style::evaluate_expr_on_dataframe(inner_expr, &df)
-                    {
+                    if let Ok(series) = crate::types::evaluate_expr_on_dataframe(inner_expr, &df) {
                         // Apply stateful operation
                         let stateful_series = apply_stateful_to_series(&series, &expr_clone);
                         return stateful_series.data().to_vec();
@@ -1213,10 +1209,10 @@ pub fn ema(expr: Expr, span: usize) -> StatefulExpr {
 
 /// Apply window operation to a series based on window specification
 fn apply_window_to_series(
-    series: &crate::polars_style::Series,
+    series: &crate::types::Series,
     window_spec: &WindowSpec,
-) -> crate::polars_style::Series {
-    use crate::polars_style::Series;
+) -> crate::types::Series {
+    use crate::types::Series;
 
     match window_spec.kind {
         WindowKind::Rolling => {
@@ -1265,10 +1261,10 @@ fn apply_window_to_series(
 
 /// Apply stateful operation to a series
 fn apply_stateful_to_series(
-    series: &crate::polars_style::Series,
+    series: &crate::types::Series,
     expr: &StatefulExpr,
-) -> crate::polars_style::Series {
-    use crate::polars_style::Series;
+) -> crate::types::Series {
+    use crate::types::Series;
 
     match expr {
         StatefulExpr::CumSum(_) => {

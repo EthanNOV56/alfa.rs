@@ -7,7 +7,7 @@
 //! - Algebraic simplifications
 //! - Evaluation plan optimization
 
-use crate::expr::{BinaryOp, Expr, Literal, UnaryOp};
+use super::ast::{BinaryOp, Expr, Literal, UnaryOp};
 use std::sync::Arc;
 
 // ============================================================================
@@ -122,7 +122,7 @@ impl ExpressionOptimizer {
                                         left: Arc::new(left_folded),
                                         op,
                                         right: Arc::new(right_folded),
-                                    }
+                                    };
                                 }
                             };
                             return Expr::Literal(Literal::Float(result));
@@ -139,7 +139,7 @@ impl ExpressionOptimizer {
                                         left: Arc::new(left_folded),
                                         op,
                                         right: Arc::new(right_folded),
-                                    }
+                                    };
                                 }
                             };
                             return Expr::Literal(Literal::Float(result));
@@ -153,60 +153,60 @@ impl ExpressionOptimizer {
                 if self.enable_algebraic_simplification {
                     match (&left_folded, op, &right_folded) {
                         (Expr::Literal(Literal::Integer(0)), BinaryOp::Add, _) => {
-                            return right_folded
+                            return right_folded;
                         }
                         (_, BinaryOp::Add, Expr::Literal(Literal::Integer(0))) => {
-                            return left_folded
+                            return left_folded;
                         }
                         (Expr::Literal(Literal::Float(f)), BinaryOp::Add, _) if *f == 0.0 => {
-                            return right_folded
+                            return right_folded;
                         }
                         (_, BinaryOp::Add, Expr::Literal(Literal::Float(f))) if *f == 0.0 => {
-                            return left_folded
+                            return left_folded;
                         }
 
                         // x - 0 = x
                         (_, BinaryOp::Subtract, Expr::Literal(Literal::Integer(0))) => {
-                            return left_folded
+                            return left_folded;
                         }
                         (_, BinaryOp::Subtract, Expr::Literal(Literal::Float(f))) if *f == 0.0 => {
-                            return left_folded
+                            return left_folded;
                         }
 
                         // x * 1 = x, 1 * x = x
                         (Expr::Literal(Literal::Integer(1)), BinaryOp::Multiply, _) => {
-                            return right_folded
+                            return right_folded;
                         }
                         (_, BinaryOp::Multiply, Expr::Literal(Literal::Integer(1))) => {
-                            return left_folded
+                            return left_folded;
                         }
                         (Expr::Literal(Literal::Float(f)), BinaryOp::Multiply, _) if *f == 1.0 => {
-                            return right_folded
+                            return right_folded;
                         }
                         (_, BinaryOp::Multiply, Expr::Literal(Literal::Float(f))) if *f == 1.0 => {
-                            return left_folded
+                            return left_folded;
                         }
 
                         // x * 0 = 0, 0 * x = 0
                         (Expr::Literal(Literal::Integer(0)), BinaryOp::Multiply, _) => {
-                            return Expr::Literal(Literal::Integer(0))
+                            return Expr::Literal(Literal::Integer(0));
                         }
                         (_, BinaryOp::Multiply, Expr::Literal(Literal::Integer(0))) => {
-                            return Expr::Literal(Literal::Integer(0))
+                            return Expr::Literal(Literal::Integer(0));
                         }
                         (Expr::Literal(Literal::Float(f)), BinaryOp::Multiply, _) if *f == 0.0 => {
-                            return Expr::Literal(Literal::Float(0.0))
+                            return Expr::Literal(Literal::Float(0.0));
                         }
                         (_, BinaryOp::Multiply, Expr::Literal(Literal::Float(f))) if *f == 0.0 => {
-                            return Expr::Literal(Literal::Float(0.0))
+                            return Expr::Literal(Literal::Float(0.0));
                         }
 
                         // x / 1 = x
                         (_, BinaryOp::Divide, Expr::Literal(Literal::Integer(1))) => {
-                            return left_folded
+                            return left_folded;
                         }
                         (_, BinaryOp::Divide, Expr::Literal(Literal::Float(f))) if *f == 1.0 => {
-                            return left_folded
+                            return left_folded;
                         }
 
                         _ => {}

@@ -9,10 +9,10 @@
 //! - Multi-objective optimization (IC, IR, turnover, complexity)
 //! - Enhanced backtest engine with fee and position configuration
 
+use crate::WeightMethod;
 use crate::backtest::{BacktestEngine, BacktestResult, FeeConfig, PositionConfig};
 use crate::expr::{BinaryOp, Expr, Literal, UnaryOp};
-use crate::polars_style::{evaluate_expr_on_dataframe, DataFrame, Series};
-use crate::WeightMethod;
+use crate::types::{DataFrame, Series, evaluate_expr_on_dataframe};
 use lru::LruCache;
 use ndarray::Array2;
 use rand::Rng;
@@ -1709,6 +1709,7 @@ impl<E: FitnessEvaluator + Clone> FitnessEvaluator for BatchFitnessEvaluator<E> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::SeedableRng;
     use rand::rngs::StdRng;
 
     #[test]
