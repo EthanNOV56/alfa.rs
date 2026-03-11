@@ -8,9 +8,9 @@ use ndarray::Array2;
 
 use crate::expr::Expr;
 
-use super::executor::LazyExecutor;
-use super::optimizer::LazyOptimizer;
 use super::plan::*;
+use super::optimizer::LazyOptimizer;
+use super::executor::LazyExecutor;
 
 // ============================================================================
 // LazyFrame

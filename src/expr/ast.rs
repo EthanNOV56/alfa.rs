@@ -694,10 +694,7 @@ mod tests {
         let expr = Expr::lit_int(1).add(Expr::lit_int(2));
         assert!(matches!(
             expr,
-            Expr::BinaryExpr {
-                op: BinaryOp::Add,
-                ..
-            }
+            Expr::BinaryExpr { op: BinaryOp::Add, .. }
         ));
     }
 
@@ -706,10 +703,7 @@ mod tests {
         let expr = Expr::lit_int(1).sub(Expr::lit_int(2));
         assert!(matches!(
             expr,
-            Expr::BinaryExpr {
-                op: BinaryOp::Subtract,
-                ..
-            }
+            Expr::BinaryExpr { op: BinaryOp::Subtract, .. }
         ));
     }
 
@@ -718,10 +712,7 @@ mod tests {
         let expr = Expr::lit_int(2).mul(Expr::lit_int(3));
         assert!(matches!(
             expr,
-            Expr::BinaryExpr {
-                op: BinaryOp::Multiply,
-                ..
-            }
+            Expr::BinaryExpr { op: BinaryOp::Multiply, .. }
         ));
     }
 
@@ -730,10 +721,7 @@ mod tests {
         let expr = Expr::lit_int(6).div(Expr::lit_int(2));
         assert!(matches!(
             expr,
-            Expr::BinaryExpr {
-                op: BinaryOp::Divide,
-                ..
-            }
+            Expr::BinaryExpr { op: BinaryOp::Divide, .. }
         ));
     }
 
@@ -742,10 +730,7 @@ mod tests {
         let expr = Expr::binary(Expr::lit_int(7), BinaryOp::Modulo, Expr::lit_int(3));
         assert!(matches!(
             expr,
-            Expr::BinaryExpr {
-                op: BinaryOp::Modulo,
-                ..
-            }
+            Expr::BinaryExpr { op: BinaryOp::Modulo, .. }
         ));
     }
 
@@ -754,19 +739,13 @@ mod tests {
         let expr1 = Expr::lit_int(1).eq(Expr::lit_int(2));
         assert!(matches!(
             expr1,
-            Expr::BinaryExpr {
-                op: BinaryOp::Equal,
-                ..
-            }
+            Expr::BinaryExpr { op: BinaryOp::Equal, .. }
         ));
 
         let expr2 = Expr::lit_int(1).gt(Expr::lit_int(2));
         assert!(matches!(
             expr2,
-            Expr::BinaryExpr {
-                op: BinaryOp::GreaterThan,
-                ..
-            }
+            Expr::BinaryExpr { op: BinaryOp::GreaterThan, .. }
         ));
     }
 
@@ -775,19 +754,13 @@ mod tests {
         let expr = Expr::lit_bool(true).and(Expr::lit_bool(false));
         assert!(matches!(
             expr,
-            Expr::BinaryExpr {
-                op: BinaryOp::And,
-                ..
-            }
+            Expr::BinaryExpr { op: BinaryOp::And, .. }
         ));
 
         let expr2 = Expr::lit_bool(true).or(Expr::lit_bool(false));
         assert!(matches!(
             expr2,
-            Expr::BinaryExpr {
-                op: BinaryOp::Or,
-                ..
-            }
+            Expr::BinaryExpr { op: BinaryOp::Or, .. }
         ));
     }
 
@@ -799,60 +772,42 @@ mod tests {
         let expr = Expr::lit_int(5).neg();
         assert!(matches!(
             expr,
-            Expr::UnaryExpr {
-                op: UnaryOp::Negate,
-                ..
-            }
+            Expr::UnaryExpr { op: UnaryOp::Negate, .. }
         ));
 
         // Test Not
         let expr = Expr::lit_bool(true).not();
         assert!(matches!(
             expr,
-            Expr::UnaryExpr {
-                op: UnaryOp::Not,
-                ..
-            }
+            Expr::UnaryExpr { op: UnaryOp::Not, .. }
         ));
 
         // Test Abs
         let expr = Expr::lit_int(-5).abs();
         assert!(matches!(
             expr,
-            Expr::UnaryExpr {
-                op: UnaryOp::Abs,
-                ..
-            }
+            Expr::UnaryExpr { op: UnaryOp::Abs, .. }
         ));
 
         // Test Sqrt
         let expr = Expr::lit_float(4.0).sqrt();
         assert!(matches!(
             expr,
-            Expr::UnaryExpr {
-                op: UnaryOp::Sqrt,
-                ..
-            }
+            Expr::UnaryExpr { op: UnaryOp::Sqrt, .. }
         ));
 
         // Test Log
         let expr = Expr::unary(Expr::lit_float(2.0), UnaryOp::Log);
         assert!(matches!(
             expr,
-            Expr::UnaryExpr {
-                op: UnaryOp::Log,
-                ..
-            }
+            Expr::UnaryExpr { op: UnaryOp::Log, .. }
         ));
 
         // Test Exp
         let expr = Expr::unary(Expr::lit_float(1.0), UnaryOp::Exp);
         assert!(matches!(
             expr,
-            Expr::UnaryExpr {
-                op: UnaryOp::Exp,
-                ..
-            }
+            Expr::UnaryExpr { op: UnaryOp::Exp, .. }
         ));
     }
 
@@ -926,22 +881,13 @@ mod tests {
     fn test_typed_expr_infer_dimension() {
         // Test literal dimension inference
         let lit_int = Expr::lit_int(5);
-        assert_eq!(
-            TypedExpr::infer_dimension(&lit_int),
-            Dimension::Dimensionless
-        );
+        assert_eq!(TypedExpr::infer_dimension(&lit_int), Dimension::Dimensionless);
 
         let lit_float = Expr::lit_float(3.14);
-        assert_eq!(
-            TypedExpr::infer_dimension(&lit_float),
-            Dimension::Dimensionless
-        );
+        assert_eq!(TypedExpr::infer_dimension(&lit_float), Dimension::Dimensionless);
 
         let lit_bool = Expr::lit_bool(true);
-        assert_eq!(
-            TypedExpr::infer_dimension(&lit_bool),
-            Dimension::Dimensionless
-        );
+        assert_eq!(TypedExpr::infer_dimension(&lit_bool), Dimension::Dimensionless);
 
         let lit_string = Expr::lit_string("hello");
         assert_eq!(TypedExpr::infer_dimension(&lit_string), Dimension::Unknown);
@@ -974,10 +920,7 @@ mod tests {
         // Test nested function calls
         let expr2 = Expr::function(
             "rank",
-            vec![Expr::function(
-                "ts_mean",
-                vec![Expr::col("close"), Expr::lit_int(20)],
-            )],
+            vec![Expr::function("ts_mean", vec![Expr::col("close"), Expr::lit_int(20)])],
         );
         assert!(matches!(expr2, Expr::FunctionCall { name, .. } if name == "rank"));
     }
@@ -1030,66 +973,43 @@ mod tests {
         let sum_expr = Expr::col("value").sum();
         assert!(matches!(
             sum_expr,
-            Expr::Aggregate {
-                op: AggregateOp::Sum,
-                distinct: false,
-                ..
-            }
+            Expr::Aggregate { op: AggregateOp::Sum, distinct: false, .. }
         ));
 
         let mean_expr = Expr::col("value").mean();
         assert!(matches!(
             mean_expr,
-            Expr::Aggregate {
-                op: AggregateOp::Mean,
-                distinct: false,
-                ..
-            }
+            Expr::Aggregate { op: AggregateOp::Mean, distinct: false, .. }
         ));
 
         let min_expr = Expr::aggregate(Expr::col("value"), AggregateOp::Min, false);
         assert!(matches!(
             min_expr,
-            Expr::Aggregate {
-                op: AggregateOp::Min,
-                ..
-            }
+            Expr::Aggregate { op: AggregateOp::Min, .. }
         ));
 
         let max_expr = Expr::aggregate(Expr::col("value"), AggregateOp::Max, false);
         assert!(matches!(
             max_expr,
-            Expr::Aggregate {
-                op: AggregateOp::Max,
-                ..
-            }
+            Expr::Aggregate { op: AggregateOp::Max, .. }
         ));
 
         let count_expr = Expr::aggregate(Expr::col("value"), AggregateOp::Count, false);
         assert!(matches!(
             count_expr,
-            Expr::Aggregate {
-                op: AggregateOp::Count,
-                ..
-            }
+            Expr::Aggregate { op: AggregateOp::Count, .. }
         ));
 
         let stddev_expr = Expr::aggregate(Expr::col("value"), AggregateOp::StdDev, false);
         assert!(matches!(
             stddev_expr,
-            Expr::Aggregate {
-                op: AggregateOp::StdDev,
-                ..
-            }
+            Expr::Aggregate { op: AggregateOp::StdDev, .. }
         ));
 
         let variance_expr = Expr::aggregate(Expr::col("value"), AggregateOp::Variance, false);
         assert!(matches!(
             variance_expr,
-            Expr::Aggregate {
-                op: AggregateOp::Variance,
-                ..
-            }
+            Expr::Aggregate { op: AggregateOp::Variance, .. }
         ));
     }
 

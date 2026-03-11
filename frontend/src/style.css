@@ -74,11 +74,6 @@ header p {
   display: none;
 }
 
-/* General hidden class */
-.hidden {
-  display: none !important;
-}
-
 main {
   display: flex;
   flex-direction: column;
@@ -768,27 +763,6 @@ button {
   border-top: 1px solid #e2e8f0;
 }
 
-.alpha-metrics-preview {
-  padding-bottom: 16px;
-}
-
-.alpha-backtest-results {
-  margin-top: 20px;
-  padding-top: 16px;
-  border-top: 2px solid #e2e8f0;
-}
-
-.alpha-backtest-results h4 {
-  font-size: 1.1rem;
-  font-weight: 600;
-  margin-bottom: 12px;
-  color: #0f172a;
-}
-
-.alpha-backtest-results .alpha-chart-container {
-  margin-top: 16px;
-}
-
 .save-alpha-form {
   background: white;
   border-radius: 12px;
@@ -1398,18 +1372,8 @@ button {
 }
 
 .selected-alphas-info button {
-  padding: 6px 12px;
-  font-size: 0.8rem;
-  background: #3b82f6;
-  color: white;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-  transition: background 0.2s;
-}
-
-.selected-alphas-info button:hover {
-  background: #2563eb;
+  padding: 4px 8px;
+  font-size: 0.75rem;
 }
 
 /* Data Source Controls (Backtest & GP Mining pages) */

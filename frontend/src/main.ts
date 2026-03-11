@@ -24,14 +24,6 @@ import {
 import { renderChart, destroyChart, updateMetrics } from './chart';
 import type { NavData, GpMineRequest, GpFactor, Alpha, FactorComputeResponse, FilterCondition, ColumnInfo, DataSourceConfig, TableMapping, Metrics } from './types';
 
-/**
- * Format percentage
- */
-function formatPercent(value: number | undefined): string {
-  if (value === undefined) return '--';
-  return `${(value * 100).toFixed(2)}%`;
-}
-
 // Chart instances
 // Note: Chart instance is stored in chart.ts module, managed by renderChart/destroyChart
 
@@ -629,7 +621,7 @@ function initBacktest(): void {
 
             // Use cacheId if available, otherwise send full data
             const request: any = {
-              quantiles: 10,
+              quantiles: 5,
               weight_method: 'equal',
               long_top_n: 1,
               short_top_n: 1,
@@ -739,6 +731,7 @@ function initBacktest(): void {
           chartSection.style.padding = '16px';
           chartSection.style.background = '#f9fafb';
           chartSection.style.borderRadius = '8px';
+          chartSection.style.height = '350px';
 
           // Add title with metrics
           const icValue = result.metrics.ic_mean ?? result.metrics.icMean ?? 0;
@@ -748,65 +741,9 @@ function initBacktest(): void {
           title.style.color = '#374151';
           chartSection.appendChild(title);
 
-          // Create canvas for this chart - wrap in container for proper sizing
-          const chartWrapper = document.createElement('div');
-          chartWrapper.style.position = 'relative';
-          chartWrapper.style.height = '250px';
-          chartWrapper.style.width = '100%';
-
+          // Create canvas for this chart
           const canvas = document.createElement('canvas');
-          chartWrapper.appendChild(canvas);
-          chartSection.appendChild(chartWrapper);
-
-          // Add metrics section under each chart
-          const metricsDiv = document.createElement('div');
-          metricsDiv.style.display = 'flex';
-          metricsDiv.style.flexWrap = 'wrap';
-          metricsDiv.style.gap = '16px';
-          metricsDiv.style.marginTop = '12px';
-          metricsDiv.style.paddingTop = '12px';
-          metricsDiv.style.borderTop = '1px solid #e5e7eb';
-
-          const metrics = result.metrics;
-          const metricsData = [
-            { label: 'IC Mean', value: metrics.ic_mean ?? metrics.icMean ?? 0, format: 'num4' },
-            { label: 'IC IR', value: metrics.ic_ir ?? metrics.icIr ?? 0, format: 'num4' },
-            { label: 'Total Return', value: metrics.total_return ?? metrics.totalReturn ?? 0, format: 'percent' },
-            { label: 'Annualized Return', value: metrics.annualized_return ?? metrics.annualizedReturn ?? 0, format: 'percent' },
-            { label: 'Sharpe Ratio', value: metrics.sharpe_ratio ?? metrics.sharpeRatio ?? 0, format: 'num4' },
-            { label: 'Max Drawdown', value: metrics.max_drawdown ?? metrics.maxDrawdown ?? 0, format: 'percent' },
-          ];
-
-          metricsData.forEach(m => {
-            const metricItem = document.createElement('div');
-            metricItem.style.display = 'flex';
-            metricItem.style.flexDirection = 'column';
-            metricItem.style.minWidth = '100px';
-
-            const label = document.createElement('span');
-            label.style.fontSize = '0.75rem';
-            label.style.color = '#6b7280';
-            label.textContent = m.label;
-
-            const value = document.createElement('span');
-            value.style.fontSize = '0.9rem';
-            value.style.fontWeight = '600';
-            value.style.color = '#374151';
-
-            let displayValue: string;
-            if (m.format === 'percent') {
-              displayValue = `${(m.value * 100).toFixed(2)}%`;
-            } else {
-              displayValue = m.value.toFixed(4);
-            }
-            value.textContent = displayValue;
-
-            metricItem.appendChild(label);
-            metricItem.appendChild(value);
-            metricsDiv.appendChild(metricItem);
-          });
-
-          chartSection.appendChild(metricsDiv);
+          chartSection.appendChild(canvas);
 
           if (chartContainer) {
             chartContainer.appendChild(chartSection);
@@ -839,7 +776,7 @@ function initBacktest(): void {
 
         const request = {
           dataSource,
-          quantiles: 10,
+          quantiles: 5,
           weight_method: 'equal',
           long_top_n: 1,
           short_top_n: 1,
@@ -897,11 +834,9 @@ async function initAlphaSelection(): Promise<void> {
   });
 
   // Clear selection handler
-  clearBtn?.addEventListener('click', async () => {
+  clearBtn?.addEventListener('click', () => {
     selectedAlphasForBacktest = [];
     updateSelectedAlphasDisplay();
-    // Reload the alpha list to update checkboxes
-    await loadAlphasForSelection();
   });
 }
 
@@ -1226,7 +1161,6 @@ async function checkDbConnectionAndLoadTables(): Promise<void> {
     if (config.connected) {
       await loadBacktestTables();
       await loadMiningTables();
-      await loadAlphaTables();
     }
   } catch (error) {
     console.error('Failed to check DB connection:', error);
@@ -1421,62 +1355,6 @@ async function loadMiningTables(): Promise<void> {
   } finally {
     refreshBtn.disabled = false;
     refreshBtn.textContent = 'Refresh';
-  }
-}
-
-async function loadAlphaTables(): Promise<void> {
-  const tableSelect = document.getElementById('alphaTableSelect') as HTMLSelectElement;
-  const refreshBtn = document.getElementById('refreshAlphaTablesBtn') as HTMLButtonElement;
-  const startDateInput = document.getElementById('alphaStartDate') as HTMLInputElement;
-  const endDateInput = document.getElementById('alphaEndDate') as HTMLInputElement;
-
-  if (!tableSelect) return;
-
-  // Set default date range
-  const today = new Date();
-  const oneYearAgo = new Date();
-  oneYearAgo.setFullYear(today.getFullYear() - 1);
-
-  if (startDateInput) {
-    startDateInput.value = oneYearAgo.toISOString().split('T')[0];
-  }
-  if (endDateInput) {
-    endDateInput.value = today.toISOString().split('T')[0];
-  }
-
-  // Check if database is connected first
-  try {
-    const config = await getDbConfig();
-    if (!config.connected) {
-      console.log('Database not connected, skipping table load');
-      return;
-    }
-  } catch (error) {
-    console.log('Cannot connect to server, skipping table load');
-    return;
-  }
-
-  if (refreshBtn) {
-    refreshBtn.disabled = true;
-    refreshBtn.textContent = 'Loading...';
-  }
-
-  try {
-    const tables = await getTables({ database: 'default' });
-    tableSelect.innerHTML = '<option value="">-- Select Table --</option>';
-    tables.forEach(table => {
-      const option = document.createElement('option');
-      option.value = table;
-      option.textContent = table;
-      tableSelect.appendChild(option);
-    });
-  } catch (error) {
-    console.error('Failed to load tables:', error);
-  } finally {
-    if (refreshBtn) {
-      refreshBtn.disabled = false;
-      refreshBtn.textContent = 'Refresh';
-    }
   }
 }
 
@@ -1751,12 +1629,6 @@ async function initAlphaLibrary(): Promise<void> {
   // Load alphas on init
   loadAlphas();
 
-  // Set up refresh button for alpha tables
-  const refreshAlphaTablesBtn = document.getElementById('refreshAlphaTablesBtn') as HTMLButtonElement;
-  refreshAlphaTablesBtn?.addEventListener('click', async () => {
-    await loadAlphaTables();
-  });
-
   async function loadAlphas(): Promise<void> {
     try {
       const response = await listAlphas();
@@ -1823,129 +1695,34 @@ async function initAlphaLibrary(): Promise<void> {
     alphaDetail?.classList.remove('hidden');
     saveAlphaForm?.classList.add('hidden');
 
-    // Show preview metrics, hide backtest results
-    const backtestResults = document.getElementById('alphaBacktestResults');
-    const previewMetrics = document.getElementById('alphaMetricsPreview');
-    if (backtestResults) backtestResults.classList.add('hidden');
-    if (previewMetrics) previewMetrics.classList.remove('hidden');
-
-    // Clear previous chart
-    const alphaBacktestChart = document.getElementById('alphaBacktestChart') as HTMLCanvasElement;
-    if (alphaBacktestChart) {
-      const ctx = alphaBacktestChart.getContext('2d');
-      if (ctx) ctx.clearRect(0, 0, alphaBacktestChart.width, alphaBacktestChart.height);
+    // Clear previous chart and metrics
+    const alphaChart = document.getElementById('alphaChart') as HTMLCanvasElement;
+    if (alphaChart) {
+      const ctx = alphaChart.getContext('2d');
+      if (ctx) ctx.clearRect(0, 0, alphaChart.width, alphaChart.height);
     }
-    destroyChart();
-
-    // Clear preview metrics
-    const alphaIcMeanEl = document.getElementById('alphaIcMeanPreview');
-    const alphaIcIrEl = document.getElementById('alphaIcIrPreview');
+    const alphaIcMeanEl = document.getElementById('alphaIcMean');
+    const alphaIcIrEl = document.getElementById('alphaIcIr');
     if (alphaIcMeanEl) alphaIcMeanEl.textContent = '--';
     if (alphaIcIrEl) alphaIcIrEl.textContent = '--';
-
-    // Clear backtest result metrics
-    const backtestMetricIds = ['alphaIcMean', 'alphaIcIr', 'alphaTotalReturn', 'alphaAnnReturn', 'alphaSharpe', 'alphaMaxDd', 'alphaTurnover'];
-    backtestMetricIds.forEach(id => {
-      const el = document.getElementById(id);
-      if (el) el.textContent = '--';
-    });
   }
 
-  // Run Backtest button handler - run backtest directly on alpha detail page
+  // Run Backtest button handler
   const runAlphaBacktestBtn = document.getElementById('runAlphaBacktest') as HTMLButtonElement;
   runAlphaBacktestBtn?.addEventListener('click', async () => {
-    if (!selectedAlpha) {
-      alert('No alpha selected');
-      return;
-    }
+    if (!selectedAlpha) return;
 
-    // Get data source from local alpha page controls
-    const tableSelect = document.getElementById('alphaTableSelect') as HTMLSelectElement;
-    const startDateInput = document.getElementById('alphaStartDate') as HTMLInputElement;
-    const endDateInput = document.getElementById('alphaEndDate') as HTMLInputElement;
-
-    if (!tableSelect?.value) {
-      alert('Please select a data source table');
-      return;
-    }
-
-    if (!startDateInput?.value || !endDateInput?.value) {
-      alert('Please set the date range');
-      return;
-    }
-
-    const dataSource: DataSourceConfig = {
-      table: tableSelect.value,
-      startDate: startDateInput.value,
-      endDate: endDateInput.value,
+    // Store the alpha and navigate to Backtest page
+    pendingAlphaBacktest = {
+      expression: selectedAlpha.expression,
+      name: selectedAlpha.name,
     };
 
-    // Show loading state
-    runAlphaBacktestBtn.disabled = true;
-    runAlphaBacktestBtn.textContent = 'Running...';
+    // Navigate to Backtest page
+    navigateTo('backtest');
 
-    try {
-      // Step 1: Compute the factor (returns cache_id)
-      console.log('Computing factor:', selectedAlpha.expression);
-      const computeRes = await computeFactor({
-        factorId: selectedAlpha.expression,
-        dataSource,
-      });
-
-      if (!computeRes.cache_id) {
-        throw new Error('Failed to compute factor: no cache_id returned');
-      }
-
-      // Step 2: Run backtest using cacheId
-      console.log('Running backtest with cacheId:', computeRes.cache_id);
-      const backtestRes = await runBacktest({
-        cacheId: computeRes.cache_id,
-        quantiles: 10,
-        weight_method: 'equal',
-        long_top_n: 1,
-        short_top_n: 1,
-      });
-
-      // Step 3: Display results on alpha detail page
-      // Show backtest results section, hide preview metrics
-      const backtestResults = document.getElementById('alphaBacktestResults');
-      const previewMetrics = document.getElementById('alphaMetricsPreview');
-      if (backtestResults) backtestResults.classList.remove('hidden');
-      if (previewMetrics) previewMetrics.classList.add('hidden');
-
-      // Update metrics
-      const metrics = backtestRes.metrics;
-      const metricsMap: Record<string, string | undefined> = {
-        alphaIcMean: metrics.ic_mean !== undefined ? metrics.ic_mean.toFixed(4) : (metrics.icMean?.toFixed(4) ?? '--'),
-        alphaIcIr: metrics.ic_ir !== undefined ? metrics.ic_ir.toFixed(4) : (metrics.icIr?.toFixed(4) ?? '--'),
-        alphaTotalReturn: metrics.total_return !== undefined ? formatPercent(metrics.total_return) : formatPercent(metrics.totalReturn),
-        alphaAnnReturn: metrics.annualized_return !== undefined ? formatPercent(metrics.annualized_return) : formatPercent(metrics.annualizedReturn),
-        alphaSharpe: metrics.sharpe_ratio !== undefined ? metrics.sharpe_ratio.toFixed(4) : (metrics.sharpeRatio?.toFixed(4) ?? '--'),
-        alphaMaxDd: metrics.max_drawdown !== undefined ? formatPercent(metrics.max_drawdown) : formatPercent(metrics.maxDrawdown),
-        alphaTurnover: metrics.turnover !== undefined ? formatPercent(metrics.turnover) : '--',
-      };
-
-      for (const [id, value] of Object.entries(metricsMap)) {
-        const el = document.getElementById(id);
-        if (el) el.textContent = value ?? '--';
-      }
-
-      // Render chart
-      const chartCanvas = document.getElementById('alphaBacktestChart') as HTMLCanvasElement;
-      if (chartCanvas) {
-        destroyChart(); // Destroy previous charts
-        renderChart(backtestRes, chartCanvas);
-      }
-
-      console.log('Backtest completed:', backtestRes);
-    } catch (error) {
-      console.error('Backtest failed:', error);
-      alert(`Backtest failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-      alert(`Backtest failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    } finally {
-      runAlphaBacktestBtn.disabled = false;
-      runAlphaBacktestBtn.textContent = 'Run Backtest';
-    }
+    // Clear the pending alpha after navigation
+    pendingAlphaBacktest = null;
   });
 
   // GP Mining button handler - navigate to GP Mining page

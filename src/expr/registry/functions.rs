@@ -9,9 +9,8 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 pub use crate::expr::registry::timeseries::{
-    decay_linear, delay, highday, lowday, rank, scale, sign, sma, ts_argmax, ts_argmin,
-    ts_correlation, ts_count, ts_cov, ts_delta, ts_max, ts_mean, ts_min, ts_product, ts_rank,
-    ts_std, ts_sum, wma,
+    decay_linear, delay, highday, lowday, rank, scale, sign, sma, ts_argmax, ts_argmin, ts_correlation,
+    ts_count, ts_cov, ts_delta, ts_max, ts_mean, ts_min, ts_product, ts_rank, ts_std, ts_sum, wma,
 };
 
 /// Extract column names from an expression
@@ -492,7 +491,9 @@ pub fn eval_expr_vectorized(
                 _ => vals,
             }
         }
-        Expr::FunctionCall { name, args } => eval_function_vectorized(name, args, data, cache)?,
+        Expr::FunctionCall { name, args } => {
+            eval_function_vectorized(name, args, data, cache)?
+        }
         _ => {
             let n_rows = data.values().next().map(|arr| arr.len()).unwrap_or(0);
             Array1::from_elem(n_rows, 0.0)
@@ -589,77 +590,49 @@ pub fn eval_function_vectorized(
             }
             let mut result = arg_values[0].clone();
             for i in 0..result.len() {
-                result[i] = if arg_values[0][i] > 0.0 {
-                    arg_values[1][i]
-                } else {
-                    arg_values[2][i]
-                };
+                result[i] = if arg_values[0][i] > 0.0 { arg_values[1][i] } else { arg_values[2][i] };
             }
             Ok(result)
         }
         "gt" | "greater" => {
             let mut result = arg_values[0].clone();
             for i in 0..result.len() {
-                result[i] = if arg_values[0][i] > arg_values[1][i] {
-                    1.0
-                } else {
-                    0.0
-                };
+                result[i] = if arg_values[0][i] > arg_values[1][i] { 1.0 } else { 0.0 };
             }
             Ok(result)
         }
         "lt" | "less" => {
             let mut result = arg_values[0].clone();
             for i in 0..result.len() {
-                result[i] = if arg_values[0][i] < arg_values[1][i] {
-                    1.0
-                } else {
-                    0.0
-                };
+                result[i] = if arg_values[0][i] < arg_values[1][i] { 1.0 } else { 0.0 };
             }
             Ok(result)
         }
         "ge" | "greater_equal" | "gte" => {
             let mut result = arg_values[0].clone();
             for i in 0..result.len() {
-                result[i] = if arg_values[0][i] >= arg_values[1][i] {
-                    1.0
-                } else {
-                    0.0
-                };
+                result[i] = if arg_values[0][i] >= arg_values[1][i] { 1.0 } else { 0.0 };
             }
             Ok(result)
         }
         "le" | "less_equal" | "lte" => {
             let mut result = arg_values[0].clone();
             for i in 0..result.len() {
-                result[i] = if arg_values[0][i] <= arg_values[1][i] {
-                    1.0
-                } else {
-                    0.0
-                };
+                result[i] = if arg_values[0][i] <= arg_values[1][i] { 1.0 } else { 0.0 };
             }
             Ok(result)
         }
         "eq" | "equal" => {
             let mut result = arg_values[0].clone();
             for i in 0..result.len() {
-                result[i] = if (arg_values[0][i] - arg_values[1][i]).abs() < 1e-10 {
-                    1.0
-                } else {
-                    0.0
-                };
+                result[i] = if (arg_values[0][i] - arg_values[1][i]).abs() < 1e-10 { 1.0 } else { 0.0 };
             }
             Ok(result)
         }
         "ne" | "not_equal" => {
             let mut result = arg_values[0].clone();
             for i in 0..result.len() {
-                result[i] = if (arg_values[0][i] - arg_values[1][i]).abs() >= 1e-10 {
-                    1.0
-                } else {
-                    0.0
-                };
+                result[i] = if (arg_values[0][i] - arg_values[1][i]).abs() >= 1e-10 { 1.0 } else { 0.0 };
             }
             Ok(result)
         }
@@ -702,11 +675,7 @@ pub fn eval_ts_function_vectorized(
         "sma" => {
             let m = args.get(2).and_then(|a| get_literal_int(a)).unwrap_or(2);
             let alpha = m as f64 / window as f64;
-            let alpha = if alpha > 0.0 && alpha <= 1.0 {
-                alpha
-            } else {
-                0.5
-            };
+            let alpha = if alpha > 0.0 && alpha <= 1.0 { alpha } else { 0.5 };
             Ok(sma(vals_slice, alpha).into())
         }
         "lowday" => Ok(lowday(vals_slice, window).into()),

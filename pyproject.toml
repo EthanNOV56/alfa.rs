@@ -4,8 +4,8 @@ build-backend = "maturin"
 
 [project]
 name = "alfars"
-version = "0.4.2"
-description = "High-performance quant workflow with Rust core and Python bindings."
+version = "0.4.1"
+description = "High-performance factor expression and backtesting library (Rust + PyO3)"
 readme = "README.md"
 requires-python = ">=3.8"
 license = {text = "MIT OR Apache-2.0"}

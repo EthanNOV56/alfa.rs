@@ -10,9 +10,9 @@ use ndarray::Array2;
 use crate::expr::Expr;
 
 // Re-export types from submodules
-pub use super::executor::LazyExecutor;
 pub use super::frame::{LazyFrame, LazyFrameBuilder};
 pub use super::optimizer::LazyOptimizer;
+pub use super::executor::LazyExecutor;
 pub use super::plan::{
     DataFormat, DataSource, JoinType, LogicalPlan, OptimizationLevel, StatefulExpr, WindowKind,
     WindowSpec,
@@ -72,7 +72,9 @@ mod tests {
             "close".to_string(),
             Array2::from_shape_vec(
                 (3, 4),
-                vec![1.0, 2.0, 3.0, 4.0, 4.0, 3.0, 2.0, 1.0, 2.0, 3.0, 4.0, 1.0],
+                vec![
+                    1.0, 2.0, 3.0, 4.0, 4.0, 3.0, 2.0, 1.0, 2.0, 3.0, 4.0, 1.0,
+                ],
             )
             .unwrap(),
         );
@@ -81,8 +83,7 @@ mod tests {
             Array2::from_shape_vec(
                 (3, 4),
                 vec![
-                    100.0, 200.0, 300.0, 400.0, 400.0, 300.0, 200.0, 100.0, 200.0, 300.0, 400.0,
-                    100.0,
+                    100.0, 200.0, 300.0, 400.0, 400.0, 300.0, 200.0, 100.0, 200.0, 300.0, 400.0, 100.0,
                 ],
             )
             .unwrap(),
@@ -106,11 +107,7 @@ mod tests {
         };
 
         match &plan {
-            LogicalPlan::Scan {
-                source,
-                projection,
-                selection,
-            } => {
+            LogicalPlan::Scan { source, projection, selection } => {
                 assert!(matches!(source, DataSource::NumpyArrays(_)));
                 assert!(projection.is_some());
                 assert!(selection.is_none());
@@ -129,7 +126,9 @@ mod tests {
             selection: None,
         });
 
-        let exprs = vec![("return".to_string(), Expr::col("close"))];
+        let exprs = vec![
+            ("return".to_string(), Expr::col("close")),
+        ];
 
         let plan = LogicalPlan::Projection {
             input: input.clone(),
@@ -137,10 +136,7 @@ mod tests {
         };
 
         match &plan {
-            LogicalPlan::Projection {
-                input: p_input,
-                exprs: p_exprs,
-            } => {
+            LogicalPlan::Projection { input: p_input, exprs: p_exprs } => {
                 assert!(Arc::ptr_eq(&input, p_input));
                 assert_eq!(p_exprs.len(), 1);
             }
@@ -166,10 +162,7 @@ mod tests {
         };
 
         match &plan {
-            LogicalPlan::Filter {
-                input: p_input,
-                predicate: p_pred,
-            } => {
+            LogicalPlan::Filter { input: p_input, predicate: p_pred } => {
                 assert!(Arc::ptr_eq(&input, p_input));
                 assert!(matches!(p_pred, Expr::BinaryExpr { .. }));
             }
@@ -265,10 +258,7 @@ mod tests {
         };
 
         match &plan {
-            LogicalPlan::Cache {
-                input: c_input,
-                key,
-            } => {
+            LogicalPlan::Cache { input: c_input, key } => {
                 assert!(Arc::ptr_eq(&input, c_input));
                 assert_eq!(key, "test_cache");
             }
@@ -417,11 +407,7 @@ mod tests {
         let lf = LazyFrame::scan(source);
 
         match &*lf.logical_plan {
-            LogicalPlan::Scan {
-                source,
-                projection,
-                selection,
-            } => {
+            LogicalPlan::Scan { source, projection, selection } => {
                 assert!(matches!(source, DataSource::NumpyArrays(_)));
                 assert!(projection.is_none());
                 assert!(selection.is_none());
@@ -435,7 +421,10 @@ mod tests {
         let data = create_test_data();
         let source = DataSource::NumpyArrays(data);
 
-        let lf = LazyFrame::scan(source).with_columns(vec![("return", Expr::col("close"))]);
+        let lf = LazyFrame::scan(source)
+            .with_columns(vec![
+                ("return", Expr::col("close")),
+            ]);
 
         match &*lf.logical_plan {
             LogicalPlan::Projection { exprs, .. } => {
@@ -474,7 +463,8 @@ mod tests {
             min_periods: 1,
         };
 
-        let lf = LazyFrame::scan(source).with_window(Expr::col("close"), window_spec, "ma_close");
+        let lf = LazyFrame::scan(source)
+            .with_window(Expr::col("close"), window_spec, "ma_close");
 
         match &*lf.logical_plan {
             LogicalPlan::Window { output_name, .. } => {
@@ -491,7 +481,8 @@ mod tests {
 
         let expr = StatefulExpr::CumSum(Expr::col("close"));
 
-        let lf = LazyFrame::scan(source).with_stateful(expr, "cumsum_close");
+        let lf = LazyFrame::scan(source)
+            .with_stateful(expr, "cumsum_close");
 
         match &*lf.logical_plan {
             LogicalPlan::Stateful { output_name, .. } => {
@@ -542,7 +533,9 @@ mod tests {
 
         let lf = LazyFrame::scan(source)
             .filter(Expr::col("close"))
-            .with_columns(vec![("ma5", Expr::col("close"))])
+            .with_columns(vec![
+                ("ma5", Expr::col("close")),
+            ])
             .with_stateful(StatefulExpr::CumSum(Expr::col("ma5")), "cumsum_ma5")
             .cache(Some("chained_cache"));
 
@@ -554,10 +547,7 @@ mod tests {
 
         // Verify optimization level is preserved
         let lf2 = lf.optimization_level(OptimizationLevel::Aggressive);
-        assert!(matches!(
-            lf2.optimization_level,
-            OptimizationLevel::Aggressive
-        ));
+        assert!(matches!(lf2.optimization_level, OptimizationLevel::Aggressive));
     }
 
     // ========================================================================
@@ -656,10 +646,12 @@ mod tests {
         // Original: Filter -> Projection -> Scan
         // After optimization: Projection -> Filter -> Scan
         match &optimized {
-            LogicalPlan::Projection { input, .. } => match &**input {
-                LogicalPlan::Filter { .. } => {}
-                other => panic!("Expected filter inside projection, got {:?}", other),
-            },
+            LogicalPlan::Projection { input, .. } => {
+                match &**input {
+                    LogicalPlan::Filter { .. } => {}
+                    other => panic!("Expected filter inside projection, got {:?}", other),
+                }
+            }
             other => panic!("Expected projection at top, got {:?}", other),
         }
     }
@@ -739,10 +731,9 @@ mod tests {
                 projection: None,
                 selection: None,
             }),
-            exprs: vec![(
-                "double_close".to_string(),
-                Expr::col("close") * Expr::lit(2.0),
-            )],
+            exprs: vec![
+                ("double_close".to_string(), Expr::col("close") * Expr::lit(2.0)),
+            ],
         };
 
         let mut executor = LazyExecutor::new();
@@ -924,15 +915,13 @@ mod tests {
         let data = create_test_data();
         let source = DataSource::NumpyArrays(data);
 
-        let lf = LazyFrame::scan(source).optimization_level(OptimizationLevel::None);
+        let lf = LazyFrame::scan(source)
+            .optimization_level(OptimizationLevel::None);
 
         assert!(matches!(lf.optimization_level, OptimizationLevel::None));
 
         let lf2 = lf.optimization_level(OptimizationLevel::Aggressive);
-        assert!(matches!(
-            lf2.optimization_level,
-            OptimizationLevel::Aggressive
-        ));
+        assert!(matches!(lf2.optimization_level, OptimizationLevel::Aggressive));
     }
 
     #[test]
@@ -1076,10 +1065,9 @@ mod tests {
         // Full pipeline: scan -> filter -> projection -> window -> stateful -> cache
         let result = LazyFrameBuilder::scan(source)
             .filter(Expr::col("close").gt(Expr::lit(1.0)))
-            .with_columns(vec![(
-                "return".to_string(),
-                Expr::col("close") * Expr::lit(2.0),
-            )])
+            .with_columns(vec![
+                ("return".to_string(), Expr::col("close") * Expr::lit(2.0)),
+            ])
             .with_window(
                 Expr::col("close"),
                 WindowSpec {
@@ -1089,7 +1077,10 @@ mod tests {
                 },
                 "ma_close",
             )
-            .with_stateful(StatefulExpr::CumSum(Expr::col("return")), "cumsum_return")
+            .with_stateful(
+                StatefulExpr::CumSum(Expr::col("return")),
+                "cumsum_return",
+            )
             .cache(Some("full_pipeline"))
             .optimization_level(OptimizationLevel::Default)
             .collect()

@@ -150,16 +150,13 @@ impl FactorRegistry {
         let mut expr_hash_set: HashSet<u64> = HashSet::new();
         // Store owned expressions to keep them alive
         let mut factor_exprs_owned: Vec<Expr> = Vec::new();
-        let mut skipped_names: Vec<String> = Vec::new();
         let mut factor_exprs: Vec<(String, &Expr)> = Vec::new();
 
         for name in names {
-            let info = match self.factors.get(*name) {
-                Some(info) => info,
-                None => {
-                    continue;
-                }
-            };
+            let info = self
+                .factors
+                .get(*name)
+                .ok_or_else(|| format!("Factor '{}' not found", name))?;
 
             // Extract the expression from plan (unwrap from Projection)
             let expr = match &info.plan {
@@ -167,10 +164,7 @@ impl FactorRegistry {
                     .first()
                     .map(|(_, e)| e.clone())
                     .ok_or("Empty expression")?,
-                _ => {
-                    skipped_names.push(name.to_string());
-                    continue;
-                }
+                _ => continue,
             };
 
             // Collect subexpressions
@@ -178,24 +172,9 @@ impl FactorRegistry {
             factor_exprs_owned.push(expr);
         }
 
-        // Step 1b: Deduplicate factor names and build final list
-        // (avoids HashMap overwrite issues when duplicate names are passed)
-        let mut seen_names: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        let mut idx = 0;
-        for name in names {
-            // Skip factors that were not found or had wrong plan type
-            if skipped_names.contains(&name.to_string()) {
-                continue;
-            }
-            // Skip duplicates - only keep first occurrence
-            if seen_names.contains(name) {
-                continue;
-            }
-            if idx < factor_exprs_owned.len() {
-                seen_names.insert(name);
-                factor_exprs.push((name.to_string(), &factor_exprs_owned[idx]));
-                idx += 1;
-            }
+        // Build references after all owned expressions are created
+        for (i, name) in names.iter().enumerate() {
+            factor_exprs.push((name.to_string(), &factor_exprs_owned[i]));
         }
 
         // Step 2: Build cache using memoization - compute on demand
@@ -221,10 +200,6 @@ impl FactorRegistry {
             // Parallel computation using rayon
             use rayon::prelude::*;
 
-            // Collect errors separately using a mutex
-            use std::sync::Mutex;
-            let failed_names: Mutex<Vec<String>> = Mutex::new(Vec::new());
-
             let results_vec: Vec<(String, FactorResult)> = factor_exprs
                 .par_iter()
                 .filter_map(|(name, expr)| {
@@ -241,61 +216,29 @@ impl FactorRegistry {
                             },
                         )),
                         Err(e) => {
-                            if failed_names.lock().unwrap().len() < 20 {
-                                failed_names
-                                    .lock()
-                                    .unwrap()
-                                    .push(format!("{}: {}", name, e));
-                            }
+                            eprintln!("Error computing {}: {}", name, e);
                             None
                         }
                     }
                 })
                 .collect();
 
-            let failed = failed_names.lock().unwrap();
-            if !failed.is_empty() {
-                eprintln!(
-                    "Warning: {} factors failed to compute: {:?}",
-                    failed.len(),
-                    failed
-                );
-            }
-            drop(failed);
-
             for (name, result) in results_vec {
                 results.insert(name, result);
             }
         } else {
             // Sequential computation
-            let n_total = factor_exprs.len();
-            let mut failed_names: Vec<String> = Vec::new();
-            for (name, expr) in factor_exprs.iter() {
-                match eval_expr_memoized(expr, data, n_rows, &mut cache) {
-                    Ok(result) => {
-                        results.insert(
-                            name.clone(),
-                            FactorResult {
-                                name: name.clone(),
-                                values: result,
-                                n_rows,
-                                n_cols: 1,
-                                compute_time_ms: 0,
-                            },
-                        );
-                    }
-                    Err(e) => {
-                        if failed_names.len() < 20 {
-                            failed_names.push(format!("{}: {}", name, e));
-                        }
-                    }
-                }
-            }
-            if !failed_names.is_empty() {
-                eprintln!(
-                    "Warning: {} factors failed to compute: {:?}",
-                    failed_names.len(),
-                    failed_names
+            for (name, expr) in factor_exprs {
+                let result = eval_expr_memoized(expr, data, n_rows, &mut cache)?;
+                results.insert(
+                    name.clone(),
+                    FactorResult {
+                        name,
+                        values: result,
+                        n_rows,
+                        n_cols: 1,
+                        compute_time_ms: 0,
+                    },
                 );
             }
         }

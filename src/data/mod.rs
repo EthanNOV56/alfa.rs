@@ -4,11 +4,9 @@
 //! for connecting to various data backends.
 
 pub mod clickhouse;
-pub mod derivation;
 pub mod source;
 
 pub use clickhouse::ClickHouseSource;
-pub use derivation::DataDerivation;
 pub use source::{DataError, DataSource};
 
 use ndarray::Array1;

@@ -1,8 +1,8 @@
 [package]
 name = "alfars"
-version = "0.4.2"
+version = "0.4.1"
 edition = "2024"
-description = "High-performance quant workflow with Rust core and Python bindings."
+description = "High-performance factor expression and backtesting library (Rust + PyO3)"
 authors = ["EthanNOV56 <yichen_1226@163.com>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/EthanNOV56/alfa.rs"

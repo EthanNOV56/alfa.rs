@@ -200,9 +200,7 @@ fn evaluate_function_vectorized(
         }
         "diff" => {
             if args.len() != 2 {
-                return Err(
-                    "diff function requires 2 arguments: expression and periods".to_string()
-                );
+                return Err("diff function requires 2 arguments: expression and periods".to_string());
             }
             let series = evaluate_expr_on_dataframe(&args[0], df)?;
             let periods = match &args[1] {
@@ -213,9 +211,7 @@ fn evaluate_function_vectorized(
         }
         "pct_change" => {
             if args.len() != 2 {
-                return Err(
-                    "pct_change function requires 2 arguments: expression and periods".to_string(),
-                );
+                return Err("pct_change function requires 2 arguments: expression and periods".to_string());
             }
             let series = evaluate_expr_on_dataframe(&args[0], df)?;
             let periods = match &args[1] {
@@ -226,10 +222,7 @@ fn evaluate_function_vectorized(
         }
         "moving_average" => {
             if args.len() != 2 {
-                return Err(
-                    "moving_average function requires 2 arguments: expression and window"
-                        .to_string(),
-                );
+                return Err("moving_average function requires 2 arguments: expression and window".to_string());
             }
             let series = evaluate_expr_on_dataframe(&args[0], df)?;
             let window = match &args[1] {
@@ -240,9 +233,7 @@ fn evaluate_function_vectorized(
         }
         "ts_mean" | "mean" => {
             if args.len() != 2 {
-                return Err(
-                    "ts_mean function requires 2 arguments: expression and window".to_string(),
-                );
+                return Err("ts_mean function requires 2 arguments: expression and window".to_string());
             }
             let series = evaluate_expr_on_dataframe(&args[0], df)?;
             let window = match &args[1] {
@@ -253,9 +244,7 @@ fn evaluate_function_vectorized(
         }
         "ts_std" | "std" => {
             if args.len() != 2 {
-                return Err(
-                    "ts_std function requires 2 arguments: expression and window".to_string(),
-                );
+                return Err("ts_std function requires 2 arguments: expression and window".to_string());
             }
             let series = evaluate_expr_on_dataframe(&args[0], df)?;
             let window = match &args[1] {
@@ -270,9 +259,7 @@ fn evaluate_function_vectorized(
         }
         "volatility" => {
             if args.len() != 2 {
-                return Err(
-                    "volatility function requires 2 arguments: expression and periods".to_string(),
-                );
+                return Err("volatility function requires 2 arguments: expression and periods".to_string());
             }
             let series = evaluate_expr_on_dataframe(&args[0], df)?;
             let periods = match &args[1] {
@@ -301,9 +288,7 @@ fn evaluate_function_vectorized(
         }
         "ts_rank" => {
             if args.len() != 2 {
-                return Err(
-                    "ts_rank function requires 2 arguments: expression and window".to_string(),
-                );
+                return Err("ts_rank function requires 2 arguments: expression and window".to_string());
             }
             let series = evaluate_expr_on_dataframe(&args[0], df)?;
             let window = match &args[1] {
@@ -314,9 +299,7 @@ fn evaluate_function_vectorized(
         }
         "ts_max" => {
             if args.len() != 2 {
-                return Err(
-                    "ts_max function requires 2 arguments: expression and window".to_string(),
-                );
+                return Err("ts_max function requires 2 arguments: expression and window".to_string());
             }
             let series = evaluate_expr_on_dataframe(&args[0], df)?;
             let window = match &args[1] {
@@ -327,9 +310,7 @@ fn evaluate_function_vectorized(
         }
         "ts_min" => {
             if args.len() != 2 {
-                return Err(
-                    "ts_min function requires 2 arguments: expression and window".to_string(),
-                );
+                return Err("ts_min function requires 2 arguments: expression and window".to_string());
             }
             let series = evaluate_expr_on_dataframe(&args[0], df)?;
             let window = match &args[1] {
@@ -340,9 +321,7 @@ fn evaluate_function_vectorized(
         }
         "ts_sum" => {
             if args.len() != 2 {
-                return Err(
-                    "ts_sum function requires 2 arguments: expression and window".to_string(),
-                );
+                return Err("ts_sum function requires 2 arguments: expression and window".to_string());
             }
             let series = evaluate_expr_on_dataframe(&args[0], df)?;
             let window = match &args[1] {
@@ -353,9 +332,7 @@ fn evaluate_function_vectorized(
         }
         "ts_argmax" => {
             if args.len() != 2 {
-                return Err(
-                    "ts_argmax function requires 2 arguments: expression and window".to_string(),
-                );
+                return Err("ts_argmax function requires 2 arguments: expression and window".to_string());
             }
             let series = evaluate_expr_on_dataframe(&args[0], df)?;
             let window = match &args[1] {
@@ -366,9 +343,7 @@ fn evaluate_function_vectorized(
         }
         "ts_argmin" => {
             if args.len() != 2 {
-                return Err(
-                    "ts_argmin function requires 2 arguments: expression and window".to_string(),
-                );
+                return Err("ts_argmin function requires 2 arguments: expression and window".to_string());
             }
             let series = evaluate_expr_on_dataframe(&args[0], df)?;
             let window = match &args[1] {
@@ -418,9 +393,7 @@ fn evaluate_function_vectorized(
         }
         "power" => {
             if args.len() != 2 {
-                return Err(
-                    "power function requires 2 arguments: expression and exponent".to_string(),
-                );
+                return Err("power function requires 2 arguments: expression and exponent".to_string());
             }
             let series = evaluate_expr_on_dataframe(&args[0], df)?;
             let exp = match &args[1] {
@@ -432,9 +405,7 @@ fn evaluate_function_vectorized(
         }
         "scale" => {
             if args.len() != 2 {
-                return Err(
-                    "scale function requires 2 arguments: expression and window".to_string()
-                );
+                return Err("scale function requires 2 arguments: expression and window".to_string());
             }
             let series = evaluate_expr_on_dataframe(&args[0], df)?;
             let window = match &args[1] {
@@ -445,10 +416,7 @@ fn evaluate_function_vectorized(
         }
         "decay_linear" => {
             if args.len() != 2 {
-                return Err(
-                    "decay_linear function requires 2 arguments: expression and periods"
-                        .to_string(),
-                );
+                return Err("decay_linear function requires 2 arguments: expression and periods".to_string());
             }
             let series = evaluate_expr_on_dataframe(&args[0], df)?;
             let periods = match &args[1] {
@@ -845,9 +813,7 @@ mod tests {
     #[test]
     fn test_dataframe_with_column() {
         let df = DataFrame::new();
-        let df = df
-            .with_column("a", Series::new(vec![1.0, 2.0, 3.0]))
-            .unwrap();
+        let df = df.with_column("a", Series::new(vec![1.0, 2.0, 3.0])).unwrap();
         assert_eq!(df.n_rows(), 3);
         assert_eq!(df.n_cols(), 1);
     }
@@ -855,9 +821,7 @@ mod tests {
     #[test]
     fn test_dataframe_with_column_mismatched_length() {
         let df = DataFrame::new();
-        let df = df
-            .with_column("a", Series::new(vec![1.0, 2.0, 3.0]))
-            .unwrap();
+        let df = df.with_column("a", Series::new(vec![1.0, 2.0, 3.0])).unwrap();
         let result = df.with_column("b", Series::new(vec![1.0, 2.0]));
         assert!(result.is_err());
     }
@@ -1182,8 +1146,11 @@ mod tests {
 
     #[test]
     fn test_create_backtest_dataframe() {
-        let prices =
-            Array2::from_shape_vec((3, 2), vec![100.0, 200.0, 105.0, 210.0, 110.0, 220.0]).unwrap();
+        let prices = Array2::from_shape_vec((3, 2), vec![
+            100.0, 200.0,
+            105.0, 210.0,
+            110.0, 220.0,
+        ]).unwrap();
 
         let symbols = &["AAPL", "GOOG"];
         let result = create_backtest_dataframe(prices, symbols).unwrap();

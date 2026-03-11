@@ -993,19 +993,17 @@ impl PyBacktestEngine {
         &self,
         factor: Bound<'_, PyArray2<f64>>,
         returns: Bound<'_, PyArray2<f64>>,
-        adj_factor: Bound<'_, PyArray2<f64>>,
-        close: Bound<'_, PyArray2<f64>>,
-        vwap: Bound<'_, PyArray2<f64>>,
+        adj_factor: Option<Bound<'_, PyArray2<f64>>>,
+        volume: Option<Bound<'_, PyArray2<f64>>>,
     ) -> PyResult<PyBacktestResult> {
         let factor_array = factor.readonly().as_array().to_owned();
         let returns_array = returns.readonly().as_array().to_owned();
-        let adj_factor_array = adj_factor.readonly().as_array().to_owned();
-        let close_array = close.readonly().as_array().to_owned();
-        let vwap_array = vwap.readonly().as_array().to_owned();
+        let adj_factor_array = adj_factor.map(|a| a.readonly().as_array().to_owned());
+        let volume_array = volume.map(|v| v.readonly().as_array().to_owned());
 
         let engine = BacktestEngine::with_config(self.config.clone());
 
-        match engine.run(factor_array, returns_array, adj_factor_array, close_array, vwap_array) {
+        match engine.run(factor_array, returns_array, adj_factor_array, volume_array) {
             Ok(result) => Ok(PyBacktestResult::from(result)),
             Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(e)),
         }
@@ -1085,9 +1083,8 @@ fn quantile_backtest(
     long_top_n: usize,
     short_top_n: usize,
     commission_rate: f64,
-    adj_factor: Bound<'_, PyArray2<f64>>,
-    close: Bound<'_, PyArray2<f64>>,
-    vwap: Bound<'_, PyArray2<f64>>,
+    adj_factor: Option<Bound<'_, PyArray2<f64>>>,
+    volume: Option<Bound<'_, PyArray2<f64>>>,
 ) -> PyResult<PyBacktestResult> {
     let wmethod = match weight_method {
         "equal" => WeightMethod::Equal,
@@ -1117,11 +1114,10 @@ fn quantile_backtest(
 
     let factor_array = factor.readonly().as_array().to_owned();
     let returns_array = returns.readonly().as_array().to_owned();
-    let adj_factor_array = adj_factor.readonly().as_array().to_owned();
-    let close_array = close.readonly().as_array().to_owned();
-    let vwap_array = vwap.readonly().as_array().to_owned();
+    let adj_factor_array = adj_factor.map(|a| a.readonly().as_array().to_owned());
+    let volume_array = volume.map(|v| v.readonly().as_array().to_owned());
 
-    match engine.run(factor_array, returns_array, adj_factor_array, close_array, vwap_array) {
+    match engine.run(factor_array, returns_array, adj_factor_array, volume_array) {
         Ok(result) => Ok(PyBacktestResult::from(result)),
         Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(e)),
     }

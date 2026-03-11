@@ -1080,19 +1080,11 @@ mod integration_tests {
 
                 let engine = BacktestEngine::with_config(config);
 
-                // Create close and vwap as placeholder (using factor as proxy)
-                let close = aligned_factor.clone();
-                let vwap = aligned_factor.clone();
-
-                // adj_factor is now required - use None as ones if not available
-                let adj = aligned_adj.unwrap_or_else(|| Array2::from_elem(aligned_factor.dim(), 1.0));
-
                 match engine.run(
                     aligned_factor,
                     aligned_returns,
-                    adj,
-                    close,
-                    vwap,
+                    aligned_adj,
+                    None, // volume
                 ) {
                     Ok(result) => {
                         println!(
