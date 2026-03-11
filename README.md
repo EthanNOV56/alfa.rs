@@ -4,6 +4,15 @@
   <img src="assets/logo.png" alt="alfars" width="200"/>
 </p>
 
+**From epsilon to alpha.**
+
+```
+Informed  by data;
+Enlightened by research;
+Engineered with AI;
+Executed  with algorithms.
+```
+
 High-performance factor expression and backtesting framework with Rust core and Python bindings.
 
 [![Rust](https://github.com/EthanNOV56/alfa.rs/actions/workflows/rust.yml/badge.svg)](https://github.com/EthanNOV56/alfa.rs/actions)
@@ -183,16 +192,15 @@ alfars/
 ├── pyproject.toml          # Python project config
 ├── src/
 │   ├── lib.rs             # Core + Python bindings
-│   ├── expr.rs            # Expression system
-│   ├── expr_optimizer.rs  # Expression optimization
-│   ├── lazy.rs            # Lazy evaluation engine
-│   ├── gp.rs              # Genetic programming
-│   ├── backtest.rs        # Backtest engine
-│   ├── persistence.rs     # Factor storage
-│   ├── metalearning.rs    # Meta-learning
-│   ├── factor.rs          # Factor registry
-│   ├── bin/server.rs      # Rust HTTP server
-│   └── al_parser.rs       # Alpha file parser
+│   ├── al/                # Alpha file parser + factor store
+│   ├── backtest/          # Backtest engine
+│   ├── data/              # Data source abstraction
+│   ├── expr/              # Expression system (AST, optimizer, registry)
+│   ├── gp/                # Genetic programming + history + metalearning
+│   ├── lazy/              # Lazy evaluation engine
+│   ├── types/             # Series and DataFrame types
+│   ├── persistence.rs     # Persistence manager
+│   └── bin/server.rs      # Rust HTTP server
 ├── alfars/                # Python package
 │   ├── __init__.py
 │   ├── lab.py             # Interactive lab launcher
