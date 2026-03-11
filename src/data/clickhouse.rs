@@ -4,17 +4,16 @@
 
 use super::{DataError, DataSource};
 use crate::types::DataFrame;
+use std::collections::HashMap;
 
 /// ClickHouse data source
-///
-/// Note: This is a placeholder implementation. The actual ClickHouse
-/// integration is handled at the Python layer through clickhouse-connect.
 #[derive(Debug, Clone)]
 pub struct ClickHouseSource {
     host: String,
     port: u16,
     database: String,
     username: String,
+    password: Option<String>,
 }
 
 impl ClickHouseSource {
@@ -25,20 +24,24 @@ impl ClickHouseSource {
     /// - CLICKHOUSE_PORT (default: 8123)
     /// - CLICKHOUSE_DATABASE (default: "default")
     /// - CLICKHOUSE_USER (default: "default")
+    /// - CLICKHOUSE_PASSWORD (optional)
     pub fn from_env() -> Self {
         let host = std::env::var("CLICKHOUSE_HOST").unwrap_or_else(|_| "localhost".to_string());
         let port: u16 = std::env::var("CLICKHOUSE_PORT")
             .unwrap_or_else(|_| "8123".to_string())
             .parse()
             .unwrap_or(8123);
-        let database = std::env::var("CLICKHOUSE_DATABASE").unwrap_or_else(|_| "default".to_string());
+        let database =
+            std::env::var("CLICKHOUSE_DATABASE").unwrap_or_else(|_| "default".to_string());
         let username = std::env::var("CLICKHOUSE_USER").unwrap_or_else(|_| "default".to_string());
+        let password = std::env::var("CLICKHOUSE_PASSWORD").ok();
 
         ClickHouseSource {
             host,
             port,
             database,
             username,
+            password,
         }
     }
 
@@ -49,6 +52,7 @@ impl ClickHouseSource {
             port,
             database: database.to_string(),
             username: "default".to_string(),
+            password: None,
         }
     }
 
@@ -59,6 +63,7 @@ impl ClickHouseSource {
             port,
             database: database.to_string(),
             username: username.to_string(),
+            password: None,
         }
     }
 
@@ -81,29 +86,194 @@ impl ClickHouseSource {
     pub fn username(&self) -> &str {
         &self.username
     }
+
+    /// Build the ClickHouse HTTP URL
+    fn build_url(&self) -> String {
+        format!("http://{}:{}/", self.host, self.port)
+    }
+
+    /// Execute a SQL query and return results as HashMap
+    pub fn query_to_hashmap(&self, sql: &str) -> Result<HashMap<String, Vec<f64>>, DataError> {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| DataError::Connection(format!("Failed to create client: {}", e)))?;
+
+        // Build query string - use GET request style (URL parameters)
+        let mut url = format!(
+            "{}?database={}&default_format=JSON&query={}",
+            self.build_url(),
+            self.database,
+            urlencoding::encode(sql)
+        );
+        if !self.username.is_empty() {
+            url.push_str(&format!("&user={}", self.username));
+        }
+        if let Some(ref password) = self.password {
+            url.push_str(&format!("&password={}", password));
+        }
+
+        let response = client
+            .get(&url)
+            .send()
+            .map_err(|e| DataError::Connection(format!("Failed to connect: {}", e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().unwrap_or_default();
+            return Err(DataError::Query(format!("HTTP {}: {}", status, text)));
+        }
+
+        // Parse JSON response
+        let json: serde_json::Value = response
+            .json()
+            .map_err(|e| DataError::Query(format!("Failed to parse JSON: {}", e)))?;
+
+        // ClickHouse returns data in "data" array with "columns" and "data"
+        let data = json.get("data").and_then(|v| v.as_array()).ok_or_else(|| {
+            DataError::Query("Invalid response format: no data array".to_string())
+        })?;
+
+        if data.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        // Get column names
+        let columns: Vec<String> = json
+            .get("columns")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.get("name").and_then(|n| n.as_str()).map(String::from))
+                    .collect()
+            })
+            .unwrap_or_else(|| {
+                // Fallback: try to get keys from first data row
+                if let Some(first_row) = data.first() {
+                    if let Some(obj) = first_row.as_object() {
+                        obj.keys().cloned().collect()
+                    } else {
+                        vec![]
+                    }
+                } else {
+                    vec![]
+                }
+            });
+
+        // Build result HashMap
+        let mut result: HashMap<String, Vec<f64>> = HashMap::new();
+        for col in &columns {
+            result.insert(col.clone(), Vec::new());
+        }
+
+        for row in data {
+            if let Some(obj) = row.as_object() {
+                for col in &columns {
+                    let val = obj.get(col).and_then(|v| v.as_f64()).unwrap_or(f64::NAN);
+                    if let Some(vec) = result.get_mut(col) {
+                        vec.push(val);
+                    }
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Fetch stock data for a symbol
+    pub fn fetch_stock_data(
+        &self,
+        symbols: &[String],
+        start_date: &str,
+        end_date: &str,
+        table_name: &str,
+    ) -> Result<HashMap<String, Vec<f64>>, DataError> {
+        let symbols_str = symbols
+            .iter()
+            .map(|s| format!("'{}'", s))
+            .collect::<Vec<_>>()
+            .join(",");
+
+        let sql = format!(
+            "SELECT symbol, trading_date, open, high, low, close, volume, amount, \
+             (close - open) / open AS returns, \
+             amount / volume AS vwap \
+             FROM {} \
+             WHERE symbol IN ({}) \
+             AND trading_date >= '{}' \
+             AND trading_date <= '{}' \
+             ORDER BY symbol, trading_date",
+            table_name, symbols_str, start_date, end_date
+        );
+
+        self.query_to_hashmap(&sql)
+    }
 }
 
 impl DataSource for ClickHouseSource {
-    fn query(&self, _sql: &str) -> Result<DataFrame, DataError> {
-        Err(DataError::Connection(
-            "ClickHouse query not implemented in Rust. Use Python clickhouse-connect.".to_string(),
-        ))
+    fn query(&self, sql: &str) -> Result<DataFrame, DataError> {
+        let data = self.query_to_hashmap(sql)?;
+        if data.is_empty() {
+            return Ok(DataFrame::new());
+        }
+
+        // Convert HashMap<String, Vec<f64>> to DataFrame
+        use crate::types::Series;
+        let mut columns_map: std::collections::HashMap<String, Series> =
+            std::collections::HashMap::new();
+        for (name, values) in data {
+            columns_map.insert(name.clone(), Series::new(values).with_name(&name));
+        }
+
+        DataFrame::from_series_map(columns_map).map_err(|e| DataError::Query(e))
     }
 
     fn get_factor_data(
         &self,
-        _symbol: &str,
-        _start_date: &str,
-        _end_date: &str,
+        symbol: &str,
+        start_date: &str,
+        end_date: &str,
     ) -> Result<DataFrame, DataError> {
-        Err(DataError::Connection(
-            "ClickHouse factor data not implemented in Rust. Use Python clickhouse-connect."
-                .to_string(),
+        // Default table name is stock_1d
+        let table_name = "stock_1d";
+        self.query(&format!(
+            "SELECT symbol, trading_date, open, high, low, close, volume, amount \
+             FROM {} \
+             WHERE symbol = '{}' \
+             AND trading_date >= '{}' \
+             AND trading_date <= '{}' \
+             ORDER BY trading_date",
+            table_name, symbol, start_date, end_date
         ))
     }
 
     fn is_connected(&self) -> bool {
-        false
+        // Try to execute a simple query to check connection
+        let client = match reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+        {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+
+        // Use GET request style for connection check
+        let mut url = format!(
+            "{}?database={}&default_format=JSON&query=SELECT+1",
+            self.build_url(),
+            self.database
+        );
+        if !self.username.is_empty() {
+            url.push_str(&format!("&user={}", self.username));
+        }
+        if let Some(ref password) = self.password {
+            url.push_str(&format!("&password={}", password));
+        }
+
+        match client.get(&url).send() {
+            Ok(resp) => resp.status().is_success(),
+            Err(_) => false,
+        }
     }
 }
 

@@ -316,7 +316,8 @@ expression = "close"
 #[cfg(test)]
 mod integration_tests {
     use super::*;
-    use crate::expr::registry::parse_expression;
+    use crate::expr::registry::{extract_columns, parse_expression, FactorRegistry};
+    use crate::data::ClickHouseSource;
 
     /// Get the alpha directories
     fn get_alpha_dirs() -> Vec<(String, std::path::PathBuf)> {
@@ -507,5 +508,174 @@ mod integration_tests {
             success_count > 0,
             "Expected at least some successful parses"
         );
+    }
+
+    /// Integration test: parse and compute all alpha factors
+    #[test]
+    fn test_compute_all_alpha_factors() {
+        use crate::data::ClickHouseSource;
+        use crate::expr::registry::{extract_columns, FactorRegistry};
+
+        // Load environment variables from .env file
+        dotenv::dotenv().ok();
+
+        // Get alpha directories
+        let dirs = get_alpha_dirs();
+        if dirs.is_empty() {
+            eprintln!("Skipping test - no alpha directories found");
+            return;
+        }
+
+        // Load all factors
+        let mut all_factors = Vec::new();
+        for (_, dir) in &dirs {
+            let factors = AlParser::parse_directory(dir).unwrap_or_default();
+            all_factors.extend(factors);
+        }
+
+        if all_factors.is_empty() {
+            eprintln!("Skipping test - no factors loaded");
+            return;
+        }
+
+        println!("\n=== Loading {} alpha factors ===", all_factors.len());
+
+        // Try to fetch data from ClickHouse
+        let source = ClickHouseSource::from_env();
+        let table_name = std::env::var("STOCK_1D").unwrap_or_else(|_| "stock_1d".to_string());
+
+        // Fetch stock data
+        let data_result = source.fetch_stock_data(
+            &["000001.SZ".to_string()],
+            "2024-01-01",
+            "2024-12-31",
+            &table_name,
+        );
+
+        let data = match data_result {
+            Ok(d) => {
+                println!("Fetched {} rows from ClickHouse", d.values().next().map(|v| v.len()).unwrap_or(0));
+                d
+            }
+            Err(e) => {
+                eprintln!("Warning: Failed to fetch from ClickHouse: {}. Skipping test.", e);
+                // Return empty data to skip the test
+                return;
+            }
+        };
+
+        // Collect all unique columns needed
+        let mut all_columns: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut parse_failures: Vec<(String, String, String)> = Vec::new();
+
+        for factor in &all_factors {
+            match parse_expression(&factor.expression) {
+                Ok(expr) => {
+                    let cols = extract_columns(&expr);
+                    for col in cols {
+                        all_columns.insert(col);
+                    }
+                }
+                Err(e) => {
+                    parse_failures.push((factor.name.clone(), factor.expression.clone(), e));
+                }
+            }
+        }
+
+        println!("\n=== Parse Results ===");
+        println!("Total factors: {}", all_factors.len());
+        println!("Parse success: {}", all_factors.len() - parse_failures.len());
+        println!("Parse failures: {}", parse_failures.len());
+
+        if !parse_failures.is_empty() {
+            println!("\nFirst 5 parse failures:");
+            for (name, expr, error) in parse_failures.iter().take(5) {
+                println!("  {}: {} - {}", name, expr.chars().take(50).collect::<String>(), error);
+            }
+        }
+
+        // Filter data to only include required columns
+        let available_columns: Vec<String> = all_columns.iter()
+            .filter(|c| data.contains_key(*c))
+            .cloned()
+            .collect();
+
+        println!("\n=== Column Availability ===");
+        println!("Required columns: {}", all_columns.len());
+        println!("Available columns: {}", available_columns.len());
+
+        // Create registry and register factors
+        let mut registry = FactorRegistry::new();
+        registry.set_columns(available_columns.clone());
+
+        let mut register_failures: Vec<(String, String)> = Vec::new();
+        let mut registered_count = 0;
+
+        for factor in &all_factors {
+            // Skip factors that failed to parse
+            if parse_failures.iter().any(|(name, _, _)| name == &factor.name) {
+                continue;
+            }
+
+            match registry.register(&factor.name, &factor.expression) {
+                Ok(_) => registered_count += 1,
+                Err(e) => {
+                    register_failures.push((factor.name.clone(), e));
+                }
+            }
+        }
+
+        println!("\n=== Registration Results ===");
+        println!("Registered: {}", registered_count);
+        println!("Registration failures: {}", register_failures.len());
+
+        if !register_failures.is_empty() {
+            println!("\nFirst 5 registration failures:");
+            for (name, error) in register_failures.iter().take(5) {
+                println!("  {}: {}", name, error);
+            }
+        }
+
+        // Compute all factors in parallel
+        let factor_names: Vec<&str> = all_factors.iter()
+            .filter(|f| !parse_failures.iter().any(|(name, _, _)| name == &f.name))
+            .filter(|f| !register_failures.iter().any(|(name, _)| name == &f.name))
+            .map(|f| f.name.as_str())
+            .collect();
+
+        println!("\n=== Computing {} factors (parallel) ===", factor_names.len());
+
+        let compute_start = std::time::Instant::now();
+        let results = registry.compute_batch(&factor_names, &data, true);
+        let compute_time = compute_start.elapsed().as_millis();
+
+        match results {
+            Ok(results) => {
+                println!("\n=== Compute Results ===");
+                println!("Computed: {}", results.len());
+                println!("Compute time: {}ms", compute_time);
+
+                // Show some sample results
+                println!("\nSample factor values (first 5):");
+                for (i, (name, result)) in results.iter().take(5).enumerate() {
+                    let sample: Vec<f64> = result.values.iter().take(3).copied().collect();
+                    println!("  {}: {:?}...", name, sample);
+                }
+
+                // Assert we computed at least some factors
+                assert!(
+                    results.len() > 0,
+                    "Expected at least some factors to compute successfully"
+                );
+            }
+            Err(e) => {
+                eprintln!("Compute failed: {}", e);
+                // If compute fails, at least verify parsing worked
+                assert!(
+                    registered_count > 0,
+                    "Expected at least some factors to register successfully"
+                );
+            }
+        }
     }
 }

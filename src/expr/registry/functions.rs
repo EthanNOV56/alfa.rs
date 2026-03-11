@@ -288,12 +288,17 @@ pub fn eval_function_memoized(
             .zip(arg_values[1].iter())
             .map(|(&x, &y)| if x < y { 1.0 } else { 0.0 })
             .collect()),
-        "gte" => Ok(arg_values[0]
+        "ge" | "greater_equal" | "gte" => Ok(arg_values[0]
             .iter()
             .zip(arg_values[1].iter())
             .map(|(&x, &y)| if x >= y { 1.0 } else { 0.0 })
             .collect()),
-        "lte" => Ok(arg_values[0]
+        "le" | "less_equal" | "lte" => Ok(arg_values[0]
+            .iter()
+            .zip(arg_values[1].iter())
+            .map(|(&x, &y)| if x >= y { 1.0 } else { 0.0 })
+            .collect()),
+        "le" | "less_equal" | "lte" => Ok(arg_values[0]
             .iter()
             .zip(arg_values[1].iter())
             .map(|(&x, &y)| if x <= y { 1.0 } else { 0.0 })
@@ -302,6 +307,11 @@ pub fn eval_function_memoized(
             .iter()
             .zip(arg_values[1].iter())
             .map(|(&x, &y)| if (x - y).abs() < 1e-10 { 1.0 } else { 0.0 })
+            .collect()),
+        "ne" | "not_equal" => Ok(arg_values[0]
+            .iter()
+            .zip(arg_values[1].iter())
+            .map(|(&x, &y)| if (x - y).abs() >= 1e-10 { 1.0 } else { 0.0 })
             .collect()),
         _ => Err(format!("Unknown function: {}", name)),
     }

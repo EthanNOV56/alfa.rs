@@ -41,7 +41,9 @@ tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.5", features = ["cors"] }
 
 # HTTP client for ClickHouse
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "blocking"] }
+urlencoding = "2"
+dotenv = "0.15"
 
 [build-dependencies]
 pyo3-build-config = "0.28"
