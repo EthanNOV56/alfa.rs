@@ -2064,4 +2064,200 @@ mod tests {
         let expr = parse_expression("ts_mean(close, 20)").unwrap();
         assert!(matches!(expr, Expr::FunctionCall { .. }));
     }
+
+    #[test]
+    fn test_parse_number() {
+        // Numbers are parsed as floats (parser limitation)
+        let expr = parse_expression("42").unwrap();
+        assert!(matches!(expr, Expr::Literal(Literal::Float(f)) if (f - 42.0).abs() < 1e-10));
+
+        // Test float
+        let expr = parse_expression("3.14").unwrap();
+        assert!(matches!(expr, Expr::Literal(Literal::Float(f)) if (f - 3.14).abs() < 1e-10));
+
+        // Test negative number (parsed as unary minus)
+        let expr = parse_expression("-5").unwrap();
+        assert!(matches!(expr, Expr::UnaryExpr { .. }));
+
+        // Test scientific notation
+        let expr = parse_expression("1e-10").unwrap();
+        assert!(matches!(expr, Expr::Literal(Literal::Float(f)) if (f - 1e-10).abs() < 1e-20));
+    }
+
+    #[test]
+    fn test_parse_identifier() {
+        let expr = parse_expression("close").unwrap();
+        assert!(matches!(expr, Expr::Column(name) if name == "close"));
+
+        let expr = parse_expression("volume_123").unwrap();
+        assert!(matches!(expr, Expr::Column(name) if name == "volume_123"));
+
+        let expr = parse_expression("_private").unwrap();
+        assert!(matches!(expr, Expr::Column(name) if name == "_private"));
+    }
+
+    #[test]
+    fn test_parse_nested_expression() {
+        // Test nested function calls
+        let expr = parse_expression("rank(ts_mean(close, 20))").unwrap();
+        assert!(matches!(expr, Expr::FunctionCall { name, .. } if name == "rank"));
+
+        // Test multiple operations
+        let expr = parse_expression("close + open * 2").unwrap();
+        assert!(matches!(expr, Expr::BinaryExpr { .. }));
+
+        // Test parentheses (not currently supported but shouldn't crash)
+        // Currently parentheses are not supported, so it will fail
+    }
+
+    #[test]
+    fn test_parse_error() {
+        // Test empty expression
+        let result = parse_expression("");
+        assert!(result.is_err());
+
+        // Test invalid expression
+        let result = parse_expression("close + ");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_tokenize_complex() {
+        let tokens = tokenize("rank(ts_mean(close, 20)) + volume / 100").unwrap();
+        // Should have: rank, (, ts_mean, (, close, ,, 20, ), ), +, volume, /, 100
+        assert!(!tokens.is_empty());
+    }
+
+    // ==================== FactorRegistry Tests ====================
+
+    #[test]
+    fn test_registry_new() {
+        let registry = FactorRegistry::new();
+        assert!(registry.columns().is_empty());
+    }
+
+    #[test]
+    fn test_registry_set_columns() {
+        let mut registry = FactorRegistry::new();
+        registry.set_columns(vec!["close".to_string(), "open".to_string(), "volume".to_string()]);
+
+        let columns = registry.columns();
+        assert_eq!(columns.len(), 3);
+        assert!(columns.contains(&"close".to_string()));
+        assert!(columns.contains(&"open".to_string()));
+        assert!(columns.contains(&"volume".to_string()));
+    }
+
+    #[test]
+    fn test_registry_register() {
+        let mut registry = FactorRegistry::new();
+        registry.set_columns(vec!["close".to_string(), "open".to_string(), "volume".to_string()]);
+
+        let result = registry.register("alpha_001", "close + open");
+        assert!(result.is_ok());
+
+        let factor_id = result.unwrap();
+        assert_eq!(factor_id, "alpha_001");
+    }
+
+    #[test]
+    fn test_registry_register_with_missing_column() {
+        let mut registry = FactorRegistry::new();
+        registry.set_columns(vec!["close".to_string()]);
+
+        let result = registry.register("alpha_001", "close + volume");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Column 'volume' not found"));
+    }
+
+    #[test]
+    fn test_registry_get() {
+        let mut registry = FactorRegistry::new();
+        registry.set_columns(vec!["close".to_string()]);
+        registry.register("alpha_001", "close * 2").unwrap();
+
+        let info = registry.get("alpha_001");
+        assert!(info.is_some());
+        assert_eq!(info.unwrap().name, "alpha_001");
+    }
+
+    #[test]
+    fn test_registry_list() {
+        let mut registry = FactorRegistry::new();
+        registry.set_columns(vec!["close".to_string()]);
+        registry.register("alpha_001", "close").unwrap();
+        registry.register("alpha_002", "close * 2").unwrap();
+
+        let factors = registry.list();
+        assert_eq!(factors.len(), 2);
+    }
+
+    #[test]
+    fn test_registry_compute() {
+        let mut registry = FactorRegistry::new();
+        registry.set_columns(vec!["close".to_string()]);
+        registry.register("alpha_001", "close * 2").unwrap();
+
+        let mut data = HashMap::new();
+        data.insert("close".to_string(), vec![1.0, 2.0, 3.0, 4.0, 5.0]);
+
+        let result = registry.compute("alpha_001", &data);
+        assert!(result.is_ok());
+
+        let factor_result = result.unwrap();
+        assert_eq!(factor_result.values, vec![2.0, 4.0, 6.0, 8.0, 10.0]);
+    }
+
+    #[test]
+    fn test_registry_compute_not_found() {
+        let registry = FactorRegistry::new();
+
+        let data = HashMap::new();
+        let result = registry.compute("nonexistent", &data);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    fn test_registry_with_config() {
+        let config = ComputeConfig::conservative();
+        let registry = FactorRegistry::with_config(config);
+
+        assert_eq!(registry.config.timeout_secs, 15);
+        assert_eq!(registry.config.max_workers, 1);
+    }
+
+    #[test]
+    fn test_compute_config_defaults() {
+        let config = ComputeConfig::default();
+        assert_eq!(config.timeout_secs, 30);
+        assert_eq!(config.max_workers, 2);
+        assert_eq!(config.batch_size, 5000);
+    }
+
+    #[test]
+    fn test_compute_config_presets() {
+        let conservative = ComputeConfig::conservative();
+        assert_eq!(conservative.timeout_secs, 15);
+
+        let high_perf = ComputeConfig::high_performance();
+        assert_eq!(high_perf.max_workers, 8);
+    }
+
+    // ==================== Edge Cases ====================
+
+    #[test]
+    fn test_parse_function_no_args() {
+        // Function with no arguments
+        let result = parse_expression("now()");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_parse_multiple_operations() {
+        // Test multiple operations in sequence
+        let expr = parse_expression("close + open + high + low").unwrap();
+        // This should be left-associative: ((close + open) + high) + low
+        assert!(matches!(expr, Expr::BinaryExpr { .. }));
+    }
 }

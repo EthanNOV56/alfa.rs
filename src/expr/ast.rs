@@ -231,6 +231,49 @@ pub enum Literal {
     Null,
 }
 
+// Implement Into<Literal> for basic types
+impl From<bool> for Literal {
+    fn from(b: bool) -> Self {
+        Literal::Boolean(b)
+    }
+}
+
+impl From<i64> for Literal {
+    fn from(i: i64) -> Self {
+        Literal::Integer(i)
+    }
+}
+
+impl From<i32> for Literal {
+    fn from(i: i32) -> Self {
+        Literal::Integer(i as i64)
+    }
+}
+
+impl From<f64> for Literal {
+    fn from(f: f64) -> Self {
+        Literal::Float(f)
+    }
+}
+
+impl From<f32> for Literal {
+    fn from(f: f32) -> Self {
+        Literal::Float(f as f64)
+    }
+}
+
+impl From<String> for Literal {
+    fn from(s: String) -> Self {
+        Literal::String(s)
+    }
+}
+
+impl From<&str> for Literal {
+    fn from(s: &str) -> Self {
+        Literal::String(s.to_string())
+    }
+}
+
 /// Binary operators
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BinaryOp {
@@ -294,6 +337,23 @@ impl Expr {
     /// Create a literal string expression
     pub fn lit_string(value: impl Into<String>) -> Self {
         Expr::Literal(Literal::String(value.into()))
+    }
+
+    /// Create a literal expression from any supported type
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use exprs::Expr;
+    ///
+    /// // Create literals from different types
+    /// let expr_bool = Expr::lit(true);
+    /// let expr_int = Expr::lit(42i64);
+    /// let expr_float = Expr::lit(3.14f64);
+    /// let expr_string = Expr::lit("hello");
+    /// ```
+    pub fn lit<T: Into<Literal>>(value: T) -> Self {
+        Expr::Literal(value.into())
     }
 
     /// Create a column reference expression
@@ -625,5 +685,363 @@ mod tests {
         let debug_str = format!("{:?}", expr);
         // Just ensure it doesn't panic and produces some output
         assert!(!debug_str.is_empty());
+    }
+
+    // ==================== BinaryOp Tests ====================
+
+    #[test]
+    fn test_binary_op_add() {
+        let expr = Expr::lit_int(1).add(Expr::lit_int(2));
+        assert!(matches!(
+            expr,
+            Expr::BinaryExpr { op: BinaryOp::Add, .. }
+        ));
+    }
+
+    #[test]
+    fn test_binary_op_subtract() {
+        let expr = Expr::lit_int(1).sub(Expr::lit_int(2));
+        assert!(matches!(
+            expr,
+            Expr::BinaryExpr { op: BinaryOp::Subtract, .. }
+        ));
+    }
+
+    #[test]
+    fn test_binary_op_multiply() {
+        let expr = Expr::lit_int(2).mul(Expr::lit_int(3));
+        assert!(matches!(
+            expr,
+            Expr::BinaryExpr { op: BinaryOp::Multiply, .. }
+        ));
+    }
+
+    #[test]
+    fn test_binary_op_divide() {
+        let expr = Expr::lit_int(6).div(Expr::lit_int(2));
+        assert!(matches!(
+            expr,
+            Expr::BinaryExpr { op: BinaryOp::Divide, .. }
+        ));
+    }
+
+    #[test]
+    fn test_binary_op_modulo() {
+        let expr = Expr::binary(Expr::lit_int(7), BinaryOp::Modulo, Expr::lit_int(3));
+        assert!(matches!(
+            expr,
+            Expr::BinaryExpr { op: BinaryOp::Modulo, .. }
+        ));
+    }
+
+    #[test]
+    fn test_binary_op_comparison() {
+        let expr1 = Expr::lit_int(1).eq(Expr::lit_int(2));
+        assert!(matches!(
+            expr1,
+            Expr::BinaryExpr { op: BinaryOp::Equal, .. }
+        ));
+
+        let expr2 = Expr::lit_int(1).gt(Expr::lit_int(2));
+        assert!(matches!(
+            expr2,
+            Expr::BinaryExpr { op: BinaryOp::GreaterThan, .. }
+        ));
+    }
+
+    #[test]
+    fn test_binary_op_logical() {
+        let expr = Expr::lit_bool(true).and(Expr::lit_bool(false));
+        assert!(matches!(
+            expr,
+            Expr::BinaryExpr { op: BinaryOp::And, .. }
+        ));
+
+        let expr2 = Expr::lit_bool(true).or(Expr::lit_bool(false));
+        assert!(matches!(
+            expr2,
+            Expr::BinaryExpr { op: BinaryOp::Or, .. }
+        ));
+    }
+
+    // ==================== UnaryOp Tests ====================
+
+    #[test]
+    fn test_unary_op_all() {
+        // Test Negate
+        let expr = Expr::lit_int(5).neg();
+        assert!(matches!(
+            expr,
+            Expr::UnaryExpr { op: UnaryOp::Negate, .. }
+        ));
+
+        // Test Not
+        let expr = Expr::lit_bool(true).not();
+        assert!(matches!(
+            expr,
+            Expr::UnaryExpr { op: UnaryOp::Not, .. }
+        ));
+
+        // Test Abs
+        let expr = Expr::lit_int(-5).abs();
+        assert!(matches!(
+            expr,
+            Expr::UnaryExpr { op: UnaryOp::Abs, .. }
+        ));
+
+        // Test Sqrt
+        let expr = Expr::lit_float(4.0).sqrt();
+        assert!(matches!(
+            expr,
+            Expr::UnaryExpr { op: UnaryOp::Sqrt, .. }
+        ));
+
+        // Test Log
+        let expr = Expr::unary(Expr::lit_float(2.0), UnaryOp::Log);
+        assert!(matches!(
+            expr,
+            Expr::UnaryExpr { op: UnaryOp::Log, .. }
+        ));
+
+        // Test Exp
+        let expr = Expr::unary(Expr::lit_float(1.0), UnaryOp::Exp);
+        assert!(matches!(
+            expr,
+            Expr::UnaryExpr { op: UnaryOp::Exp, .. }
+        ));
+    }
+
+    // ==================== Dimension Tests ====================
+
+    #[test]
+    fn test_dimension_compatibility() {
+        // Same dimensions should be compatible
+        assert!(Dimension::Price.is_compatible_with(&Dimension::Price));
+        assert!(Dimension::Return.is_compatible_with(&Dimension::Return));
+        assert!(Dimension::Volume.is_compatible_with(&Dimension::Volume));
+
+        // Return / Return = Ratio is compatible
+        assert!(Dimension::Return.is_compatible_with(&Dimension::Return));
+
+        // Any / Ratio is compatible
+        assert!(Dimension::Price.is_compatible_with(&Dimension::Ratio));
+        assert!(Dimension::Return.is_compatible_with(&Dimension::Ratio));
+
+        // Dimensionless is compatible with anything
+        assert!(Dimension::Dimensionless.is_compatible_with(&Dimension::Price));
+        assert!(Dimension::Price.is_compatible_with(&Dimension::Dimensionless));
+
+        // Incompatible: Price + Return should be incompatible
+        assert!(!Dimension::Price.is_compatible_with(&Dimension::Return));
+    }
+
+    #[test]
+    fn test_dimension_binary_result() {
+        // Return / Return = Ratio
+        assert_eq!(
+            Dimension::Return.binary_result(BinaryOp::Divide, &Dimension::Return),
+            Dimension::Ratio
+        );
+
+        // Price - Price = Price (same dimension preserved)
+        assert_eq!(
+            Dimension::Price.binary_result(BinaryOp::Subtract, &Dimension::Price),
+            Dimension::Price
+        );
+
+        // Volume + Volume = Volume
+        assert_eq!(
+            Dimension::Volume.binary_result(BinaryOp::Add, &Dimension::Volume),
+            Dimension::Volume
+        );
+
+        // Any * Ratio = Any
+        assert_eq!(
+            Dimension::Price.binary_result(BinaryOp::Multiply, &Dimension::Ratio),
+            Dimension::Price
+        );
+
+        // Dimensionless + Dimensionless = Dimensionless
+        assert_eq!(
+            Dimension::Dimensionless.binary_result(BinaryOp::Add, &Dimension::Dimensionless),
+            Dimension::Dimensionless
+        );
+    }
+
+    #[test]
+    fn test_dimension_valid_factor() {
+        assert!(Dimension::Ratio.is_valid_factor_dimension());
+        assert!(Dimension::Dimensionless.is_valid_factor_dimension());
+        assert!(Dimension::Return.is_valid_factor_dimension());
+        assert!(!Dimension::Price.is_valid_factor_dimension());
+        assert!(!Dimension::Volume.is_valid_factor_dimension());
+    }
+
+    #[test]
+    fn test_typed_expr_infer_dimension() {
+        // Test literal dimension inference
+        let lit_int = Expr::lit_int(5);
+        assert_eq!(TypedExpr::infer_dimension(&lit_int), Dimension::Dimensionless);
+
+        let lit_float = Expr::lit_float(3.14);
+        assert_eq!(TypedExpr::infer_dimension(&lit_float), Dimension::Dimensionless);
+
+        let lit_bool = Expr::lit_bool(true);
+        assert_eq!(TypedExpr::infer_dimension(&lit_bool), Dimension::Dimensionless);
+
+        let lit_string = Expr::lit_string("hello");
+        assert_eq!(TypedExpr::infer_dimension(&lit_string), Dimension::Unknown);
+
+        // Test column dimension inference from name
+        let col_return = Expr::col("return");
+        assert_eq!(TypedExpr::infer_dimension(&col_return), Dimension::Return);
+
+        let col_close = Expr::col("close");
+        assert_eq!(TypedExpr::infer_dimension(&col_close), Dimension::Price);
+
+        let col_volume = Expr::col("volume");
+        assert_eq!(TypedExpr::infer_dimension(&col_volume), Dimension::Volume);
+    }
+
+    // ==================== Edge Cases Tests ====================
+
+    #[test]
+    fn test_nested_expressions() {
+        // Test deeply nested expressions
+        let expr = Expr::col("a")
+            .add(Expr::col("b"))
+            .mul(Expr::col("c"))
+            .sub(Expr::col("d"))
+            .div(Expr::col("e"));
+
+        // Verify it's a binary expression
+        assert!(matches!(expr, Expr::BinaryExpr { .. }));
+
+        // Test nested function calls
+        let expr2 = Expr::function(
+            "rank",
+            vec![Expr::function("ts_mean", vec![Expr::col("close"), Expr::lit_int(20)])],
+        );
+        assert!(matches!(expr2, Expr::FunctionCall { name, .. } if name == "rank"));
+    }
+
+    #[test]
+    fn test_literal_null() {
+        let expr = Expr::Literal(Literal::Null);
+        assert!(matches!(expr, Expr::Literal(Literal::Null)));
+    }
+
+    #[test]
+    fn test_all_literal_types() {
+        // Test all literal types
+        let bool_lit = Expr::lit_bool(true);
+        assert!(matches!(bool_lit, Expr::Literal(Literal::Boolean(true))));
+
+        let bool_lit2 = Expr::lit_bool(false);
+        assert!(matches!(bool_lit2, Expr::Literal(Literal::Boolean(false))));
+
+        let int_lit = Expr::lit_int(0);
+        assert!(matches!(int_lit, Expr::Literal(Literal::Integer(0))));
+
+        let int_lit2 = Expr::lit_int(-100);
+        assert!(matches!(int_lit2, Expr::Literal(Literal::Integer(-100))));
+
+        let float_lit = Expr::lit_float(0.0);
+        assert!(matches!(float_lit, Expr::Literal(Literal::Float(f)) if f == 0.0));
+
+        let float_lit2 = Expr::lit_float(-1.5);
+        assert!(matches!(float_lit2, Expr::Literal(Literal::Float(f)) if f == -1.5));
+
+        let string_lit = Expr::lit_string("");
+        assert!(matches!(string_lit, Expr::Literal(Literal::String(s)) if s.is_empty()));
+
+        let string_lit2 = Expr::lit_string("test");
+        assert!(matches!(string_lit2, Expr::Literal(Literal::String(ref s)) if s == "test"));
+    }
+
+    #[test]
+    fn test_expression_clone() {
+        let expr1 = Expr::col("x").add(Expr::lit_int(5));
+        let expr2 = expr1.clone();
+
+        assert_eq!(expr1, expr2);
+    }
+
+    #[test]
+    fn test_aggregate_all_ops() {
+        // Test all aggregate operations
+        let sum_expr = Expr::col("value").sum();
+        assert!(matches!(
+            sum_expr,
+            Expr::Aggregate { op: AggregateOp::Sum, distinct: false, .. }
+        ));
+
+        let mean_expr = Expr::col("value").mean();
+        assert!(matches!(
+            mean_expr,
+            Expr::Aggregate { op: AggregateOp::Mean, distinct: false, .. }
+        ));
+
+        let min_expr = Expr::aggregate(Expr::col("value"), AggregateOp::Min, false);
+        assert!(matches!(
+            min_expr,
+            Expr::Aggregate { op: AggregateOp::Min, .. }
+        ));
+
+        let max_expr = Expr::aggregate(Expr::col("value"), AggregateOp::Max, false);
+        assert!(matches!(
+            max_expr,
+            Expr::Aggregate { op: AggregateOp::Max, .. }
+        ));
+
+        let count_expr = Expr::aggregate(Expr::col("value"), AggregateOp::Count, false);
+        assert!(matches!(
+            count_expr,
+            Expr::Aggregate { op: AggregateOp::Count, .. }
+        ));
+
+        let stddev_expr = Expr::aggregate(Expr::col("value"), AggregateOp::StdDev, false);
+        assert!(matches!(
+            stddev_expr,
+            Expr::Aggregate { op: AggregateOp::StdDev, .. }
+        ));
+
+        let variance_expr = Expr::aggregate(Expr::col("value"), AggregateOp::Variance, false);
+        assert!(matches!(
+            variance_expr,
+            Expr::Aggregate { op: AggregateOp::Variance, .. }
+        ));
+    }
+
+    #[test]
+    fn test_alias() {
+        let expr = Expr::col("price").alias("my_price");
+        // For now, alias just returns the expression itself
+        assert!(matches!(expr, Expr::Column(_)));
+    }
+
+    #[test]
+    fn test_generic_lit() {
+        // Test generic lit function with different types
+        let expr_bool = Expr::lit(true);
+        assert!(matches!(expr_bool, Expr::Literal(Literal::Boolean(true))));
+
+        let expr_int = Expr::lit(42i64);
+        assert!(matches!(expr_int, Expr::Literal(Literal::Integer(42))));
+
+        let expr_i32 = Expr::lit(10i32);
+        assert!(matches!(expr_i32, Expr::Literal(Literal::Integer(10))));
+
+        let expr_float = Expr::lit(3.14f64);
+        assert!(matches!(expr_float, Expr::Literal(Literal::Float(f)) if (f - 3.14).abs() < 1e-10));
+
+        let expr_f32 = Expr::lit(2.5f32);
+        assert!(matches!(expr_f32, Expr::Literal(Literal::Float(f)) if (f - 2.5).abs() < 1e-10));
+
+        let expr_string = Expr::lit("hello");
+        assert!(matches!(expr_string, Expr::Literal(Literal::String(ref s)) if s == "hello"));
+
+        let expr_string2 = Expr::lit(String::from("world"));
+        assert!(matches!(expr_string2, Expr::Literal(Literal::String(ref s)) if s == "world"));
     }
 }
