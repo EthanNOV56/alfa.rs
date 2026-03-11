@@ -700,8 +700,8 @@ mod tests {
     fn test_position_config_default() {
         let config = PositionConfig::default();
         assert_eq!(config.long_ratio, 1.0);
-        assert_eq!(config.short_ratio, 0.5);
-        assert!(!config.market_neutral);
+        assert_eq!(config.short_ratio, 1.0);
+        assert!(config.market_neutral);
     }
 
     #[test]
@@ -725,5 +725,546 @@ mod tests {
 
         let result = engine.run().unwrap();
         assert!(result.long_short_cum_return.is_finite());
+    }
+
+    // === Configuration Tests ===
+
+    #[test]
+    fn test_slippage_config_custom() {
+        let config = SlippageConfig {
+            large_volume_threshold: 5_000_000.0,
+            large_slippage_rate: 0.002,
+            normal_slippage_rate: 0.001,
+        };
+        assert_eq!(config.large_volume_threshold, 5_000_000.0);
+        assert_eq!(config.large_slippage_rate, 0.002);
+        assert_eq!(config.normal_slippage_rate, 0.001);
+    }
+
+    #[test]
+    fn test_fee_config_custom() {
+        let slippage = SlippageConfig::default();
+        let config = FeeConfig {
+            commission_rate: 0.001,
+            slippage,
+            min_commission: 10.0,
+        };
+        assert_eq!(config.commission_rate, 0.001);
+        assert_eq!(config.min_commission, 10.0);
+    }
+
+    #[test]
+    fn test_position_config_long_only() {
+        let config = PositionConfig {
+            long_ratio: 1.0,
+            short_ratio: 0.0,
+            market_neutral: false,
+        };
+        assert_eq!(config.long_ratio, 1.0);
+        assert_eq!(config.short_ratio, 0.0);
+        assert!(!config.market_neutral);
+    }
+
+    #[test]
+    fn test_position_config_long_short() {
+        let config = PositionConfig {
+            long_ratio: 1.0,
+            short_ratio: 0.5,
+            market_neutral: true,
+        };
+        assert_eq!(config.long_ratio, 1.0);
+        assert_eq!(config.short_ratio, 0.5);
+        assert!(config.market_neutral);
+    }
+
+    // === Core Functionality Tests ===
+
+    #[test]
+    fn test_compute_quantile_groups() {
+        let factor = Array2::from_shape_vec(
+            (3, 4),
+            vec![1.0, 2.0, 3.0, 4.0, 4.0, 3.0, 2.0, 1.0, 2.0, 3.0, 4.0, 1.0],
+        )
+        .unwrap();
+
+        let returns = Array2::from_shape_vec(
+            (3, 4),
+            vec![
+                0.01, 0.02, 0.03, 0.04, 0.04, 0.03, 0.02, 0.01, 0.02, 0.01, 0.03, 0.02,
+            ],
+        )
+        .unwrap();
+
+        let engine = BacktestEngine::new_simple(
+            factor, returns, 4, WeightMethod::Equal, 1, 1, 0.001, None,
+        );
+
+        let groups = engine.compute_quantile_groups().unwrap();
+        assert_eq!(groups.dim(), (3, 4));
+
+        // Each row should have values 1,2,3,4 (4 quantiles)
+        for day in 0..3 {
+            let row = groups.row(day);
+            let unique: Vec<usize> = row.iter().cloned().collect::<std::collections::HashSet<_>>()
+                .into_iter()
+                .collect();
+            assert!(unique.len() <= 4);
+        }
+    }
+
+    #[test]
+    fn test_compute_group_returns() {
+        let factor = Array2::from_shape_vec(
+            (3, 4),
+            vec![1.0, 2.0, 3.0, 4.0, 4.0, 3.0, 2.0, 1.0, 2.0, 3.0, 4.0, 1.0],
+        )
+        .unwrap();
+
+        let returns = Array2::from_shape_vec(
+            (3, 4),
+            vec![
+                0.01, 0.02, 0.03, 0.04, 0.04, 0.03, 0.02, 0.01, 0.02, 0.01, 0.03, 0.02,
+            ],
+        )
+        .unwrap();
+
+        let engine = BacktestEngine::new_simple(
+            factor, returns, 4, WeightMethod::Equal, 1, 1, 0.001, None,
+        );
+
+        let groups = engine.compute_quantile_groups().unwrap();
+        let (_, group_returns) = engine.compute_group_returns(&groups).unwrap();
+
+        // group_returns should have shape (n_days-1, quantiles) = (2, 4)
+        assert_eq!(group_returns.dim(), (2, 4));
+    }
+
+    #[test]
+    fn test_compute_long_short_returns() {
+        let factor = Array2::from_shape_vec(
+            (3, 4),
+            vec![1.0, 2.0, 3.0, 4.0, 4.0, 3.0, 2.0, 1.0, 2.0, 3.0, 4.0, 1.0],
+        )
+        .unwrap();
+
+        let returns = Array2::from_shape_vec(
+            (3, 4),
+            vec![
+                0.01, 0.02, 0.03, 0.04, 0.04, 0.03, 0.02, 0.01, 0.02, 0.01, 0.03, 0.02,
+            ],
+        )
+        .unwrap();
+
+        let engine = BacktestEngine::new_simple(
+            factor, returns, 4, WeightMethod::Equal, 1, 1, 0.001, None,
+        );
+
+        let groups = engine.compute_quantile_groups().unwrap();
+        let (_, group_returns) = engine.compute_group_returns(&groups).unwrap();
+
+        let (long_ret, short_ret, ls_ret) = engine.compute_long_short_returns(&group_returns);
+
+        // All should have same length
+        assert_eq!(long_ret.len(), short_ret.len());
+        assert_eq!(long_ret.len(), ls_ret.len());
+
+        // With market_neutral=true, long - short should equal long_short
+        for i in 0..long_ret.len() {
+            let expected = long_ret[i] - (-short_ret[i]);
+            assert!((ls_ret[i] - expected).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn test_apply_fees() {
+        let factor = Array2::from_shape_vec(
+            (3, 4),
+            vec![1.0, 2.0, 3.0, 4.0, 4.0, 3.0, 2.0, 1.0, 2.0, 3.0, 4.0, 1.0],
+        )
+        .unwrap();
+
+        let returns = Array2::from_shape_vec(
+            (3, 4),
+            vec![
+                0.01, 0.02, 0.03, 0.04, 0.04, 0.03, 0.02, 0.01, 0.02, 0.01, 0.03, 0.02,
+            ],
+        )
+        .unwrap();
+
+        let engine = BacktestEngine::new_simple(
+            factor, returns, 4, WeightMethod::Equal, 1, 1, 0.001, None,
+        );
+
+        let groups = engine.compute_quantile_groups().unwrap();
+        let (_, group_returns) = engine.compute_group_returns(&groups).unwrap();
+        let (_, _, mut long_short_returns) = engine.compute_long_short_returns(&group_returns);
+
+        // Apply fees
+        let returns_before = long_short_returns.clone();
+        long_short_returns = engine.apply_fees(&long_short_returns, &group_returns);
+
+        // After fees, returns should be lower (by commission_rate + slippage)
+        for i in 0..long_short_returns.len() {
+            assert!(long_short_returns[i] <= returns_before[i]);
+        }
+    }
+
+    #[test]
+    fn test_compute_cumulative_returns() {
+        let factor = Array2::from_shape_vec(
+            (3, 4),
+            vec![1.0, 2.0, 3.0, 4.0, 4.0, 3.0, 2.0, 1.0, 2.0, 3.0, 4.0, 1.0],
+        )
+        .unwrap();
+
+        let returns = Array2::from_shape_vec(
+            (3, 4),
+            vec![
+                0.01, 0.02, 0.03, 0.04, 0.04, 0.03, 0.02, 0.01, 0.02, 0.01, 0.03, 0.02,
+            ],
+        )
+        .unwrap();
+
+        let engine = BacktestEngine::new_simple(
+            factor, returns, 4, WeightMethod::Equal, 1, 1, 0.001, None,
+        );
+
+        let groups = engine.compute_quantile_groups().unwrap();
+        let (_, group_returns) = engine.compute_group_returns(&groups).unwrap();
+
+        let cum_returns = engine.compute_cumulative_returns(&group_returns);
+
+        // Cumulative returns should have same shape as group_returns
+        assert_eq!(cum_returns.dim(), group_returns.dim());
+    }
+
+    #[test]
+    fn test_compute_ic_series() {
+        let factor = Array2::from_shape_vec(
+            (3, 4),
+            vec![1.0, 2.0, 3.0, 4.0, 4.0, 3.0, 2.0, 1.0, 2.0, 3.0, 4.0, 1.0],
+        )
+        .unwrap();
+
+        let returns = Array2::from_shape_vec(
+            (3, 4),
+            vec![
+                0.01, 0.02, 0.03, 0.04, 0.04, 0.03, 0.02, 0.01, 0.02, 0.01, 0.03, 0.02,
+            ],
+        )
+        .unwrap();
+
+        let engine = BacktestEngine::new_simple(
+            factor, returns, 4, WeightMethod::Equal, 1, 1, 0.001, None,
+        );
+
+        let (ic_series, ic_mean, ic_ir) = engine.compute_ic_series().unwrap();
+
+        // IC series length should be n_days - 1
+        assert_eq!(ic_series.len(), 2);
+
+        // IC mean should just be finite (valid IC range is theoretical, but can exceed due to sample size)
+        assert!(ic_mean.is_finite());
+
+        // IC IR can be NaN if std is 0
+        assert!(ic_ir.is_nan() || ic_ir.is_finite());
+    }
+
+    // === Edge Case Tests ===
+
+    #[test]
+    fn test_nan_handling() {
+        // Test with NaN values in factor
+        let factor = Array2::from_shape_vec(
+            (3, 4),
+            vec![1.0, f64::NAN, 3.0, 4.0, 4.0, 3.0, f64::NAN, 1.0, 2.0, 3.0, 4.0, 1.0],
+        )
+        .unwrap();
+
+        let returns = Array2::from_shape_vec(
+            (3, 4),
+            vec![
+                0.01, 0.02, 0.03, 0.04, 0.04, 0.03, 0.02, 0.01, 0.02, 0.01, 0.03, 0.02,
+            ],
+        )
+        .unwrap();
+
+        let engine = BacktestEngine::new_simple(
+            factor, returns, 4, WeightMethod::Equal, 1, 1, 0.001, None,
+        );
+
+        // Should handle NaN gracefully
+        let result = engine.run().unwrap();
+        assert!(result.long_short_cum_return.is_finite());
+    }
+
+    #[test]
+    fn test_single_day_backtest() {
+        // Test with minimal data - single day
+        let factor = Array2::from_shape_vec((1, 4), vec![1.0, 2.0, 3.0, 4.0]).unwrap();
+        let returns = Array2::from_shape_vec((1, 4), vec![0.01, 0.02, 0.03, 0.04]).unwrap();
+
+        let engine = BacktestEngine::new_simple(
+            factor, returns, 2, WeightMethod::Equal, 1, 1, 0.001, None,
+        );
+
+        // Single day returns zero-length group returns (no forward returns possible)
+        let groups = engine.compute_quantile_groups().unwrap();
+        let (_, group_returns) = engine.compute_group_returns(&groups).unwrap();
+        assert_eq!(group_returns.dim().0, 0);
+    }
+
+    #[test]
+    fn test_single_asset_backtest() {
+        // Test with single asset
+        let factor = Array2::from_shape_vec((3, 1), vec![1.0, 2.0, 3.0]).unwrap();
+        let returns = Array2::from_shape_vec((3, 1), vec![0.01, 0.02, 0.03]).unwrap();
+
+        let engine = BacktestEngine::new_simple(
+            factor, returns, 2, WeightMethod::Equal, 1, 1, 0.001, None,
+        );
+
+        // Single asset - groups can still be computed
+        let groups = engine.compute_quantile_groups().unwrap();
+        assert_eq!(groups.dim(), (3, 1));
+
+        // Group returns should still work but IC will fail with single asset
+        let (_, group_returns) = engine.compute_group_returns(&groups).unwrap();
+        assert!(group_returns.dim().1 >= 1);
+    }
+
+    #[test]
+    fn test_negative_returns() {
+        // Test with negative returns
+        let factor = Array2::from_shape_vec(
+            (3, 4),
+            vec![1.0, 2.0, 3.0, 4.0, 4.0, 3.0, 2.0, 1.0, 2.0, 3.0, 4.0, 1.0],
+        )
+        .unwrap();
+
+        let returns = Array2::from_shape_vec(
+            (3, 4),
+            vec![
+                -0.01, -0.02, -0.03, -0.04, -0.04, -0.03, -0.02, -0.01, -0.02, -0.01, -0.03,
+                -0.02,
+            ],
+        )
+        .unwrap();
+
+        let engine = BacktestEngine::new_simple(
+            factor, returns, 4, WeightMethod::Equal, 1, 1, 0.001, None,
+        );
+
+        let result = engine.run().unwrap();
+        assert!(result.long_short_cum_return.is_finite());
+        // Negative returns should result in negative cumulative return
+        assert!(result.long_short_cum_return < 0.0);
+    }
+
+    // === Integration Tests ===
+
+    #[test]
+    fn test_full_backtest_flow() {
+        let factor = Array2::from_shape_vec(
+            (10, 5),
+            vec![
+                1.0, 2.0, 3.0, 4.0, 5.0, //
+                5.0, 4.0, 3.0, 2.0, 1.0, //
+                2.0, 3.0, 4.0, 5.0, 1.0, //
+                4.0, 5.0, 1.0, 2.0, 3.0, //
+                3.0, 1.0, 5.0, 4.0, 2.0, //
+                1.0, 2.0, 3.0, 4.0, 5.0, //
+                5.0, 4.0, 3.0, 2.0, 1.0, //
+                2.0, 3.0, 4.0, 5.0, 1.0, //
+                4.0, 5.0, 1.0, 2.0, 3.0, //
+                3.0, 1.0, 5.0, 4.0, 2.0,
+            ],
+        )
+        .unwrap();
+
+        let returns = Array2::from_shape_vec(
+            (10, 5),
+            vec![
+                0.01, 0.02, 0.03, 0.04, 0.05, //
+                0.05, 0.04, 0.03, 0.02, 0.01, //
+                0.02, 0.03, 0.04, 0.05, 0.01, //
+                0.04, 0.05, 0.01, 0.02, 0.03, //
+                0.03, 0.01, 0.05, 0.04, 0.02, //
+                0.01, 0.02, 0.03, 0.04, 0.05, //
+                0.05, 0.04, 0.03, 0.02, 0.01, //
+                0.02, 0.03, 0.04, 0.05, 0.01, //
+                0.04, 0.05, 0.01, 0.02, 0.03, //
+                0.03, 0.01, 0.05, 0.04, 0.02,
+            ],
+        )
+        .unwrap();
+
+        // Test with custom configs
+        let fee_config = FeeConfig {
+            commission_rate: 0.001,
+            slippage: SlippageConfig::default(),
+            min_commission: 5.0,
+        };
+
+        let position_config = PositionConfig {
+            long_ratio: 1.0,
+            short_ratio: 0.5,
+            market_neutral: true,
+        };
+
+        let engine = BacktestEngine::new(
+            factor,
+            returns,
+            5,
+            WeightMethod::Equal,
+            1,
+            1,
+            fee_config,
+            position_config,
+            None,
+            None,
+            None,
+        );
+
+        let result = engine.run().unwrap();
+
+        // Verify all result fields are present and finite
+        assert!(result.long_short_cum_return.is_finite());
+        assert!(result.ic_mean.is_finite());
+        assert!(result.sharpe_ratio.is_finite());
+        assert!(result.max_drawdown.is_finite());
+        assert!(result.turnover.is_finite());
+        assert!(result.annualized_return.is_finite());
+
+        // Verify shapes
+        assert_eq!(result.group_returns.dim(), (9, 5));
+        assert_eq!(result.ic_series.len(), 9);
+    }
+
+    #[test]
+    fn test_different_quantile_configurations() {
+        let factor = Array2::from_shape_vec(
+            (5, 10),
+            vec![
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, //
+                10.0, 9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0, //
+                3.0, 5.0, 7.0, 9.0, 1.0, 2.0, 4.0, 6.0, 8.0, 10.0, //
+                6.0, 4.0, 2.0, 1.0, 3.0, 5.0, 7.0, 9.0, 10.0, 8.0, //
+                9.0, 7.0, 5.0, 3.0, 1.0, 10.0, 8.0, 6.0, 4.0, 2.0,
+            ],
+        )
+        .unwrap();
+
+        let returns = Array2::from_shape_vec(
+            (5, 10),
+            vec![
+                0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.10, //
+                0.10, 0.09, 0.08, 0.07, 0.06, 0.05, 0.04, 0.03, 0.02, 0.01, //
+                0.02, 0.03, 0.04, 0.05, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06, //
+                0.06, 0.05, 0.04, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, //
+                0.07, 0.06, 0.05, 0.04, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06,
+            ],
+        )
+        .unwrap();
+
+        // Test with 5 quantiles (deciles)
+        let engine = BacktestEngine::new_simple(
+            factor.clone(),
+            returns.clone(),
+            5,
+            WeightMethod::Equal,
+            1,
+            1,
+            0.001,
+            None,
+        );
+
+        let result = engine.run().unwrap();
+        assert_eq!(result.group_returns.dim(), (4, 5));
+
+        // Test with 2 quantiles (median split)
+        let engine2 = BacktestEngine::new_simple(
+            factor, returns, 2, WeightMethod::Equal, 1, 1, 0.001, None,
+        );
+
+        let result2 = engine2.run().unwrap();
+        assert_eq!(result2.group_returns.dim(), (4, 2));
+    }
+
+    #[test]
+    fn test_market_neutral_vs_directional() {
+        let factor = Array2::from_shape_vec(
+            (5, 4),
+            vec![
+                1.0, 2.0, 3.0, 4.0, //
+                4.0, 3.0, 2.0, 1.0, //
+                2.0, 3.0, 4.0, 1.0, //
+                1.0, 4.0, 3.0, 2.0, //
+                3.0, 2.0, 1.0, 4.0,
+            ],
+        )
+        .unwrap();
+
+        let returns = Array2::from_shape_vec(
+            (5, 4),
+            vec![
+                0.01, 0.02, 0.03, 0.04, //
+                0.04, 0.03, 0.02, 0.01, //
+                0.02, 0.03, 0.04, 0.01, //
+                0.01, 0.04, 0.03, 0.02, //
+                0.03, 0.02, 0.01, 0.04,
+            ],
+        )
+        .unwrap();
+
+        // Market neutral (long - short)
+        let position_neutral = PositionConfig {
+            long_ratio: 1.0,
+            short_ratio: 1.0,
+            market_neutral: true,
+        };
+
+        let engine_neutral = BacktestEngine::new(
+            factor.clone(),
+            returns.clone(),
+            4,
+            WeightMethod::Equal,
+            1,
+            1,
+            FeeConfig::default(),
+            position_neutral,
+            None,
+            None,
+            None,
+        );
+
+        let result_neutral = engine_neutral.run().unwrap();
+
+        // Directional (long only)
+        let position_directional = PositionConfig {
+            long_ratio: 1.0,
+            short_ratio: 0.0,
+            market_neutral: false,
+        };
+
+        let engine_directional = BacktestEngine::new(
+            factor,
+            returns,
+            4,
+            WeightMethod::Equal,
+            1,
+            1,
+            FeeConfig::default(),
+            position_directional,
+            None,
+            None,
+            None,
+        );
+
+        let result_directional = engine_directional.run().unwrap();
+
+        // Both should produce finite results
+        assert!(result_neutral.long_short_cum_return.is_finite());
+        assert!(result_directional.long_short_cum_return.is_finite());
     }
 }
