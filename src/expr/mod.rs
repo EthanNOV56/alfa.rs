@@ -12,4 +12,6 @@ pub mod registry;
 // Re-exports from submodules
 pub use ast::{BinaryOp, DataType, Dimension, Expr, Literal, UnaryOp};
 pub use optimizer::{ExpressionOptimizer, optimize_expression};
-pub use registry::{ComputeConfig, FactorRegistry, parse_expression};
+pub use registry::{
+    ColumnMeta, ComputeConfig, FactorInfo, FactorRegistry, FactorResult, parse_expression,
+};
