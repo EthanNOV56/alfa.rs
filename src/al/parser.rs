@@ -311,3 +311,201 @@ expression = "close"
         assert_eq!(factor.dimension, "dimensionless");
     }
 }
+
+/// Integration tests for alpha file loading and expression parsing
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+    use crate::expr::registry::parse_expression;
+
+    /// Get the alpha directories
+    fn get_alpha_dirs() -> Vec<(String, std::path::PathBuf)> {
+        let mut dirs = Vec::new();
+        if let Some(home) = dirs::home_dir() {
+            let alpha101 = home.join(".alfars").join("alpha101");
+            let alpha191 = home.join(".alfars").join("alpha191");
+            if alpha101.exists() {
+                dirs.push(("alpha101".to_string(), alpha101));
+            }
+            if alpha191.exists() {
+                dirs.push(("alpha191".to_string(), alpha191));
+            }
+        }
+        dirs
+    }
+
+    #[test]
+    fn test_load_alpha_files() {
+        let dirs = get_alpha_dirs();
+        if dirs.is_empty() {
+            eprintln!("Skipping test - no alpha directories found");
+            return;
+        }
+
+        for (name, dir) in &dirs {
+            println!("Testing {} directory: {:?}", name, dir);
+            let factors = AlParser::parse_directory(dir).expect(&format!(
+                "Failed to parse directory: {:?}",
+                dir
+            ));
+            println!("  Loaded {} factors from {}", factors.len(), name);
+        }
+    }
+
+    #[test]
+    fn test_parse_all_alpha_expressions() {
+        let dirs = get_alpha_dirs();
+        if dirs.is_empty() {
+            eprintln!("Skipping test - no alpha directories found");
+            return;
+        }
+
+        let mut success_count = 0;
+        let mut failure_count = 0;
+        let mut failures: Vec<(String, String, String)> = Vec::new();
+
+        for (dir_name, dir) in &dirs {
+            let factors = AlParser::parse_directory(dir).unwrap_or_default();
+            println!(
+                "\n=== Parsing {} ({} factors) ===",
+                dir_name,
+                factors.len()
+            );
+
+            for factor in factors {
+                match parse_expression(&factor.expression) {
+                    Ok(expr) => {
+                        success_count += 1;
+                        let expr_str = format!("{:?}", expr);
+                        if expr_str.len() > 80 {
+                            println!("  OK: {}: {}...", factor.name, &expr_str[..80]);
+                        } else {
+                            println!("  OK: {}: {}", factor.name, expr_str);
+                        }
+                    }
+                    Err(e) => {
+                        failure_count += 1;
+                        failures.push((factor.name, factor.expression, e));
+                    }
+                }
+            }
+        }
+
+        println!("\n=== Summary ===");
+        println!("Total: {}", success_count + failure_count);
+        println!("Success: {}", success_count);
+        println!("Failure: {}", failure_count);
+
+        if !failures.is_empty() {
+            println!("\n=== Failed Expressions (first 10) ===");
+            for (name, expr, error) in failures.iter().take(10) {
+                println!("\n--- {} ---", name);
+                println!("Expression: {}", expr);
+                println!("Error: {}", error);
+            }
+        }
+
+        // Store counts for analysis
+        assert!(
+            success_count > 0,
+            "Expected at least some successful parses"
+        );
+    }
+
+    #[test]
+    fn test_parse_alpha101_expressions() {
+        let dirs = get_alpha_dirs();
+        if dirs.is_empty() {
+            eprintln!("Skipping test - no alpha directories found");
+            return;
+        }
+
+        let alpha101_dir = dirs.iter().find(|(name, _)| name == "alpha101");
+        if alpha101_dir.is_none() {
+            eprintln!("Skipping test - alpha101 directory not found");
+            return;
+        }
+
+        let (_, dir) = alpha101_dir.unwrap();
+        let factors = AlParser::parse_directory(dir).unwrap_or_default();
+
+        let mut success_count = 0;
+        let mut failure_count = 0;
+        let mut failures: Vec<(String, String, String)> = Vec::new();
+
+        for factor in factors {
+            match parse_expression(&factor.expression) {
+                Ok(_) => success_count += 1,
+                Err(e) => {
+                    failure_count += 1;
+                    failures.push((factor.name, factor.expression, e));
+                }
+            }
+        }
+
+        println!("\n=== Alpha101 Results ===");
+        println!("Success: {} / {}", success_count, success_count + failure_count);
+
+        if !failures.is_empty() {
+            println!("\nFailed expressions:");
+            for (name, expr, error) in &failures {
+                println!("  {}: {} - {}", name, expr.chars().take(60).collect::<String>(), error);
+            }
+        }
+
+        assert!(
+            success_count > 0,
+            "Expected at least some successful parses"
+        );
+    }
+
+    #[test]
+    fn test_parse_alpha191_expressions() {
+        let dirs = get_alpha_dirs();
+        if dirs.is_empty() {
+            eprintln!("Skipping test - no alpha directories found");
+            return;
+        }
+
+        let alpha191_dir = dirs.iter().find(|(name, _)| name == "alpha191");
+        if alpha191_dir.is_none() {
+            eprintln!("Skipping test - alpha191 directory not found");
+            return;
+        }
+
+        let (_, dir) = alpha191_dir.unwrap();
+        let factors = AlParser::parse_directory(dir).unwrap_or_default();
+
+        let mut success_count = 0;
+        let mut failure_count = 0;
+        let mut failures: Vec<(String, String, String)> = Vec::new();
+
+        for factor in factors {
+            match parse_expression(&factor.expression) {
+                Ok(_) => success_count += 1,
+                Err(e) => {
+                    failure_count += 1;
+                    failures.push((factor.name, factor.expression, e));
+                }
+            }
+        }
+
+        println!("\n=== Alpha191 Results ===");
+        println!("Success: {} / {}", success_count, success_count + failure_count);
+
+        if !failures.is_empty() {
+            println!("\nFailed expressions (first 20):");
+            for (name, expr, error) in failures.iter().take(20) {
+                println!("  {}: {} - {}", name, expr.chars().take(60).collect::<String>(), error);
+            }
+            if failures.len() > 20 {
+                println!("  ... and {} more", failures.len() - 20);
+            }
+        }
+
+        assert!(
+            success_count > 0,
+            "Expected at least some successful parses"
+        );
+    }
+}

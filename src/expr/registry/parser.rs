@@ -239,14 +239,59 @@ fn parse_function(tokens: &[Token], start: usize) -> Result<(Expr, usize), Strin
         }
     }
 
-    // Map function names
-    let func_name = match name.as_str() {
+    // Map function names (case-insensitive)
+    let name_lower = name.to_lowercase();
+    let func_name = match name_lower.as_str() {
+        // Time series functions (with ts_ prefix)
         "ts_mean" | "ts_avg" => "ts_mean",
         "ts_sum" => "ts_sum",
         "ts_max" => "ts_max",
         "ts_min" => "ts_min",
         "ts_std" => "ts_std",
         "ts_rank" => "ts_rank",
+        "ts_argmax" => "ts_argmax",
+        "ts_argmin" => "ts_argmin",
+        "ts_correlation" => "ts_correlation",
+        "ts_covariance" => "ts_cov",
+        "ts_delta" => "ts_delta",
+        "ts_product" => "ts_product",
+        // Aliases (non-ts_ prefix versions)
+        "mean" | "avg" => "ts_mean",
+        "sum" => "ts_sum",
+        "max" => "ts_max",
+        "min" => "ts_min",
+        "std" => "ts_std",
+        "rank" => "rank",
+        "argmax" => "ts_argmax",
+        "argmin" => "ts_argmin",
+        "correlation" | "corr" => "ts_correlation",
+        "covariance" | "cov" => "ts_cov",
+        "delta" => "ts_delta",
+        "product" => "ts_product",
+        // Other functions
+        "sma" | "ema" => "sma",
+        "wma" => "wma",
+        "decay_linear" | "decay" => "decay_linear",
+        "lowday" => "lowday",
+        "highday" => "highday",
+        "delay" => "delay",
+        "scale" => "scale",
+        "sign" => "sign",
+        "abs" => "abs",
+        "log" => "log",
+        "log10" => "log10",
+        "sqrt" => "sqrt",
+        "power" => "power",
+        // Conditional functions
+        "if" => "if",
+        "gt" | "greater" => "gt",
+        "lt" | "less" => "lt",
+        "ge" | "greater_equal" | "gte" => "ge",
+        "le" | "less_equal" | "lte" => "le",
+        "eq" | "equal" => "eq",
+        "ne" | "not_equal" => "ne",
+        // Other
+        "returns" => "returns",
         _ => &name,
     };
 
