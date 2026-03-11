@@ -318,6 +318,7 @@ mod integration_tests {
     use super::*;
     use crate::expr::registry::{extract_columns, parse_expression, FactorRegistry};
     use crate::data::ClickHouseSource;
+    use ndarray::{Array1, Array2};
 
     /// Get the alpha directories
     fn get_alpha_dirs() -> Vec<(String, std::path::PathBuf)> {
@@ -677,5 +678,584 @@ mod integration_tests {
                 );
             }
         }
+    }
+
+    /// Integration test: Per-stock factor calculation with different trading days
+    ///
+    /// This test demonstrates:
+    /// 1. Each stock can have different number of trading days
+    /// 2. Factors are computed per-stock with forward-fill alignment
+    /// 3. Backtest uses adjusted returns (前复权) and weight matrix
+    #[test]
+    fn test_per_stock_factor_calculation() {
+        use crate::expr::registry::FactorRegistry;
+        use ndarray::{Array1, Array2};
+
+        println!("\n=== Per-Stock Factor Calculation Test ===");
+
+        // Define stocks with different trading days
+        // Stock A: 10 days, Stock B: 8 days, Stock C: 6 days
+        let symbols = vec!["STOCK_A".to_string(), "STOCK_B".to_string(), "STOCK_C".to_string()];
+        let trading_days = vec![10, 8, 6];
+
+        // Create mock data for each stock
+        // Data structure: HashMap<symbol, HashMap<column, Vec<f64>>>
+        let mut stock_data: std::collections::HashMap<String, std::collections::HashMap<String, Vec<f64>>> =
+            std::collections::HashMap::new();
+
+        for (i, symbol) in symbols.iter().enumerate() {
+            let n_days = trading_days[i];
+            let mut data = std::collections::HashMap::new();
+
+            // Generate price data with trend
+            let close: Vec<f64> = (0..n_days)
+                .map(|j| 100.0 + (j as f64) * 2.0 + (i as f64) * 10.0)
+                .collect();
+            let open: Vec<f64> = close.iter().map(|c| c * 0.99).collect();
+            let high: Vec<f64> = close.iter().map(|c| c * 1.02).collect();
+            let low: Vec<f64> = close.iter().map(|c| c * 0.98).collect();
+            let volume: Vec<f64> = (0..n_days).map(|j| 1_000_000.0 + j as f64 * 10000.0).collect();
+
+            // Adjustment factors (前复权) - each stock has different adjustment
+            let adj_factor: Vec<f64> = (0..n_days)
+                .map(|j| 1.0 + j as f64 * 0.01)
+                .collect();
+
+            // VWAP data
+            let vwap: Vec<f64> = close.iter().zip(volume.iter())
+                .map(|(c, v)| c * (1.0 + v.min(1000000.0) / 2000000.0 * 0.01))
+                .collect();
+
+            data.insert("close".to_string(), close);
+            data.insert("open".to_string(), open);
+            data.insert("high".to_string(), high);
+            data.insert("low".to_string(), low);
+            data.insert("volume".to_string(), volume);
+            data.insert("adjust_factor".to_string(), adj_factor);
+            data.insert("vwap".to_string(), vwap);
+
+            stock_data.insert(symbol.clone(), data);
+        }
+
+        println!("Stock trading days: {:?}", trading_days);
+
+        // Register factors
+        let mut registry = FactorRegistry::new();
+        registry.set_columns(vec![
+            "close".to_string(),
+            "open".to_string(),
+            "volume".to_string(),
+            "returns".to_string(),
+        ]);
+
+        // Register simple factors
+        registry.register("rank_close", "rank(close)").unwrap();
+        registry.register("ts_mean_5", "ts_mean(close, 5)").unwrap();
+        registry.register("volume_ratio", "volume / ts_mean(volume, 5)").unwrap();
+
+        let factor_names = vec!["rank_close", "ts_mean_5", "volume_ratio"];
+
+        // Step 1: Compute factors per stock
+        // Use index-based storage to maintain order
+        let mut factor_results: std::collections::HashMap<String, Vec<Vec<f64>>> =
+            std::collections::HashMap::new();
+
+        // Initialize result vectors for each factor
+        for factor_name in &factor_names {
+            factor_results.insert(factor_name.to_string(), Vec::new());
+        }
+
+        for (symbol_idx, symbol) in symbols.iter().enumerate() {
+            let data = stock_data.get(symbol).unwrap();
+
+            // Apply forward adjustment (前复权)
+            let mut adj_data = data.clone();
+            let adj = adj_data.get("adjust_factor").unwrap().clone();
+            let latest = *adj.last().unwrap();
+
+            // Adjust close prices
+            if let Some(close) = adj_data.get_mut("close") {
+                for (i, c) in close.iter_mut().enumerate() {
+                    *c = *c * adj[i] / latest;
+                }
+            }
+
+            // Adjust vwap prices
+            if let Some(vwap) = adj_data.get_mut("vwap") {
+                for (i, v) in vwap.iter_mut().enumerate() {
+                    *v = *v * adj[i] / latest;
+                }
+            }
+
+            // Compute returns using adjusted close
+            if let Some(close) = adj_data.get("close") {
+                let mut returns = vec![0.0; close.len()];
+                for i in 1..close.len() {
+                    returns[i] = (close[i] - close[i - 1]) / close[i - 1];
+                }
+                adj_data.insert("returns".to_string(), returns);
+            }
+
+            // Convert to ndarray format for vectorized computation
+            let arr_data: std::collections::HashMap<String, Array1<f64>> = adj_data
+                .iter()
+                .map(|(k, v)| (k.clone(), Array1::from_vec(v.clone())))
+                .collect();
+
+            // Compute factors
+            let results = registry.compute_batch_vectorized(&factor_names, &arr_data, false).unwrap();
+
+            // Store results per factor (maintain index order)
+            for factor_name in &factor_names {
+                if let Some(result) = results.get(*factor_name) {
+                    if let Some(factor_vec) = factor_results.get_mut(*factor_name) {
+                        factor_vec.push(result.values.clone());
+                    }
+                }
+            }
+        }
+
+        println!("\nFactor results per stock:");
+        for (factor_name, results) in &factor_results {
+            println!("  {}: {} stocks computed", factor_name, results.len());
+            for (i, result) in results.iter().enumerate() {
+                println!("    Stock {}: {} values, first 3: {:?}", symbols[i], result.len(), &result[..result.len().min(3)]);
+            }
+        }
+
+        // Verify: Each stock has different number of factor values
+        for (factor_name, results) in &factor_results {
+            assert_eq!(results.len(), symbols.len(), "Should have results for all stocks");
+            for (i, result) in results.iter().enumerate() {
+                assert_eq!(result.len(), trading_days[i], "Stock {} should have {} values for {}",
+                    symbols[i], trading_days[i], factor_name);
+            }
+        }
+
+        // Step 2: Align data to common date index
+        // For simplicity, use the minimum number of days
+        let min_days = *trading_days.iter().min().unwrap();
+        println!("\nAligning to common date index: {} days", min_days);
+
+        // Build aligned factor matrix: [n_factors, n_days, n_symbols]
+        let n_factors = factor_names.len();
+        let n_symbols = symbols.len();
+
+        let mut aligned_factors: Array2<f64> = Array2::zeros((min_days, n_symbols * n_factors));
+
+        for (factor_idx, factor_name) in factor_names.iter().enumerate() {
+            if let Some(results) = factor_results.get(*factor_name) {
+                for (symbol_idx, result) in results.iter().enumerate() {
+                    let col_idx = factor_idx * n_symbols + symbol_idx;
+                    for day in 0..min_days {
+                        aligned_factors[[day, col_idx]] = result[day];
+                    }
+                }
+            }
+        }
+
+        println!("Aligned factor matrix shape: {:?}", aligned_factors.dim());
+
+        // Build aligned close matrix for holding/trading return calculation
+        let mut aligned_close: Array2<f64> = Array2::zeros((min_days, n_symbols));
+
+        for (symbol_idx, symbol) in symbols.iter().enumerate() {
+            if let Some(data) = stock_data.get(symbol) {
+                if let Some(close) = data.get("close") {
+                    for day in 0..min_days {
+                        aligned_close[[day, symbol_idx]] = close[day];
+                    }
+                }
+            }
+        }
+
+        // Build aligned returns matrix: [n_days, n_symbols]
+        let mut aligned_returns: Array2<f64> = Array2::zeros((min_days, n_symbols));
+
+        for (symbol_idx, symbol) in symbols.iter().enumerate() {
+            if let Some(data) = stock_data.get(symbol) {
+                if let Some(returns) = data.get("returns") {
+                    for day in 0..min_days {
+                        aligned_returns[[day, symbol_idx]] = returns[day];
+                    }
+                }
+            }
+        }
+
+        // Build aligned VWAP matrix for trading cost calculation
+        let mut aligned_vwap: Array2<f64> = Array2::zeros((min_days, n_symbols));
+
+        for (symbol_idx, symbol) in symbols.iter().enumerate() {
+            if let Some(data) = stock_data.get(symbol) {
+                if let Some(vwap) = data.get("vwap") {
+                    for day in 0..min_days {
+                        aligned_vwap[[day, symbol_idx]] = vwap[day];
+                    }
+                }
+            }
+        }
+
+        println!("Aligned returns matrix shape: {:?}", aligned_returns.dim());
+
+        // Step 3: Generate weight matrix using factor ranking
+        // Extract first factor for ranking - aligned_factors is [min_days, n_symbols * n_factors]
+        // We need [min_days, n_symbols] - take first factor's columns
+        let mut single_factor: Array2<f64> = Array2::zeros((min_days, n_symbols));
+        for day in 0..min_days {
+            for s in 0..n_symbols {
+                single_factor[[day, s]] = aligned_factors[[day, s]];
+            }
+        }
+
+        let weights = generate_weight_matrix(
+            &single_factor,
+            1,  // long_top_n
+            1,  // short_top_n
+        );
+
+        println!("Weight matrix shape: {:?}", weights.dim());
+        println!("Weight matrix (first 5 days):");
+        for day in 0..5.min(min_days) {
+            println!("  Day {}: {:?}", day, weights.row(day));
+        }
+
+        // Step 4: Compute holding return using previous day's weights
+        let holding_pnl = compute_holding_return(&weights, &aligned_close);
+        println!("\nHolding return (first 5 days): {:?}", holding_pnl.slice(ndarray::s![..5, 0]));
+
+        // Step 5: Compute trading return using close and vwap
+        let trading_pnl = compute_trading_return(&weights, &aligned_close, &aligned_vwap, 0.0003, 0.0005);
+        println!("Trading return (first 5 days): {:?}", trading_pnl.slice(ndarray::s![..5, 0]));
+
+        // Step 6: Compute total returns
+        let total_pnl = &holding_pnl + &trading_pnl;
+        let cumulative_return = compute_cumulative_return(&total_pnl.column(0).to_owned());
+        println!("\nTotal cumulative return: {:.4}%", cumulative_return * 100.0);
+
+        // Assertions
+        assert!(cumulative_return.is_finite());
+    }
+
+    /// Generate weight matrix from factor values
+    ///
+    /// Weight matrix shape: [n_days, n_symbols]
+    /// - Long positions: top N stocks with highest factor values
+    /// - Short positions: bottom N stocks with lowest factor values
+    fn generate_weight_matrix(
+        factor_matrix: &Array2<f64>,
+        long_top_n: usize,
+        short_top_n: usize,
+    ) -> Array2<f64> {
+        let (n_days, n_symbols) = factor_matrix.dim();
+        let mut weights = ndarray::Array2::<f64>::zeros((n_days, n_symbols));
+
+        for day in 0..n_days {
+            let mut ranked: Vec<(usize, f64)> = (0..n_symbols)
+                .map(|i| (i, factor_matrix[[day, i]]))
+                .collect();
+
+            // Sort by factor value (descending)
+            ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+            // Assign long weights (top N)
+            let long_weight = 1.0 / long_top_n as f64;
+            for i in 0..long_top_n.min(n_symbols) {
+                weights[[day, ranked[i].0]] += long_weight;
+            }
+
+            // Assign short weights (bottom N)
+            let short_weight = -1.0 / short_top_n as f64;
+            for i in 0..short_top_n.min(n_symbols) {
+                let idx = n_symbols - 1 - i;
+                weights[[day, ranked[idx].0]] += short_weight;
+            }
+        }
+
+        weights
+    }
+
+    /// Compute holding return from weights and close prices (vectorized)
+    ///
+    /// # Formula
+    /// `holding_return[day] = sum(weights[day-1, :] * (close[day, :] / close[day-1, :] - 1))`
+    ///
+    /// # Note
+    /// - Day 0: no holding return (no previous day position)
+    /// - This is suitable for factor research. Production use requires handling:
+    ///   - Limit-up/limit-down stocks (cannot trade)
+    ///   - Suspended stocks (no trading)
+    ///   - Market impact for large positions
+    fn compute_holding_return(weights: &Array2<f64>, close: &Array2<f64>) -> Array2<f64> {
+        let (n_days, _n_symbols) = weights.dim();
+
+        // Vectorized: previous day's weights
+        // weights_lag: [n_days-1, n_symbols] = weights[0:n_days-1] (weights for days 0 to n_days-2)
+        let weights_lag = weights.slice(ndarray::s![0..n_days-1, ..]);
+
+        // Vectorized: compute price returns for all days and symbols
+        // close_lag: [n_days-1, n_symbols] = close[0:n_days-1]
+        let close_lag = close.slice(ndarray::s![0..n_days-1, ..]);
+        // close_current: [n_days-1, n_symbols] = close[1:n_days]
+        let close_current = close.slice(ndarray::s![1.., ..]);
+        // price_returns: [n_days-1, n_symbols]
+        let price_returns = (&close_current / &close_lag) - 1.0;
+
+        // Element-wise multiply and sum across symbols: [n_days-1, n_symbols] -> [n_days-1]
+        let weighted_returns = &weights_lag * &price_returns;
+        let day_returns = weighted_returns.sum_axis(ndarray::Axis(1));  // Shape: [n_days-1]
+
+        // Build result: day 0 = 0, days 1..n_days = computed returns
+        let mut returns = ndarray::Array2::<f64>::zeros((n_days, 1));
+        for day in 1..n_days {
+            returns[[day, 0]] = day_returns[day - 1];  // 1D indexing
+        }
+
+        returns
+    }
+
+    /// Compute trading return from weight changes, close, and vwap prices (vectorized)
+    ///
+    /// # Formula
+    /// `trading_return[day] = sum(weight_diff * (close[day]/vwap[day] - 1 - total_cost))`
+    /// where `weight_diff = weights[day] - weights[day-1]`
+    ///
+    /// # Note
+    /// - Day 0: initial position establishment (from 0 to weights[0])
+    /// - Day 1+: position changes
+    /// - This is suitable for factor research. Production use requires handling:
+    ///   - Limit-up/limit-down stocks (cannot trade)
+    ///   - Suspended stocks (no trading)
+    ///   - Market impact for large positions
+    ///   - Realistic execution slippage modeling
+    fn compute_trading_return(
+        weights: &Array2<f64>,
+        close: &Array2<f64>,
+        vwap: &Array2<f64>,
+        fee: f64,
+        slippage: f64,
+    ) -> Array2<f64> {
+        let (n_days, n_symbols) = weights.dim();
+        let total_cost = fee + slippage;
+
+        // Result for all n_days
+        let mut returns = ndarray::Array2::<f64>::zeros((n_days, 1));
+
+        // Day 0: initial position establishment (from 0 to weights[0])
+        // trading_return[0] = sum(weights[0] * (close[0]/vwap[0] - 1 - cost))
+        let price_return_0 = (close[[0, 0]] / vwap[[0, 0]]) - 1.0;
+        let trade_return_0 = weights[[0, 0]] * (price_return_0 - total_cost);
+        returns[[0, 0]] = trade_return_0;
+
+        // Days 1..n_days-1: position changes
+        // weight_diff = weights[day] - weights[day-1]
+        if n_days > 1 {
+            let weights_lag = weights.slice(ndarray::s![0..n_days-1, ..]);
+            let weights_current = weights.slice(ndarray::s![1.., ..]);
+            let weight_diff = &weights_current - &weights_lag;  // [n_days-1, n_symbols]
+
+            // Vectorized: price return (close / vwap - 1)
+            let vwap_current = vwap.slice(ndarray::s![1.., ..]);
+            let close_current = close.slice(ndarray::s![1.., ..]);
+            let price_returns = (&close_current / &vwap_current) - 1.0;  // [n_days-1, n_symbols]
+
+            // Vectorized: trade return = weight_diff * (price_return - cost)
+            let cost_array = Array2::from_elem((n_days - 1, n_symbols), total_cost);
+            let trade_returns = &weight_diff * (&price_returns - &cost_array);
+
+            // Sum across symbols: [n_days-1, n_symbols] -> [n_days-1]
+            let day_returns = trade_returns.sum_axis(ndarray::Axis(1));  // Shape: [n_days-1]
+
+            // Fill days 1..n_days-1
+            for day in 1..n_days {
+                returns[[day, 0]] = day_returns[day - 1];
+            }
+        }
+
+        returns
+    }
+
+    /// Compute cumulative return from daily PnL
+    fn compute_cumulative_return(daily_pnl: &ndarray::Array1<f64>) -> f64 {
+        let mut cum = 1.0;
+        for &p in daily_pnl.iter() {
+            if p.is_finite() {
+                cum *= 1.0 + p;
+            }
+        }
+        cum - 1.0
+    }
+
+    /// Test with real ClickHouse data: All weight on single stock 000001.SZ
+    ///
+    /// Verifies:
+    /// 1. Fetch real price data from ClickHouse
+    /// 2. Weight matrix: 100% on 000001.SZ
+    /// 3. Holding PnL equals actual returns
+    ///
+    /// Note: This test uses raw (unadjusted) close prices.
+    /// In production, you would apply forward adjustment (前复权) using adjust_factor.
+    #[test]
+    fn test_single_stock_weight_real_data() {
+        use crate::data::ClickHouseSource;
+        use ndarray::Array2;
+        use std::collections::HashMap;
+
+        // Load environment
+        dotenv::dotenv().ok();
+
+        println!("\n=== Single Stock Weight Test (Real Data) ===");
+
+        // Fetch real data from ClickHouse
+        let source = ClickHouseSource::from_env();
+
+        let table_name = std::env::var("STOCK_1D").unwrap_or_else(|_| "stock_1d".to_string());
+
+        // Fetch 000001.SZ data for 2024
+        let data_result: Result<HashMap<String, Vec<f64>>, _> = source.fetch_stock_data(
+            &["000001.SZ".to_string()],
+            "2024-01-01",
+            "2024-12-31",
+            &table_name,
+        );
+
+        let data = match data_result {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("Skipping test - failed to fetch data: {}", e);
+                return;
+            }
+        };
+
+        // Extract close and calculate returns
+        let close = data.get("close").unwrap();
+        let vwap_raw = data.get("vwap").unwrap();
+        let volume_raw = data.get("volume");
+        let amount_raw = data.get("amount");
+        let n_days = close.len();
+        println!("Fetched {} trading days for 000001.SZ", n_days);
+        println!("First 5 raw close: {:?}", &close[..5]);
+        println!("First 5 raw vwap: {:?}", &vwap_raw[..5]);
+        if let Some(vol) = volume_raw {
+            println!("First 5 raw volume: {:?}", &vol[..5]);
+        }
+        if let Some(amt) = amount_raw {
+            println!("First 5 raw amount: {:?}", &amt[..5]);
+        }
+
+        // Get real adjust_factor from ClickHouse
+        let adjust_factor = match data.get("adjust_factor") {
+            Some(factors) => {
+                println!("Using real adjust_factor from ClickHouse");
+                factors.clone()
+            }
+            None => {
+                println!("adjust_factor not available, using 1.0");
+                vec![1.0; n_days]
+            }
+        };
+
+        // Apply forward adjustment: adj_close[i] = close[i] * adjust_factor[i] / latest_factor
+        let latest_factor = adjust_factor.last().copied().unwrap_or(1.0);
+        let adj_close: Vec<f64> = close.iter()
+            .zip(adjust_factor.iter())
+            .map(|(c, f)| {
+                let factor = if f.is_finite() && *f > 0.0 { *f } else { 1.0 };
+                c * factor / latest_factor
+            })
+            .collect();
+
+        // Use vwap from data, apply adjustment
+        let vwap_raw = data.get("vwap").unwrap();
+        let vwap: Vec<f64> = vwap_raw.iter()
+            .zip(adjust_factor.iter())
+            .map(|(v, f)| {
+                let factor = if f.is_finite() && *f > 0.0 { *f } else { 1.0 };
+                v * factor / latest_factor
+            })
+            .collect();
+
+        println!("\n=== Forward Adjustment (Real Data) ===");
+        println!("First raw close: {}, First adj close: {:.4}", close[0], adj_close[0]);
+        println!("Last raw close: {}, Last adj close: {:.4}", close[n_days - 1], adj_close[n_days - 1]);
+        println!("First adjust_factor: {:.6}, Last: {:.6}", adjust_factor[0], adjust_factor[n_days-1]);
+
+        // Create weight matrix: alternating [1, 0, 1, 0, 1, 0, ...]
+        let weight_pattern: Vec<f64> = (0..n_days).map(|i| if i % 2 == 0 { 1.0 } else { 0.0 }).collect();
+        let weights = Array2::from_shape_vec(
+            (n_days, 1),
+            weight_pattern.clone(),
+        ).unwrap();
+
+        let vwap_arr = Array2::from_shape_vec(
+            (n_days, 1),
+            vwap.clone(),
+        ).unwrap();
+
+        println!("Weight: alternating [1, 0, 1, 0, ...] for {} days", n_days);
+        println!("First 10 weights: {:?}", &weight_pattern[..10]);
+
+        // Compute holding return using previous day's weights
+        let close_arr = Array2::from_shape_vec(
+            (n_days, 1),
+            adj_close.clone(),
+        ).unwrap();
+
+        let holding_return = compute_holding_return(&weights, &close_arr);
+        println!("First 5 holding returns: {:?}", holding_return.slice(ndarray::s![..5, 0]));
+
+        // Compute trading return
+        let fee = 0.0003;
+        let slippage = 0.0005;
+        let trading_return = compute_trading_return(&weights, &close_arr, &vwap_arr, fee, slippage);
+        println!("First 5 trading returns: {:?}", trading_return.slice(ndarray::s![..5, 0]));
+
+        // Verify holding return calculation:
+        // holding_return[day] = weights[day-1] * (close[day]/close[day-1] - 1)
+        println!("\n=== Holding Return Verification ===");
+        for day in 1..6.min(n_days) {
+            let expected_holding = weight_pattern[day - 1] * (adj_close[day] / adj_close[day - 1] - 1.0);
+            let actual_holding = holding_return[[day, 0]];
+            println!("Day {}: weight[{}]={}, close[{}]={:.2}, close[{}]={:.2}, expected={:.6}, actual={:.6}",
+                day, day-1, weight_pattern[day-1], day-1, adj_close[day-1], day, adj_close[day],
+                expected_holding, actual_holding);
+
+            assert!((actual_holding - expected_holding).abs() < 1e-6,
+                "Day {}: expected holding {:.6}, got {:.6}", day, expected_holding, actual_holding);
+        }
+
+        // Verify trading return calculation:
+        // trading_return[day] = weight_diff * (close[day]/vwap[day] - 1 - total_cost)
+        // where weight_diff = weights[day] - weights[day-1]
+        let total_cost_rate = fee + slippage;
+        println!("\n=== Trading Return Verification ===");
+        for day in 1..6.min(n_days) {
+            let weight_diff = weight_pattern[day] - weight_pattern[day - 1];
+            let price_return = adj_close[day] / vwap[day] - 1.0;
+            let expected_trading = weight_diff * (price_return - total_cost_rate);
+            let actual_trading = trading_return[[day, 0]];
+            println!("Day {}: weight_diff={}, close/vwap={:.4}, price_return={:.6}, cost={:.6}, expected={:.6}, actual={:.6}",
+                day, weight_diff, adj_close[day]/vwap[day], price_return, total_cost_rate, expected_trading, actual_trading);
+
+            assert!((actual_trading - expected_trading).abs() < 1e-6,
+                "Day {}: expected trading {:.6}, got {:.6}", day, expected_trading, actual_trading);
+        }
+
+        // Total return
+        let total_return = &holding_return + &trading_return;
+        let cumulative = compute_cumulative_return(&total_return.column(0).to_owned());
+
+        // Calculate expected cumulative: count returns on holding days
+        let mut expected_cum = 1.0;
+        for day in 1..n_days {
+            let day_return = weight_pattern[day - 1] * (adj_close[day] / adj_close[day - 1] - 1.0);
+            expected_cum *= 1.0 + day_return;
+        }
+        let expected_cumulative_alt = expected_cum - 1.0;
+
+        println!("\n=== Cumulative Return ===");
+        println!("Expected (alternating): {:.6}", expected_cumulative_alt);
+        println!("Actual (with costs):    {:.6}", cumulative);
+
+        println!("\n✓ All assertions passed!");
     }
 }

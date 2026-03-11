@@ -14,6 +14,10 @@ pub struct ClickHouseSource {
     database: String,
     username: String,
     password: Option<String>,
+    /// Volume unit (e.g., 100 for hand = 100 shares)
+    volume_unit: u16,
+    /// Amount unit (e.g., 1000 for 千元)
+    amount_unit: u16,
 }
 
 impl ClickHouseSource {
@@ -25,6 +29,8 @@ impl ClickHouseSource {
     /// - CLICKHOUSE_DATABASE (default: "default")
     /// - CLICKHOUSE_USER (default: "default")
     /// - CLICKHOUSE_PASSWORD (optional)
+    /// - VOLUME_UNIT (default: 100, e.g., hand = 100 shares)
+    /// - AMOUNT_UNIT (default: 10000, e.g., 万元)
     pub fn from_env() -> Self {
         let host = std::env::var("CLICKHOUSE_HOST").unwrap_or_else(|_| "localhost".to_string());
         let port: u16 = std::env::var("CLICKHOUSE_PORT")
@@ -35,6 +41,14 @@ impl ClickHouseSource {
             std::env::var("CLICKHOUSE_DATABASE").unwrap_or_else(|_| "default".to_string());
         let username = std::env::var("CLICKHOUSE_USER").unwrap_or_else(|_| "default".to_string());
         let password = std::env::var("CLICKHOUSE_PASSWORD").ok();
+        let volume_unit: u16 = std::env::var("VOLUME_UNIT")
+            .unwrap_or_else(|_| "100".to_string())
+            .parse()
+            .unwrap_or(100);
+        let amount_unit: u16 = std::env::var("AMOUNT_UNIT")
+            .unwrap_or_else(|_| "10000".to_string())
+            .parse()
+            .unwrap_or(10000);
 
         ClickHouseSource {
             host,
@@ -42,6 +56,8 @@ impl ClickHouseSource {
             database,
             username,
             password,
+            volume_unit,
+            amount_unit,
         }
     }
 
@@ -53,6 +69,8 @@ impl ClickHouseSource {
             database: database.to_string(),
             username: "default".to_string(),
             password: None,
+            volume_unit: 100,
+            amount_unit: 10000,
         }
     }
 
@@ -64,6 +82,21 @@ impl ClickHouseSource {
             database: database.to_string(),
             username: username.to_string(),
             password: None,
+            volume_unit: 100,
+            amount_unit: 10000,
+        }
+    }
+
+    /// Create a new ClickHouse source with custom volume/amount units
+    pub fn with_units(host: &str, port: u16, database: &str, username: &str, volume_unit: u16, amount_unit: u16) -> Self {
+        ClickHouseSource {
+            host: host.to_string(),
+            port,
+            database: database.to_string(),
+            username: username.to_string(),
+            password: None,
+            volume_unit,
+            amount_unit,
         }
     }
 
@@ -194,16 +227,20 @@ impl ClickHouseSource {
             .collect::<Vec<_>>()
             .join(",");
 
+        // Compute vwap conversion factor: amount_unit / volume_unit
+        let vwap_factor = self.amount_unit as f64 / self.volume_unit as f64;
+
         let sql = format!(
             "SELECT symbol, trading_date, open, high, low, close, volume, amount, \
              (close - open) / open AS returns, \
-             amount / volume AS vwap \
+             amount * {} / volume AS vwap, \
+             adjust_factor \
              FROM {} \
              WHERE symbol IN ({}) \
              AND trading_date >= '{}' \
              AND trading_date <= '{}' \
              ORDER BY symbol, trading_date",
-            table_name, symbols_str, start_date, end_date
+            vwap_factor, table_name, symbols_str, start_date, end_date
         );
 
         self.query_to_hashmap(&sql)

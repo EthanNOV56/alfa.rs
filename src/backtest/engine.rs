@@ -200,6 +200,29 @@ impl BacktestEngine {
     }
 
     /// Run the backtest and return enhanced results
+    ///
+    /// # Important Limitations (for Research vs Production)
+    ///
+    /// This implementation is designed for **factor research and alpha exploration**.
+    /// It does NOT account for real trading constraints:
+    ///
+    /// - **No limit-up/limit-down handling**: Assumes all positions can be traded at close/vwap prices
+    /// - **No stock suspensions**: Assumes all stocks are tradable every day
+    /// - **No market impact**: Assumes large orders don't affect execution price
+    /// - **No short selling constraints**: Assumes unlimited short selling capacity
+    /// - **No position limits**: No constraints on max position size or sector limits
+    ///
+    /// For **production trading systems**, you must add:
+    /// - Limit-up/limit-down detection and skip trading on locked stocks
+    /// - Suspension days handling (no trading on suspended days)
+    /// - Market impact modeling for large positions
+    /// - Short selling constraints (margin, locates, fees)
+    /// - Realistic execution delay modeling
+    ///
+    /// # Use Cases
+    ///
+    /// - **Suitable for**: Factor IC/IR evaluation, alpha discovery, strategy exploration
+    /// - **Not suitable for**: Live trading, realistic P&L estimation, broker compatibility
     pub fn run(&self) -> Result<BacktestResult, String> {
         let (n_days, _n_assets) = self.factor.dim();
 
@@ -795,9 +818,8 @@ mod tests {
         )
         .unwrap();
 
-        let engine = BacktestEngine::new_simple(
-            factor, returns, 4, WeightMethod::Equal, 1, 1, 0.001, None,
-        );
+        let engine =
+            BacktestEngine::new_simple(factor, returns, 4, WeightMethod::Equal, 1, 1, 0.001, None);
 
         let groups = engine.compute_quantile_groups().unwrap();
         assert_eq!(groups.dim(), (3, 4));
@@ -805,7 +827,10 @@ mod tests {
         // Each row should have values 1,2,3,4 (4 quantiles)
         for day in 0..3 {
             let row = groups.row(day);
-            let unique: Vec<usize> = row.iter().cloned().collect::<std::collections::HashSet<_>>()
+            let unique: Vec<usize> = row
+                .iter()
+                .cloned()
+                .collect::<std::collections::HashSet<_>>()
                 .into_iter()
                 .collect();
             assert!(unique.len() <= 4);
@@ -828,9 +853,8 @@ mod tests {
         )
         .unwrap();
 
-        let engine = BacktestEngine::new_simple(
-            factor, returns, 4, WeightMethod::Equal, 1, 1, 0.001, None,
-        );
+        let engine =
+            BacktestEngine::new_simple(factor, returns, 4, WeightMethod::Equal, 1, 1, 0.001, None);
 
         let groups = engine.compute_quantile_groups().unwrap();
         let (_, group_returns) = engine.compute_group_returns(&groups).unwrap();
@@ -855,9 +879,8 @@ mod tests {
         )
         .unwrap();
 
-        let engine = BacktestEngine::new_simple(
-            factor, returns, 4, WeightMethod::Equal, 1, 1, 0.001, None,
-        );
+        let engine =
+            BacktestEngine::new_simple(factor, returns, 4, WeightMethod::Equal, 1, 1, 0.001, None);
 
         let groups = engine.compute_quantile_groups().unwrap();
         let (_, group_returns) = engine.compute_group_returns(&groups).unwrap();
@@ -891,9 +914,8 @@ mod tests {
         )
         .unwrap();
 
-        let engine = BacktestEngine::new_simple(
-            factor, returns, 4, WeightMethod::Equal, 1, 1, 0.001, None,
-        );
+        let engine =
+            BacktestEngine::new_simple(factor, returns, 4, WeightMethod::Equal, 1, 1, 0.001, None);
 
         let groups = engine.compute_quantile_groups().unwrap();
         let (_, group_returns) = engine.compute_group_returns(&groups).unwrap();
@@ -925,9 +947,8 @@ mod tests {
         )
         .unwrap();
 
-        let engine = BacktestEngine::new_simple(
-            factor, returns, 4, WeightMethod::Equal, 1, 1, 0.001, None,
-        );
+        let engine =
+            BacktestEngine::new_simple(factor, returns, 4, WeightMethod::Equal, 1, 1, 0.001, None);
 
         let groups = engine.compute_quantile_groups().unwrap();
         let (_, group_returns) = engine.compute_group_returns(&groups).unwrap();
@@ -954,9 +975,8 @@ mod tests {
         )
         .unwrap();
 
-        let engine = BacktestEngine::new_simple(
-            factor, returns, 4, WeightMethod::Equal, 1, 1, 0.001, None,
-        );
+        let engine =
+            BacktestEngine::new_simple(factor, returns, 4, WeightMethod::Equal, 1, 1, 0.001, None);
 
         let (ic_series, ic_mean, ic_ir) = engine.compute_ic_series().unwrap();
 
@@ -977,7 +997,20 @@ mod tests {
         // Test with NaN values in factor
         let factor = Array2::from_shape_vec(
             (3, 4),
-            vec![1.0, f64::NAN, 3.0, 4.0, 4.0, 3.0, f64::NAN, 1.0, 2.0, 3.0, 4.0, 1.0],
+            vec![
+                1.0,
+                f64::NAN,
+                3.0,
+                4.0,
+                4.0,
+                3.0,
+                f64::NAN,
+                1.0,
+                2.0,
+                3.0,
+                4.0,
+                1.0,
+            ],
         )
         .unwrap();
 
@@ -989,9 +1022,8 @@ mod tests {
         )
         .unwrap();
 
-        let engine = BacktestEngine::new_simple(
-            factor, returns, 4, WeightMethod::Equal, 1, 1, 0.001, None,
-        );
+        let engine =
+            BacktestEngine::new_simple(factor, returns, 4, WeightMethod::Equal, 1, 1, 0.001, None);
 
         // Should handle NaN gracefully
         let result = engine.run().unwrap();
@@ -1004,9 +1036,8 @@ mod tests {
         let factor = Array2::from_shape_vec((1, 4), vec![1.0, 2.0, 3.0, 4.0]).unwrap();
         let returns = Array2::from_shape_vec((1, 4), vec![0.01, 0.02, 0.03, 0.04]).unwrap();
 
-        let engine = BacktestEngine::new_simple(
-            factor, returns, 2, WeightMethod::Equal, 1, 1, 0.001, None,
-        );
+        let engine =
+            BacktestEngine::new_simple(factor, returns, 2, WeightMethod::Equal, 1, 1, 0.001, None);
 
         // Single day returns zero-length group returns (no forward returns possible)
         let groups = engine.compute_quantile_groups().unwrap();
@@ -1020,9 +1051,8 @@ mod tests {
         let factor = Array2::from_shape_vec((3, 1), vec![1.0, 2.0, 3.0]).unwrap();
         let returns = Array2::from_shape_vec((3, 1), vec![0.01, 0.02, 0.03]).unwrap();
 
-        let engine = BacktestEngine::new_simple(
-            factor, returns, 2, WeightMethod::Equal, 1, 1, 0.001, None,
-        );
+        let engine =
+            BacktestEngine::new_simple(factor, returns, 2, WeightMethod::Equal, 1, 1, 0.001, None);
 
         // Single asset - groups can still be computed
         let groups = engine.compute_quantile_groups().unwrap();
@@ -1045,15 +1075,13 @@ mod tests {
         let returns = Array2::from_shape_vec(
             (3, 4),
             vec![
-                -0.01, -0.02, -0.03, -0.04, -0.04, -0.03, -0.02, -0.01, -0.02, -0.01, -0.03,
-                -0.02,
+                -0.01, -0.02, -0.03, -0.04, -0.04, -0.03, -0.02, -0.01, -0.02, -0.01, -0.03, -0.02,
             ],
         )
         .unwrap();
 
-        let engine = BacktestEngine::new_simple(
-            factor, returns, 4, WeightMethod::Equal, 1, 1, 0.001, None,
-        );
+        let engine =
+            BacktestEngine::new_simple(factor, returns, 4, WeightMethod::Equal, 1, 1, 0.001, None);
 
         let result = engine.run().unwrap();
         assert!(result.long_short_cum_return.is_finite());
@@ -1183,9 +1211,8 @@ mod tests {
         assert_eq!(result.group_returns.dim(), (4, 5));
 
         // Test with 2 quantiles (median split)
-        let engine2 = BacktestEngine::new_simple(
-            factor, returns, 2, WeightMethod::Equal, 1, 1, 0.001, None,
-        );
+        let engine2 =
+            BacktestEngine::new_simple(factor, returns, 2, WeightMethod::Equal, 1, 1, 0.001, None);
 
         let result2 = engine2.run().unwrap();
         assert_eq!(result2.group_returns.dim(), (4, 2));
