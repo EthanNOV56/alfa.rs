@@ -489,7 +489,11 @@ impl ExpressionOptimizer {
                     }
 
                     // For aggregates
-                    Expr::Aggregate { op, expr: inner, distinct } => {
+                    Expr::Aggregate {
+                        op,
+                        expr: inner,
+                        distinct,
+                    } => {
                         let new_inner = self.visit(inner);
                         Expr::Aggregate {
                             op: *op,
@@ -499,7 +503,11 @@ impl ExpressionOptimizer {
                     }
 
                     // For conditional - process all branches
-                    Expr::Conditional { condition, then_expr, else_expr } => {
+                    Expr::Conditional {
+                        condition,
+                        then_expr,
+                        else_expr,
+                    } => {
                         let new_cond = self.visit(condition);
                         let new_then = self.visit(then_expr);
                         let new_else = self.visit(else_expr);
@@ -511,7 +519,10 @@ impl ExpressionOptimizer {
                     }
 
                     // For cast
-                    Expr::Cast { expr: inner, data_type } => {
+                    Expr::Cast {
+                        expr: inner,
+                        data_type,
+                    } => {
                         let new_inner = self.visit(inner);
                         Expr::Cast {
                             expr: Arc::new(new_inner),
@@ -707,7 +718,13 @@ mod tests {
         let expr = Expr::lit_int(10).binary(BinaryOp::Modulo, Expr::lit_int(3));
         let optimized = optimizer.optimize(expr);
         // Modulo is not folded, so it remains a BinaryExpr
-        assert!(matches!(optimized, Expr::BinaryExpr { op: BinaryOp::Modulo, .. }));
+        assert!(matches!(
+            optimized,
+            Expr::BinaryExpr {
+                op: BinaryOp::Modulo,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -722,7 +739,9 @@ mod tests {
         // Test unary negation on float
         let expr = Expr::lit_float(3.5).neg();
         let optimized = optimizer.optimize(expr);
-        assert!(matches!(optimized, Expr::Literal(Literal::Float(f)) if (f - (-3.5)).abs() < 1e-10));
+        assert!(
+            matches!(optimized, Expr::Literal(Literal::Float(f)) if (f - (-3.5)).abs() < 1e-10)
+        );
 
         // Test NOT on boolean
         let expr = Expr::lit_bool(true).not();
@@ -762,7 +781,13 @@ mod tests {
         // Test sqrt on negative (should not fold)
         let expr = Expr::lit_float(-4.0).sqrt();
         let optimized = optimizer.optimize(expr);
-        assert!(matches!(optimized, Expr::UnaryExpr { op: UnaryOp::Sqrt, .. }));
+        assert!(matches!(
+            optimized,
+            Expr::UnaryExpr {
+                op: UnaryOp::Sqrt,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -777,7 +802,9 @@ mod tests {
         // Test exp (using unary expression)
         let expr = Expr::unary(Expr::lit_float(2.0), UnaryOp::Exp);
         let optimized = optimizer.optimize(expr);
-        assert!(matches!(optimized, Expr::Literal(Literal::Float(f)) if (f - std::f64::consts::E * std::f64::consts::E).abs() < 1e-6));
+        assert!(
+            matches!(optimized, Expr::Literal(Literal::Float(f)) if (f - std::f64::consts::E * std::f64::consts::E).abs() < 1e-6)
+        );
     }
 
     // ==================== Additional Algebraic Simplification Tests ====================
@@ -866,11 +893,7 @@ mod tests {
         let optimizer = ExpressionOptimizer::new();
 
         // Test conditional with constant condition - currently not simplified
-        let expr = Expr::conditional(
-            Expr::lit_bool(true),
-            Expr::lit_int(1),
-            Expr::lit_int(0)
-        );
+        let expr = Expr::conditional(Expr::lit_bool(true), Expr::lit_int(1), Expr::lit_int(0));
         let optimized = optimizer.optimize(expr);
         // Conditional is not simplified when condition is constant
         assert!(matches!(optimized, Expr::Conditional { .. }));
@@ -884,7 +907,10 @@ mod tests {
         let expr = Expr::lit_int(5).cast(DataType::Float);
         let optimized = optimizer.optimize(expr);
         // Cast of literal may or may not be optimized depending on implementation
-        assert!(matches!(optimized, Expr::Cast { .. } | Expr::Literal(Literal::Float(5.0))));
+        assert!(matches!(
+            optimized,
+            Expr::Cast { .. } | Expr::Literal(Literal::Float(5.0))
+        ));
     }
 
     #[test]

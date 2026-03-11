@@ -105,10 +105,10 @@ pub struct BacktestConfig {
 impl Default for BacktestConfig {
     fn default() -> Self {
         Self {
-            quantiles: 5,
+            quantiles: 10,
             weight_method: WeightMethod::Equal,
-            long_top_n: 50,
-            short_top_n: 50,
+            long_top_n: 1,
+            short_top_n: 1,
             fee_config: FeeConfig::default(),
             position_config: PositionConfig::default(),
         }
@@ -201,46 +201,69 @@ impl BacktestEngine {
         &self,
         factor: Array2<f64>,
         returns: Array2<f64>,
-        adj_factor: Option<Array2<f64>>,
-        volume: Option<Array2<f64>>,
+        adj_factor: Array2<f64>,
+        close: Array2<f64>,
+        vwap: Array2<f64>,
     ) -> Result<BacktestResult, String> {
         assert_eq!(
             factor.shape(),
             returns.shape(),
             "Factor and returns must have same shape"
         );
-        if let Some(ref adj) = adj_factor {
-            assert_eq!(
-                adj.shape(),
-                factor.shape(),
-                "Adjustment factor must have same shape as factor"
-            );
-        }
-        if let Some(ref vol) = volume {
-            assert_eq!(
-                vol.shape(),
-                factor.shape(),
-                "Volume must have same shape as factor"
-            );
-        }
+        assert_eq!(
+            factor.shape(),
+            close.shape(),
+            "Factor and close must have same shape"
+        );
+        assert_eq!(
+            factor.shape(),
+            vwap.shape(),
+            "Factor and vwap must have same shape"
+        );
+        assert_eq!(
+            adj_factor.shape(),
+            factor.shape(),
+            "Adjustment factor must have same shape as factor"
+        );
 
-        let (n_days, _n_assets) = factor.dim();
+        let (n_days, n_assets) = factor.dim();
 
         // Compute quantile groups
         let group_labels = Self::compute_quantile_groups(&factor, self.config.quantiles)?;
 
-        // Compute group returns with adjusted prices
+        // Compute weight matrix from factor using quantile-based approach
+        let weights = Self::compute_weight_matrix_from_factor(
+            &factor,
+            &group_labels,
+            n_days,
+            n_assets,
+            self.config.quantiles,
+            self.config.long_top_n,
+            self.config.short_top_n,
+            &self.config.position_config,
+        );
+
+        // Compute portfolio returns using weight matrix, close, and vwap
+        let _portfolio_returns = Self::compute_portfolio_return(
+            &weights,
+            &close,
+            &vwap,
+            self.config.fee_config.commission_rate,
+            self.config.fee_config.slippage.normal_slippage_rate,
+        );
+
+        // Compute group returns first (needed for long/short calculation)
         let (_, group_returns) = Self::compute_group_returns(
             &factor,
             &returns,
-            adj_factor.as_ref(),
+            Some(&adj_factor),
             &group_labels,
             self.config.quantiles,
             self.config.weight_method,
-            None, // weights - can be extended later
+            None,
         )?;
 
-        // Compute long-short returns with enhanced position config
+        // Compute long/short returns using group returns
         let (long_returns, short_returns, long_short_returns) = Self::compute_long_short_returns(
             &group_returns,
             self.config.quantiles,
@@ -249,17 +272,11 @@ impl BacktestEngine {
             &self.config.position_config,
         );
 
-        // Apply fees (commission + slippage)
-        let long_short_returns =
-            Self::apply_fees(&long_short_returns, volume.as_ref(), &self.config.fee_config);
-
-        // Compute cumulative returns (use log returns for numerical stability)
-        let group_cum_returns = Self::compute_cumulative_returns(&group_returns);
-        let long_short_cum_return = Self::compute_total_return_log(&long_short_returns);
-
         // Compute IC series
-        let (ic_series, ic_mean, ic_ir) =
-            Self::compute_ic_series(&factor, &returns)?;
+        let (ic_series, ic_mean, ic_ir) = Self::compute_ic_series(&factor, &returns)?;
+
+        // Compute cumulative returns
+        let long_short_cum_return = Self::compute_total_return_log(&long_short_returns);
 
         // Compute additional metrics
         let total_return = long_short_cum_return;
@@ -267,6 +284,9 @@ impl BacktestEngine {
         let sharpe_ratio = Self::compute_sharpe_ratio(&long_short_returns, n_days);
         let max_drawdown = Self::compute_max_drawdown(&long_short_returns);
         let turnover = Self::compute_turnover(&group_labels);
+
+        // Compute group cumulative returns
+        let group_cum_returns = Self::compute_cumulative_returns(&group_returns);
 
         Ok(BacktestResult {
             group_returns,
@@ -284,6 +304,77 @@ impl BacktestEngine {
             long_returns,
             short_returns,
         })
+    }
+
+    /// Compute weight matrix from factor using quantile-based approach
+    ///
+    /// Returns a weight matrix of shape [n_days, n_symbols] where:
+    /// - Long positions (top quantiles): positive weights
+    /// - Short positions (bottom quantiles): negative weights
+    /// - Other positions: zero weights
+    fn compute_weight_matrix_from_factor(
+        factor: &Array2<f64>,
+        group_labels: &Array2<usize>,
+        n_days: usize,
+        n_assets: usize,
+        quantiles: usize,
+        long_top_n: usize,
+        short_top_n: usize,
+        position_config: &PositionConfig,
+    ) -> Array2<f64> {
+        // Validate parameters - fail fast with clear error messages
+        if long_top_n == 0 || long_top_n > quantiles {
+            panic!("long_top_n must be in range [1, quantiles], got {} but quantiles={}", long_top_n, quantiles);
+        }
+        if short_top_n == 0 || short_top_n > quantiles {
+            panic!("short_top_n must be in range [1, quantiles], got {} but quantiles={}", short_top_n, quantiles);
+        }
+
+        let mut weights = Array2::<f64>::zeros((n_days, n_assets));
+
+        let long_groups: Vec<usize> = (quantiles - long_top_n + 1..=quantiles).collect();
+        let short_groups: Vec<usize> = (1..=short_top_n).collect();
+
+        let long_ratio = position_config.long_ratio;
+        let short_ratio = position_config.short_ratio;
+
+        for day in 0..n_days {
+            // Count long and short assets
+            let mut long_indices = Vec::new();
+            let mut short_indices = Vec::new();
+
+            for asset in 0..n_assets {
+                let label = group_labels[[day, asset]];
+                if long_groups.contains(&label) {
+                    long_indices.push(asset);
+                } else if short_groups.contains(&label) {
+                    short_indices.push(asset);
+                }
+            }
+
+            // Compute equal weights for long and short positions
+            let long_weight = if !long_indices.is_empty() {
+                long_ratio / long_indices.len() as f64
+            } else {
+                0.0
+            };
+
+            let short_weight = if !short_indices.is_empty() {
+                -short_ratio / short_indices.len() as f64
+            } else {
+                0.0
+            };
+
+            // Assign weights
+            for &idx in &long_indices {
+                weights[[day, idx]] = long_weight;
+            }
+            for &idx in &short_indices {
+                weights[[day, idx]] = short_weight;
+            }
+        }
+
+        weights
     }
 
     fn compute_quantile_groups(
@@ -413,6 +504,14 @@ impl BacktestEngine {
         let mut long_returns = Array1::<f64>::zeros(n_days);
         let mut short_returns = Array1::<f64>::zeros(n_days);
         let mut long_short = Array1::<f64>::zeros(n_days);
+
+        // Validate parameters - fail fast with clear error messages
+        if long_top_n == 0 || long_top_n > quantiles {
+            panic!("long_top_n must be in range [1, quantiles], got {} but quantiles={}", long_top_n, quantiles);
+        }
+        if short_top_n == 0 || short_top_n > quantiles {
+            panic!("short_top_n must be in range [1, quantiles], got {} but quantiles={}", short_top_n, quantiles);
+        }
 
         let long_groups: Vec<usize> = (quantiles - long_top_n + 1..=quantiles).collect();
         let short_groups: Vec<usize> = (1..=short_top_n).collect();
@@ -892,6 +991,11 @@ mod tests {
         )
         .unwrap();
 
+        // Create close and vwap arrays (using close = 1.0 as placeholder)
+        let close = Array2::from_elem((3, 4), 1.0);
+        let vwap = Array2::from_elem((3, 4), 1.0);
+        let adj_factor = Array2::from_elem((3, 4), 1.0);
+
         let config = BacktestConfig {
             quantiles: 4,
             weight_method: WeightMethod::Equal,
@@ -907,7 +1011,7 @@ mod tests {
         let engine = BacktestEngine::with_config(config);
 
         let result = engine
-            .run(factor, returns, None, None)
+            .run(factor, returns, adj_factor, close, vwap)
             .unwrap();
         assert!(result.long_short_cum_return.is_finite());
     }
@@ -981,6 +1085,9 @@ mod tests {
         .unwrap();
 
         // Test via public API
+        let close = Array2::from_elem((3, 4), 1.0);
+        let vwap = Array2::from_elem((3, 4), 1.0);
+
         let config = BacktestConfig {
             quantiles: 4,
             weight_method: WeightMethod::Equal,
@@ -993,8 +1100,9 @@ mod tests {
             position_config: Default::default(),
         };
 
+        let adj_factor = Array2::from_elem((3, 4), 1.0);
         let engine = BacktestEngine::with_config(config);
-        let result = engine.run(factor, returns, None, None).unwrap();
+        let result = engine.run(factor, returns.clone(), adj_factor, close, vwap).unwrap();
 
         // Verify result is valid
         assert!(result.group_returns.dim().1 == 4);
@@ -1017,6 +1125,9 @@ mod tests {
         .unwrap();
 
         // Test via public API
+        let close = Array2::from_elem((3, 4), 1.0);
+        let vwap = Array2::from_elem((3, 4), 1.0);
+
         let config = BacktestConfig {
             quantiles: 4,
             weight_method: WeightMethod::Equal,
@@ -1029,8 +1140,9 @@ mod tests {
             position_config: Default::default(),
         };
 
+        let adj_factor = Array2::from_elem((3, 4), 1.0);
         let engine = BacktestEngine::with_config(config);
-        let result = engine.run(factor, returns, None, None).unwrap();
+        let result = engine.run(factor, returns.clone(), adj_factor, close, vwap).unwrap();
 
         // group_returns should have shape (n_days-1, quantiles) = (2, 4)
         assert_eq!(result.group_returns.dim(), (2, 4));
@@ -1053,6 +1165,9 @@ mod tests {
         .unwrap();
 
         // Test via public API
+        let close = Array2::from_elem((3, 4), 1.0);
+        let vwap = Array2::from_elem((3, 4), 1.0);
+
         let config = BacktestConfig {
             quantiles: 4,
             weight_method: WeightMethod::Equal,
@@ -1066,7 +1181,8 @@ mod tests {
         };
 
         let engine = BacktestEngine::with_config(config);
-        let result = engine.run(factor.clone(), returns.clone(), None, None).unwrap();
+        let adj_factor = Array2::from_elem((3, 4), 1.0);
+        let result = engine.run(factor.clone(), returns.clone(), adj_factor, close, vwap).unwrap();
 
         // Verify long/short returns exist
         assert!(result.long_returns.len() > 0);
@@ -1088,6 +1204,9 @@ mod tests {
         )
         .unwrap();
 
+        let close = Array2::from_elem((3, 4), 1.0);
+        let vwap = Array2::from_elem((3, 4), 1.0);
+
         let config = BacktestConfig {
             quantiles: 4,
             weight_method: WeightMethod::Equal,
@@ -1101,7 +1220,7 @@ mod tests {
         };
 
         let engine = BacktestEngine::with_config(config);
-        let result = engine.run(factor, returns, None, None).unwrap();
+        let result = engine.run(factor, returns.clone(), Array2::from_elem((3, 4), 1.0), close.clone(), vwap.clone()).unwrap();
 
         // Verify result is valid
         assert!(result.long_short_returns.len() > 0);
@@ -1123,6 +1242,9 @@ mod tests {
         )
         .unwrap();
 
+        let close = Array2::from_elem((3, 4), 1.0);
+        let vwap = Array2::from_elem((3, 4), 1.0);
+
         let config = BacktestConfig {
             quantiles: 4,
             weight_method: WeightMethod::Equal,
@@ -1136,7 +1258,7 @@ mod tests {
         };
 
         let engine = BacktestEngine::with_config(config);
-        let result = engine.run(factor, returns, None, None).unwrap();
+        let result = engine.run(factor, returns.clone(), Array2::from_elem((3, 4), 1.0), close.clone(), vwap.clone()).unwrap();
 
         // Cumulative returns should have same shape as group_returns
         assert_eq!(result.group_cum_returns.dim(), result.group_returns.dim());
@@ -1158,6 +1280,9 @@ mod tests {
         )
         .unwrap();
 
+        let close = Array2::from_elem((3, 4), 1.0);
+        let vwap = Array2::from_elem((3, 4), 1.0);
+
         let config = BacktestConfig {
             quantiles: 4,
             weight_method: WeightMethod::Equal,
@@ -1171,7 +1296,7 @@ mod tests {
         };
 
         let engine = BacktestEngine::with_config(config);
-        let result = engine.run(factor, returns, None, None).unwrap();
+        let result = engine.run(factor, returns.clone(), Array2::from_elem((3, 4), 1.0), close.clone(), vwap.clone()).unwrap();
 
         // IC series length should be n_days - 1
         assert_eq!(result.ic_series.len(), 2);
@@ -1227,10 +1352,13 @@ mod tests {
             position_config: Default::default(),
         };
 
+        let close = Array2::from_elem((3, 4), 1.0);
+        let vwap = Array2::from_elem((3, 4), 1.0);
+
         let engine = BacktestEngine::with_config(config);
 
         // Should handle NaN gracefully
-        let result = engine.run(factor, returns, None, None).unwrap();
+        let result = engine.run(factor, returns.clone(), Array2::from_elem((3, 4), 1.0), close.clone(), vwap.clone()).unwrap();
         assert!(result.long_short_cum_return.is_finite());
     }
 
@@ -1254,8 +1382,12 @@ mod tests {
 
         let engine = BacktestEngine::with_config(config);
 
+        let close = Array2::from_elem((1, 4), 1.0);
+        let vwap = Array2::from_elem((1, 4), 1.0);
+        let adj_factor = Array2::from_elem((1, 4), 1.0);
+
         // Single day returns - should work but produce empty results
-        let result = engine.run(factor, returns.clone(), None, None);
+        let result = engine.run(factor, returns.clone(), adj_factor, close, vwap);
         // Single day might fail or produce empty results - that's expected
         assert!(result.is_err() || result.unwrap().group_returns.dim().0 == 0);
     }
@@ -1281,9 +1413,13 @@ mod tests {
 
         let engine = BacktestEngine::with_config(config);
 
+        let close = Array2::from_elem((3, 1), 1.0);
+        let vwap = Array2::from_elem((3, 1), 1.0);
+        let adj_factor = Array2::from_elem((3, 1), 1.0);
+
         // Single asset - run might fail due to edge case handling
         // Just verify it doesn't panic
-        let _ = engine.run(factor, returns, None, None);
+        let _ = engine.run(factor, returns.clone(), adj_factor, close, vwap);
     }
 
     #[test]
@@ -1303,6 +1439,20 @@ mod tests {
         )
         .unwrap();
 
+        // Create close prices that reflect the returns
+        // Day 0: close = 1.0, Day 1: close = 0.99, 0.98, etc.
+        let close = Array2::from_shape_vec(
+            (3, 4),
+            vec![
+                1.0, 1.0, 1.0, 1.0,       // day 0
+                0.99, 0.98, 0.97, 0.96,   // day 1: returns = -0.01, -0.02, -0.03, -0.04
+                0.95, 0.94, 0.93, 0.92,   // day 2
+            ],
+        )
+        .unwrap();
+
+        let vwap = close.clone();
+
         let config = BacktestConfig {
             quantiles: 4,
             weight_method: WeightMethod::Equal,
@@ -1317,8 +1467,9 @@ mod tests {
 
         let engine = BacktestEngine::with_config(config);
 
+        let adj_factor = Array2::from_elem((3, 4), 1.0);
         let result = engine
-            .run(factor, returns, None, None)
+            .run(factor, returns, adj_factor, close, vwap)
             .unwrap();
         assert!(result.long_short_cum_return.is_finite());
         // Negative returns should result in negative cumulative return
@@ -1387,8 +1538,11 @@ mod tests {
 
         let engine = BacktestEngine::with_config(config);
 
+        let close = Array2::from_elem((10, 5), 1.0);
+        let vwap = Array2::from_elem((10, 5), 1.0);
+
         let result = engine
-            .run(factor, returns, None, None)
+            .run(factor, returns, Array2::from_elem((10, 5), 1.0), close, vwap)
             .unwrap();
 
         // Verify all result fields are present and finite
@@ -1443,9 +1597,12 @@ mod tests {
             position_config: Default::default(),
         };
 
+        let close = Array2::from_elem((5, 10), 1.0);
+        let vwap = Array2::from_elem((5, 10), 1.0);
+
         let engine = BacktestEngine::with_config(config);
         let result = engine
-            .run(factor.clone(), returns.clone(), None, None)
+            .run(factor.clone(), returns.clone(), Array2::from_elem((5, 10), 1.0), close.clone(), vwap.clone())
             .unwrap();
         assert_eq!(result.group_returns.dim(), (4, 5));
 
@@ -1463,8 +1620,9 @@ mod tests {
         };
 
         let engine2 = BacktestEngine::with_config(config2);
+        let adj_factor2 = Array2::from_elem((5, 10), 1.0);
         let result2 = engine2
-            .run(factor, returns, None, None)
+            .run(factor, returns, adj_factor2, close, vwap)
             .unwrap();
         assert_eq!(result2.group_returns.dim(), (4, 2));
     }
@@ -1495,6 +1653,10 @@ mod tests {
         )
         .unwrap();
 
+        let close = Array2::from_elem((5, 4), 1.0);
+        let vwap = Array2::from_elem((5, 4), 1.0);
+        let adj_factor = Array2::from_elem((5, 4), 1.0);
+
         // Market neutral (long - short)
         let position_neutral = PositionConfig {
             long_ratio: 1.0,
@@ -1513,7 +1675,7 @@ mod tests {
 
         let engine_neutral = BacktestEngine::with_config(config_neutral);
         let result_neutral = engine_neutral
-            .run(factor.clone(), returns.clone(), None, None)
+            .run(factor.clone(), returns.clone(), adj_factor.clone(), close.clone(), vwap.clone())
             .unwrap();
 
         // Directional (long only)
@@ -1534,7 +1696,7 @@ mod tests {
 
         let engine_directional = BacktestEngine::with_config(config_directional);
         let result_directional = engine_directional
-            .run(factor, returns, None, None)
+            .run(factor, returns, adj_factor, close, vwap)
             .unwrap();
 
         // Both should produce finite results

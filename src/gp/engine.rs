@@ -1177,11 +1177,18 @@ impl RealBacktestFitnessEvaluator {
 
         let engine = BacktestEngine::with_config(config);
 
+        // Create close and vwap as placeholder (using returns as proxy)
+        let close = Array2::from_elem(returns.dim(), 1.0);
+        let vwap = Array2::from_elem(returns.dim(), 1.0);
+        // adj_factor is now required - use ones as default
+        let adj_factor = Array2::from_elem(returns.dim(), 1.0);
+
         match engine.run(
             factor.clone(),
             returns.clone(),
-            None, // adj_factor
-            None, // volume
+            adj_factor,
+            close,
+            vwap,
         ) {
             Ok(result) => {
                 // Check for valid results

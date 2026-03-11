@@ -177,13 +177,9 @@ export function renderChart(navData: NavData, canvas: HTMLCanvasElement): void {
             label: (context) => {
               const value = context.parsed.y;
               if (value === null) return '';
-              const prevValue = context.dataset.data[context.dataIndex - 1];
-              const change = typeof prevValue === 'number' && context.dataIndex > 0
-                ? value - prevValue
-                : value - 1;
-              const changeStr = formatPercent(change);
+              // Show NAV value directly, without percentage change
               const valueStr = formatNumber(value);
-              return `${context.dataset.label}: ${valueStr} (${changeStr})`;
+              return `${context.dataset.label}: ${valueStr}`;
             },
           },
         },
