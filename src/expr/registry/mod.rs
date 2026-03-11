@@ -14,14 +14,16 @@ pub use parser::parse_expression;
 
 use crate::expr::ast::{BinaryOp, Expr, Literal, UnaryOp};
 use crate::lazy::LogicalPlan;
+use ndarray::Array1;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::time::Instant;
 
 pub use functions::{
-    collect_unique_subexpressions, eval_expr_memoized, eval_function_memoized,
-    eval_ts_function_memoized, expr_hash, extract_columns,
+    collect_unique_subexpressions, eval_expr_memoized, eval_expr_vectorized,
+    eval_function_memoized, eval_function_vectorized, eval_ts_function_memoized,
+    eval_ts_function_vectorized, expr_hash, extract_columns,
 };
 
 /// Factor Registry
@@ -233,6 +235,132 @@ impl FactorRegistry {
                     FactorResult {
                         name,
                         values: result,
+                        n_rows,
+                        n_cols: 1,
+                        compute_time_ms: 0,
+                    },
+                );
+            }
+        }
+
+        let elapsed = start.elapsed().as_millis() as u64;
+
+        // Update compute time
+        for result in results.values_mut() {
+            result.compute_time_ms = elapsed;
+        }
+
+        Ok(results)
+    }
+
+    /// Batch compute multiple factors with vectorized (SIMD) evaluation
+    ///
+    /// This method uses ndarray::Array1 for SIMD-optimized operations.
+    /// It builds a computation graph and computes each unique subexpression only once.
+    pub fn compute_batch_vectorized(
+        &self,
+        names: &[&str],
+        data: &HashMap<String, Array1<f64>>,
+        parallel: bool,
+    ) -> Result<HashMap<String, FactorResult>, String> {
+        if names.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let n_rows = data.values().next().map(|arr| arr.len()).unwrap_or(0);
+        if n_rows == 0 {
+            return Err("Empty data".to_string());
+        }
+
+        let start = Instant::now();
+
+        // Step 1: Build computation graph - collect all unique subexpressions
+        let mut unique_exprs: Vec<Expr> = Vec::new();
+        let mut expr_hash_set: HashSet<u64> = HashSet::new();
+        let mut factor_exprs_owned: Vec<Expr> = Vec::new();
+        let mut factor_exprs: Vec<(String, &Expr)> = Vec::new();
+
+        for name in names {
+            let info = self
+                .factors
+                .get(*name)
+                .ok_or_else(|| format!("Factor '{}' not found", name))?;
+
+            // Extract the expression from plan (unwrap from Projection)
+            let expr = match &info.plan {
+                LogicalPlan::Projection { exprs, .. } => exprs
+                    .first()
+                    .map(|(_, e)| e.clone())
+                    .ok_or("Empty expression")?,
+                _ => continue,
+            };
+
+            // Collect subexpressions
+            collect_unique_subexpressions(&expr, &mut unique_exprs, &mut expr_hash_set);
+            factor_exprs_owned.push(expr);
+        }
+
+        // Build references after all owned expressions are created
+        for (i, name) in names.iter().enumerate() {
+            factor_exprs.push((name.to_string(), &factor_exprs_owned[i]));
+        }
+
+        // Step 2: Build cache using memoization
+        let mut cache: HashMap<u64, Array1<f64>> = HashMap::new();
+
+        // Pre-populate cache with base columns
+        for (name, arr) in data {
+            let col_hash = {
+                let mut hasher = DefaultHasher::new();
+                0u8.hash(&mut hasher);
+                name.hash(&mut hasher);
+                hasher.finish()
+            };
+            cache.insert(col_hash, arr.clone());
+        }
+
+        // Step 3: Compute final factors using memoized vectorized evaluation
+        let mut results: HashMap<String, FactorResult> = HashMap::new();
+
+        if parallel && factor_exprs.len() > 1 {
+            // Parallel computation using rayon
+            use rayon::prelude::*;
+
+            let results_vec: Vec<(String, FactorResult)> = factor_exprs
+                .par_iter()
+                .filter_map(|(name, expr)| {
+                    let mut thread_cache = cache.clone();
+                    match eval_expr_vectorized(expr, data, &mut thread_cache) {
+                        Ok(arr) => Some((
+                            name.clone(),
+                            FactorResult {
+                                name: name.clone(),
+                                values: arr.to_vec(),
+                                n_rows,
+                                n_cols: 1,
+                                compute_time_ms: 0,
+                            },
+                        )),
+                        Err(e) => {
+                            eprintln!("Error computing {}: {}", name, e);
+                            None
+                        }
+                    }
+                })
+                .collect();
+
+            for (name, result) in results_vec {
+                results.insert(name, result);
+            }
+        } else {
+            // Sequential computation
+            for (name, expr) in factor_exprs {
+                let arr = eval_expr_vectorized(expr, data, &mut cache)?;
+                results.insert(
+                    name.clone(),
+                    FactorResult {
+                        name,
+                        values: arr.to_vec(),
                         n_rows,
                         n_cols: 1,
                         compute_time_ms: 0,
@@ -727,7 +855,9 @@ mod tests {
         let mut registry = FactorRegistry::new();
         registry.set_columns(vec!["close".to_string()]);
 
-        registry.register("alpha_001", "rank(ts_mean(close, 3))").unwrap();
+        registry
+            .register("alpha_001", "rank(ts_mean(close, 3))")
+            .unwrap();
 
         let mut data: HashMap<String, Vec<f64>> = HashMap::new();
         data.insert("close".to_string(), vec![1.0, 5.0, 3.0, 2.0, 4.0]);
