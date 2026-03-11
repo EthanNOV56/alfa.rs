@@ -1,16 +1,19 @@
-# alfars: From epsilon to alpha.
+# alfars
 
 <p align="center">
   <img src="assets/logo.png" alt="alfars" width="200"/>
 </p>
 
-**Informed by data;**
-**Enlightened by research;**
-**Engineered with AI;**
-**Executed with algorithms.**
+**From epsilon to alpha.**
 
+```
+Informed  by data;
+Enlightened by research;
+Engineered with AI;
+Executed  with algorithms.
+```
 
-High-performance quant workflow with Rust core and Python bindings.
+High-performance factor expression and backtesting framework with Rust core and Python bindings.
 
 [![Rust](https://github.com/EthanNOV56/alfa.rs/actions/workflows/rust.yml/badge.svg)](https://github.com/EthanNOV56/alfa.rs/actions)
 [![Python](https://img.shields.io/pypi/v/alfars.svg)](https://pypi.org/project/alfars/)
