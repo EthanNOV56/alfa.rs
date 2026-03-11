@@ -47,7 +47,7 @@ async function handleApiError(response: Response): Promise<string> {
  * Run a backtest and get NAV data for visualization
  */
 export async function runBacktest(request: BacktestRequest): Promise<NavData> {
-  console.log('[runBacktest] Starting request, factor shape:', request.factor?.length, 'x', request.factor?.[0]?.length);
+  console.log('[runBacktest] Starting request, factor shape:', request.factor?.length, 'x', request.factor?.[0]?.length, ', cacheId:', request.cacheId);
   const requestBody = JSON.stringify(request);
   console.log('[runBacktest] Request body size:', requestBody.length, 'bytes');
 

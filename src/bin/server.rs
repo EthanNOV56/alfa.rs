@@ -610,6 +610,10 @@ async fn run_backtest(
 ) -> Result<Json<NavData>, (StatusCode, String)> {
     eprintln!("[run_backtest] Received request");
 
+    // Extract close and vwap data - track whether we have real data
+    let mut close_data: Option<Vec<Vec<f64>>> = None;
+    let mut vwap_data: Option<Vec<Vec<f64>>> = None;
+
     // Check if cache_id is provided
     let (factor, returns, dates) = if let Some(cache_id) = &req.cache_id {
         eprintln!(
@@ -671,6 +675,26 @@ async fn run_backtest(
             factor.push(ranked);
         }
 
+        // Extract close and compute vwap (high + low + close) / 3
+        close_data = Some(loaded.close.clone());
+        let mut computed_vwap: Vec<Vec<f64>> = Vec::with_capacity(n_days);
+        for d in 0..n_days {
+            let mut vwap_row = Vec::with_capacity(n_assets);
+            for a in 0..n_assets {
+                let h = loaded.high[d][a];
+                let l = loaded.low[d][a];
+                let c = loaded.close[d][a];
+                let v = if h.is_finite() && l.is_finite() && c.is_finite() {
+                    (h + l + c) / 3.0
+                } else {
+                    c
+                };
+                vwap_row.push(v);
+            }
+            computed_vwap.push(vwap_row);
+        }
+        vwap_data = Some(computed_vwap);
+
         (factor, loaded.returns, Some(loaded.dates))
     } else {
         return Err((
@@ -680,6 +704,12 @@ async fn run_backtest(
     };
 
     let n_days = factor.len();
+    if n_days == 0 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Factor data is empty".to_string(),
+        ));
+    }
     let n_assets = factor[0].len();
 
     if factor.iter().any(|row| row.len() != n_assets) {
@@ -707,6 +737,34 @@ async fn run_backtest(
                     format!("Invalid returns shape: {}", e),
                 )
             })?;
+
+    // Convert close to ndarray, or use returns as fallback (for backward compatibility)
+    let close_array = if let Some(close) = close_data {
+        Array2::from_shape_vec((n_days, n_assets), close.into_iter().flatten().collect())
+            .map_err(|e| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    format!("Invalid close shape: {}", e),
+                )
+            })?
+    } else {
+        // Fallback: use close = 1.0 for all (so returns are based purely on price changes)
+        Array2::from_elem((n_days, n_assets), 1.0)
+    };
+
+    // Convert vwap to ndarray, or use close as fallback
+    let vwap_array = if let Some(vwap) = vwap_data {
+        Array2::from_shape_vec((n_days, n_assets), vwap.into_iter().flatten().collect())
+            .map_err(|e| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    format!("Invalid vwap shape: {}", e),
+                )
+            })?
+    } else {
+        // Fallback: use vwap = close (trading return will be ~0)
+        close_array.clone()
+    };
 
     // Default parameters
     let quantiles = req.quantiles.unwrap_or(10);
@@ -741,9 +799,12 @@ async fn run_backtest(
 
     let engine = BacktestEngine::with_config(config);
 
+    // Create adj_factor as ones (no adjustment)
+    let adj_factor = Array2::from_elem(factor_array.dim(), 1.0);
+
     eprintln!("[run_backtest] Running backtest engine...");
     let result = engine
-        .run(factor_array, returns_array, None, None)
+        .run(factor_array, returns_array, adj_factor, close_array, vwap_array)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     eprintln!("[run_backtest] Backtest engine completed");
 

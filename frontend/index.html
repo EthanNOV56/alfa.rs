@@ -24,11 +24,6 @@
       <main>
         <!-- Demo Backtest Page -->
         <section id="page-backtest" class="page">
-          <div class="controls">
-            <button id="runRealBacktest">Run Backtest</button>
-            <button id="clearChart">Clear</button>
-          </div>
-
           <!-- Alpha Selection -->
           <div class="alpha-selection-section" id="alphaSelectionSection">
             <h3>Alpha Selection</h3>
@@ -83,41 +78,15 @@
                 <button id="addBacktestFilterBtn">+ Add Filter</button>
               </div>
             </div>
+            <div class="controls" style="margin-top: 16px;">
+              <button id="runRealBacktest">Run Backtest</button>
+              <button id="clearChart">Clear</button>
+            </div>
           </div>
 
           <div class="chart-container">
             <canvas id="navChart"></canvas>
           </div>
-
-          <section class="metrics" id="metrics">
-            <h2>Performance Metrics</h2>
-            <div class="metrics-grid" id="metricsGrid">
-              <div class="metric">
-                <span class="metric-label">Long-Short Return</span>
-                <span class="metric-value" id="lsReturn">--</span>
-              </div>
-              <div class="metric">
-                <span class="metric-label">Annualized Return</span>
-                <span class="metric-value" id="annReturn">--</span>
-              </div>
-              <div class="metric">
-                <span class="metric-label">Sharpe Ratio</span>
-                <span class="metric-value" id="sharpe">--</span>
-              </div>
-              <div class="metric">
-                <span class="metric-label">Max Drawdown</span>
-                <span class="metric-value" id="maxDd">--</span>
-              </div>
-              <div class="metric">
-                <span class="metric-label">IC Mean</span>
-                <span class="metric-value" id="icMean">--</span>
-              </div>
-              <div class="metric">
-                <span class="metric-label">IC IR</span>
-                <span class="metric-value" id="icIr">--</span>
-              </div>
-            </div>
-          </section>
         </section>
 
         <!-- Data Source Page -->
@@ -398,6 +367,27 @@
             <div class="alpha-detail-container">
               <div id="alphaDetail" class="alpha-detail hidden">
                 <h3 id="alphaDetailTitle">Alpha Details</h3>
+
+                <!-- Data Source Controls for Alpha Library -->
+                <div class="data-source-controls" id="alphaDataControls" style="margin-top: 16px;">
+                  <h4>Data Source</h4>
+                  <div class="config-field">
+                    <label>Table:</label>
+                    <select id="alphaTableSelect">
+                      <option value="">-- Select Table --</option>
+                    </select>
+                    <button id="refreshAlphaTablesBtn">Refresh</button>
+                  </div>
+                  <div class="config-field">
+                    <label>Date Range:</label>
+                    <div class="date-range">
+                      <input type="date" id="alphaStartDate" />
+                      <span>to</span>
+                      <input type="date" id="alphaEndDate" />
+                    </div>
+                  </div>
+                </div>
+
                 <div class="alpha-info">
                   <div class="alpha-field">
                     <label>Expression:</label>
@@ -424,17 +414,52 @@
                   <button id="runAlphaBacktest">Run Backtest</button>
                   <button id="gpMineAlpha">GP Mining</button>
                 </div>
-                <div class="alpha-chart-container">
-                  <canvas id="alphaChart"></canvas>
-                </div>
-                <div class="alpha-metrics" id="alphaMetrics">
+                <!-- Preview metrics before backtest -->
+                <div class="alpha-metrics alpha-metrics-preview" id="alphaMetricsPreview">
                   <div class="metric">
                     <span class="metric-label">IC Mean</span>
-                    <span class="metric-value" id="alphaIcMean">--</span>
+                    <span class="metric-value" id="alphaIcMeanPreview">--</span>
                   </div>
                   <div class="metric">
                     <span class="metric-label">IC IR</span>
-                    <span class="metric-value" id="alphaIcIr">--</span>
+                    <span class="metric-value" id="alphaIcIrPreview">--</span>
+                  </div>
+                </div>
+                <!-- Backtest Results (shown after clicking Run Backtest) -->
+                <div id="alphaBacktestResults" class="alpha-backtest-results hidden">
+                  <h4>Backtest Results</h4>
+                  <div class="alpha-metrics" id="alphaMetrics">
+                    <div class="metric">
+                      <span class="metric-label">IC Mean</span>
+                      <span class="metric-value" id="alphaIcMean">--</span>
+                    </div>
+                    <div class="metric">
+                      <span class="metric-label">IC IR</span>
+                      <span class="metric-value" id="alphaIcIr">--</span>
+                    </div>
+                    <div class="metric">
+                      <span class="metric-label">Total Return</span>
+                      <span class="metric-value" id="alphaTotalReturn">--</span>
+                    </div>
+                    <div class="metric">
+                      <span class="metric-label">Annualized Return</span>
+                      <span class="metric-value" id="alphaAnnReturn">--</span>
+                    </div>
+                    <div class="metric">
+                      <span class="metric-label">Sharpe Ratio</span>
+                      <span class="metric-value" id="alphaSharpe">--</span>
+                    </div>
+                    <div class="metric">
+                      <span class="metric-label">Max Drawdown</span>
+                      <span class="metric-value" id="alphaMaxDd">--</span>
+                    </div>
+                    <div class="metric">
+                      <span class="metric-label">Turnover</span>
+                      <span class="metric-value" id="alphaTurnover">--</span>
+                    </div>
+                  </div>
+                  <div class="alpha-chart-container">
+                    <canvas id="alphaBacktestChart"></canvas>
                   </div>
                 </div>
               </div>

@@ -1,7 +1,7 @@
 //! Configuration and data structures for the factor registry
 
-use crate::lazy::LogicalPlan;
 use crate::expr::ast::Expr;
+use crate::lazy::LogicalPlan;
 
 /// Configuration for resource limits and timeout to prevent system overload
 #[derive(Debug, Clone)]
