@@ -3,7 +3,7 @@
 //! Run with: cargo run --release --bin alfars-server
 
 use alfars::WeightMethod;
-use alfars::backtest::{BacktestEngine, BacktestResult};
+use alfars::backtest::{BacktestConfig, BacktestEngine, BacktestResult, FeeConfig};
 use alfars::expr::registry::FactorRegistry;
 use axum::{
     Router,
@@ -724,20 +724,26 @@ async fn run_backtest(
         "[run_backtest] Creating backtest engine with {} days, {} assets",
         n_days, n_assets
     );
-    let engine = BacktestEngine::new_simple(
-        factor_array,
-        returns_array,
+
+    let fee_config = FeeConfig {
+        commission_rate,
+        ..Default::default()
+    };
+
+    let config = BacktestConfig {
         quantiles,
         weight_method,
         long_top_n,
         short_top_n,
-        commission_rate,
-        None,
-    );
+        fee_config,
+        position_config: Default::default(),
+    };
+
+    let engine = BacktestEngine::with_config(config);
 
     eprintln!("[run_backtest] Running backtest engine...");
     let result = engine
-        .run()
+        .run(factor_array, returns_array, None, None)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     eprintln!("[run_backtest] Backtest engine completed");
 

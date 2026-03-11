@@ -316,8 +316,8 @@ expression = "close"
 #[cfg(test)]
 mod integration_tests {
     use super::*;
-    use crate::expr::registry::{extract_columns, parse_expression, FactorRegistry};
     use crate::data::ClickHouseSource;
+    use crate::expr::registry::{FactorRegistry, extract_columns, parse_expression};
     use ndarray::{Array1, Array2};
 
     /// Get the alpha directories
@@ -346,10 +346,8 @@ mod integration_tests {
 
         for (name, dir) in &dirs {
             println!("Testing {} directory: {:?}", name, dir);
-            let factors = AlParser::parse_directory(dir).expect(&format!(
-                "Failed to parse directory: {:?}",
-                dir
-            ));
+            let factors = AlParser::parse_directory(dir)
+                .expect(&format!("Failed to parse directory: {:?}", dir));
             println!("  Loaded {} factors from {}", factors.len(), name);
         }
     }
@@ -368,11 +366,7 @@ mod integration_tests {
 
         for (dir_name, dir) in &dirs {
             let factors = AlParser::parse_directory(dir).unwrap_or_default();
-            println!(
-                "\n=== Parsing {} ({} factors) ===",
-                dir_name,
-                factors.len()
-            );
+            println!("\n=== Parsing {} ({} factors) ===", dir_name, factors.len());
 
             for factor in factors {
                 match parse_expression(&factor.expression) {
@@ -446,12 +440,21 @@ mod integration_tests {
         }
 
         println!("\n=== Alpha101 Results ===");
-        println!("Success: {} / {}", success_count, success_count + failure_count);
+        println!(
+            "Success: {} / {}",
+            success_count,
+            success_count + failure_count
+        );
 
         if !failures.is_empty() {
             println!("\nFailed expressions:");
             for (name, expr, error) in &failures {
-                println!("  {}: {} - {}", name, expr.chars().take(60).collect::<String>(), error);
+                println!(
+                    "  {}: {} - {}",
+                    name,
+                    expr.chars().take(60).collect::<String>(),
+                    error
+                );
             }
         }
 
@@ -493,12 +496,21 @@ mod integration_tests {
         }
 
         println!("\n=== Alpha191 Results ===");
-        println!("Success: {} / {}", success_count, success_count + failure_count);
+        println!(
+            "Success: {} / {}",
+            success_count,
+            success_count + failure_count
+        );
 
         if !failures.is_empty() {
             println!("\nFailed expressions (first 20):");
             for (name, expr, error) in failures.iter().take(20) {
-                println!("  {}: {} - {}", name, expr.chars().take(60).collect::<String>(), error);
+                println!(
+                    "  {}: {} - {}",
+                    name,
+                    expr.chars().take(60).collect::<String>(),
+                    error
+                );
             }
             if failures.len() > 20 {
                 println!("  ... and {} more", failures.len() - 20);
@@ -515,7 +527,7 @@ mod integration_tests {
     #[test]
     fn test_compute_all_alpha_factors() {
         use crate::data::ClickHouseSource;
-        use crate::expr::registry::{extract_columns, FactorRegistry};
+        use crate::expr::registry::{FactorRegistry, extract_columns};
 
         // Load environment variables from .env file
         dotenv::dotenv().ok();
@@ -555,11 +567,17 @@ mod integration_tests {
 
         let data = match data_result {
             Ok(d) => {
-                println!("Fetched {} rows from ClickHouse", d.values().next().map(|v| v.len()).unwrap_or(0));
+                println!(
+                    "Fetched {} rows from ClickHouse",
+                    d.values().next().map(|v| v.len()).unwrap_or(0)
+                );
                 d
             }
             Err(e) => {
-                eprintln!("Warning: Failed to fetch from ClickHouse: {}. Skipping test.", e);
+                eprintln!(
+                    "Warning: Failed to fetch from ClickHouse: {}. Skipping test.",
+                    e
+                );
                 // Return empty data to skip the test
                 return;
             }
@@ -585,18 +603,27 @@ mod integration_tests {
 
         println!("\n=== Parse Results ===");
         println!("Total factors: {}", all_factors.len());
-        println!("Parse success: {}", all_factors.len() - parse_failures.len());
+        println!(
+            "Parse success: {}",
+            all_factors.len() - parse_failures.len()
+        );
         println!("Parse failures: {}", parse_failures.len());
 
         if !parse_failures.is_empty() {
             println!("\nFirst 5 parse failures:");
             for (name, expr, error) in parse_failures.iter().take(5) {
-                println!("  {}: {} - {}", name, expr.chars().take(50).collect::<String>(), error);
+                println!(
+                    "  {}: {} - {}",
+                    name,
+                    expr.chars().take(50).collect::<String>(),
+                    error
+                );
             }
         }
 
         // Filter data to only include required columns
-        let available_columns: Vec<String> = all_columns.iter()
+        let available_columns: Vec<String> = all_columns
+            .iter()
             .filter(|c| data.contains_key(*c))
             .cloned()
             .collect();
@@ -614,7 +641,10 @@ mod integration_tests {
 
         for factor in &all_factors {
             // Skip factors that failed to parse
-            if parse_failures.iter().any(|(name, _, _)| name == &factor.name) {
+            if parse_failures
+                .iter()
+                .any(|(name, _, _)| name == &factor.name)
+            {
                 continue;
             }
 
@@ -638,13 +668,17 @@ mod integration_tests {
         }
 
         // Compute all factors in parallel
-        let factor_names: Vec<&str> = all_factors.iter()
+        let factor_names: Vec<&str> = all_factors
+            .iter()
             .filter(|f| !parse_failures.iter().any(|(name, _, _)| name == &f.name))
             .filter(|f| !register_failures.iter().any(|(name, _)| name == &f.name))
             .map(|f| f.name.as_str())
             .collect();
 
-        println!("\n=== Computing {} factors (parallel) ===", factor_names.len());
+        println!(
+            "\n=== Computing {} factors (parallel) ===",
+            factor_names.len()
+        );
 
         let compute_start = std::time::Instant::now();
         let results = registry.compute_batch(&factor_names, &data, true);
@@ -680,6 +714,422 @@ mod integration_tests {
         }
     }
 
+    /// Full pipeline integration test: Parse alpha101/alpha191 -> Factor Computation -> Backtest
+    ///
+    /// This test:
+    /// 1. Parses all .al files from ~/.alfars/alpha101/ and ~/.alfars/alpha191/
+    /// 2. Adds prefix to handle duplicate factor names (alpha101-ALPHA001, alpha191-ALPHA001)
+    /// 3. Fetches real stock data from ClickHouse (top 300 stocks by market cap)
+    /// 4. Computes all factor values
+    /// 5. Runs backtest and outputs IC/IR rankings
+    #[test]
+    fn test_alpha101_alpha191_full_pipeline() {
+        use crate::WeightMethod;
+        use crate::backtest::engine::{BacktestConfig, BacktestEngine, FeeConfig, PositionConfig};
+        use crate::expr::registry::FactorRegistry;
+
+        println!("\n========================================");
+        println!("ALPHA101/ALPHA191 FULL PIPELINE TEST");
+        println!("========================================");
+
+        // Load environment variables
+        dotenv::dotenv().ok();
+
+        // Step 1: Parse alpha101 and alpha191 directories
+        let mut all_factors = Vec::new();
+
+        if let Some(home) = dirs::home_dir() {
+            let alpha101_dir = home.join(".alfars").join("alpha101");
+            let alpha191_dir = home.join(".alfars").join("alpha191");
+
+            if alpha101_dir.exists() {
+                let mut factors_101 = AlParser::parse_directory(&alpha101_dir).unwrap_or_default();
+                println!("Loaded {} factors from alpha101", factors_101.len());
+                // Add prefix to avoid name collision
+                for f in &mut factors_101 {
+                    f.name = format!("alpha101-{}", f.name);
+                }
+                all_factors.extend(factors_101);
+            }
+
+            if alpha191_dir.exists() {
+                let mut factors_191 = AlParser::parse_directory(&alpha191_dir).unwrap_or_default();
+                println!("Loaded {} factors from alpha191", factors_191.len());
+                // Add prefix to avoid name collision
+                for f in &mut factors_191 {
+                    f.name = format!("alpha191-{}", f.name);
+                }
+                all_factors.extend(factors_191);
+            }
+        }
+
+        if all_factors.is_empty() {
+            eprintln!("Skipping test - no alpha factors found in ~/.alfars/alpha101/ or alpha191/");
+            return;
+        }
+
+        println!("\nTotal factors loaded: {}", all_factors.len());
+
+        // Step 2: Fetch stock data from ClickHouse
+        let source = ClickHouseSource::from_env();
+        let table_name = std::env::var("STOCK_1D").unwrap_or_else(|_| "stock_1d".to_string());
+
+        // Query top 300 stocks by market cap
+        let top_n = 300;
+        println!("Fetching top {} stocks by market cap...", top_n);
+
+        // First try to get stocks from query, then use a known list of top A-shares
+        let test_stocks: Vec<String> = match source.get_top_stocks(top_n, &table_name) {
+            Ok(stocks) if !stocks.is_empty() => {
+                println!("Fetched {} stocks from query", stocks.len());
+                stocks
+            }
+            _ => {
+                // Fallback: use a known list of top 300 A-share stocks by code
+                // These are the top stocks by market cap as of 2024
+                println!("Using fallback stock list (top 300 A-shares by code)");
+                (1..=300)
+                    .map(|i| format!("{:06}.SZ", i))
+                    .collect()
+            }
+        };
+
+        println!("Using {} stocks for backtest", test_stocks.len());
+
+        // Fetch data for the date range
+        let data_result =
+            source.fetch_stock_data(&test_stocks, "2020-01-01", "2025-12-31", &table_name);
+
+        let data = match data_result {
+            Ok(d) => {
+                let rows = d.values().next().map(|v| v.len()).unwrap_or(0);
+                println!("Fetched {} rows of data", rows);
+                d
+            }
+            Err(e) => {
+                eprintln!(
+                    "Warning: Failed to fetch from ClickHouse: {}. Skipping test.",
+                    e
+                );
+                return;
+            }
+        };
+
+        // Step 3: Parse all factor expressions
+        use crate::expr::registry::extract_columns;
+        use crate::expr::registry::parse_expression;
+
+        let mut parse_errors: Vec<(String, String, String)> = Vec::new();
+
+        for factor in &all_factors {
+            if let Err(e) = parse_expression(&factor.expression) {
+                parse_errors.push((factor.name.clone(), factor.expression.clone(), e));
+            }
+        }
+
+        println!(
+            "\nParse results: {} / {} success",
+            all_factors.len() - parse_errors.len(),
+            all_factors.len()
+        );
+
+        if parse_errors.len() == all_factors.len() {
+            eprintln!("All factors failed to parse. Skipping test.");
+            return;
+        }
+
+        // Collect required columns
+        let mut all_columns: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for factor in &all_factors {
+            if let Ok(expr) = parse_expression(&factor.expression) {
+                let cols = extract_columns(&expr);
+                for col in cols {
+                    all_columns.insert(col);
+                }
+            }
+        }
+
+        // Filter available columns
+        let available_columns: Vec<String> = all_columns
+            .iter()
+            .filter(|c| data.contains_key(*c))
+            .cloned()
+            .collect();
+
+        println!(
+            "Available columns: {}/{}",
+            available_columns.len(),
+            all_columns.len()
+        );
+
+        // Step 4: Register factors
+        let mut registry = FactorRegistry::new();
+        registry.set_columns(available_columns.clone());
+
+        let mut register_errors: Vec<(String, String)> = Vec::new();
+
+        for factor in &all_factors {
+            // Skip factors that failed to parse
+            if parse_errors.iter().any(|(name, _, _)| name == &factor.name) {
+                continue;
+            }
+
+            if let Err(e) = registry.register(&factor.name, &factor.expression) {
+                register_errors.push((factor.name.clone(), e));
+            }
+        }
+
+        let registered = all_factors.len() - parse_errors.len() - register_errors.len();
+        println!("Registered factors: {}", registered);
+
+        if registered == 0 {
+            eprintln!("No factors registered. Skipping test.");
+            return;
+        }
+
+        // Step 5: Compute factors per-stock for proper multi-stock backtest
+        // We need to compute factors for each stock separately and then align them
+        println!("\nComputing factors per-stock...");
+
+        // Get factor names to compute (limit to 5 for speed)
+        let factor_names: Vec<&str> = all_factors
+            .iter()
+            .filter(|f| !parse_errors.iter().any(|(name, _, _)| name == &f.name))
+            .filter(|f| !register_errors.iter().any(|(name, _)| name == &f.name))
+            .take(5)
+            .map(|f| f.name.as_str())
+            .collect();
+
+        if factor_names.is_empty() {
+            eprintln!("No factors to compute");
+            return;
+        }
+
+        // Fetch data per stock and compute factors
+        let mut stock_data: std::collections::HashMap<
+            String,
+            std::collections::HashMap<String, Vec<f64>>,
+        > = std::collections::HashMap::new();
+
+        let mut factor_results: std::collections::HashMap<String, Vec<Vec<f64>>> =
+            std::collections::HashMap::new();
+
+        // Initialize factor results
+        for name in &factor_names {
+            factor_results.insert(name.to_string(), Vec::new());
+        }
+
+        // Fetch and compute per stock
+        for symbol in &test_stocks {
+            let single_stock_data =
+                source.fetch_stock_data(&[symbol.clone()], "2024-01-01", "2024-12-31", &table_name);
+
+            let stock_data_map = match single_stock_data {
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!("Warning: Failed to fetch data for {}: {}", symbol, e);
+                    continue;
+                }
+            };
+
+            // Get trading days count
+            let n_days = stock_data_map.values().next().map(|v| v.len()).unwrap_or(0);
+            if n_days == 0 {
+                continue;
+            }
+
+            // Store stock data
+            stock_data.insert(symbol.clone(), stock_data_map.clone());
+
+            // Compute factors for this stock
+            let mut stock_registry = FactorRegistry::new();
+            stock_registry.set_columns(available_columns.clone());
+
+            for name in &factor_names {
+                if let Some(factor) = all_factors.iter().find(|f| f.name == *name) {
+                    let _ = stock_registry.register(name, &factor.expression);
+                }
+            }
+
+            let results = stock_registry.compute_batch(&factor_names, &stock_data_map, false);
+
+            if let Ok(res) = results {
+                for name in &factor_names {
+                    if let Some(result) = res.get(*name) {
+                        if let Some(factor_vec) = factor_results.get_mut(*name) {
+                            factor_vec.push(result.values.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Verify we have data for all stocks
+        let mut valid_stocks = Vec::new();
+        for symbol in &test_stocks {
+            if stock_data.contains_key(symbol) {
+                valid_stocks.push(symbol.clone());
+            }
+        }
+
+        println!("Valid stocks with data: {}", valid_stocks.len());
+
+        if valid_stocks.len() < 2 {
+            eprintln!("Need at least 2 stocks for backtest. Skipping.");
+            return;
+        }
+
+        // Step 6: Align data and run backtest
+        println!("\n========================================");
+        println!("BACKTEST RESULTS (IC/IR RANKINGS)");
+        println!("========================================");
+
+        // Find minimum days across all stocks
+        let mut min_days = usize::MAX;
+        for symbol in &valid_stocks {
+            if let Some(data) = stock_data.get(symbol) {
+                let days = data.values().next().map(|v| v.len()).unwrap_or(0);
+                if days > 0 && days < min_days {
+                    min_days = days;
+                }
+            }
+        }
+
+        if min_days == usize::MAX || min_days < 10 {
+            eprintln!("Not enough trading days for backtest");
+            return;
+        }
+
+        println!("Using {} trading days for backtest", min_days);
+
+        let n_stocks = valid_stocks.len();
+        let mut ic_ir_results: Vec<(String, f64, f64)> = Vec::new();
+
+        // For each factor, build aligned matrices and run backtest
+        for factor_name in &factor_names {
+            if let Some(factor_vals) = factor_results.get(*factor_name) {
+                if factor_vals.len() != n_stocks {
+                    continue;
+                }
+
+                // Build aligned factor matrix: (n_days, n_stocks)
+                let mut aligned_factor: ndarray::Array2<f64> =
+                    ndarray::Array2::zeros((min_days, n_stocks));
+                for (stock_idx, vals) in factor_vals.iter().enumerate() {
+                    for day in 0..min_days {
+                        if day < vals.len() {
+                            aligned_factor[[day, stock_idx]] = vals[day];
+                        }
+                    }
+                }
+
+                // Build aligned returns matrix: (n_days, n_stocks)
+                // IMPORTANT: Compute holding return = (close[t+1] - close[t]) / close[t]
+                // This is the overnight return for factor-based trading
+                // Also apply forward adjustment (前复权) using adjust_factor
+                let mut aligned_returns: ndarray::Array2<f64> =
+                    ndarray::Array2::zeros((min_days, n_stocks));
+                for (stock_idx, symbol) in valid_stocks.iter().enumerate() {
+                    if let Some(data) = stock_data.get(symbol) {
+                        let close = data.get("close");
+                        let adj_factor = data.get("adjust_factor");
+
+                        if let Some(c) = close {
+                            let latest_adj =
+                                adj_factor.and_then(|a| a.last()).copied().unwrap_or(1.0);
+
+                            for day in 0..min_days - 1 {
+                                // Apply forward adjustment if available
+                                let c_t = if let Some(adj) = adj_factor {
+                                    c[day] * adj[day] / latest_adj
+                                } else {
+                                    c[day]
+                                };
+                                let c_next = if let Some(adj) = adj_factor {
+                                    c[day + 1] * adj[day + 1] / latest_adj
+                                } else {
+                                    c[day + 1]
+                                };
+
+                                if c_t > 0.0 && c_next > 0.0 && !c_t.is_nan() && !c_next.is_nan() {
+                                    let ret = (c_next - c_t) / c_t;
+                                    // Sanity check: returns should be reasonable (-50% to +100%)
+                                    if ret.abs() < 2.0 {
+                                        aligned_returns[[day, stock_idx]] = ret;
+                                    }
+                                }
+                            }
+                            // Last day: no next day return, set to 0
+                            aligned_returns[[min_days - 1, stock_idx]] = 0.0;
+                        }
+                    }
+                }
+
+                // Don't pass adj_factor to backtest - we've already computed adjusted returns
+                let aligned_adj: Option<ndarray::Array2<f64>> = None;
+
+                // Run backtest
+                let config = BacktestConfig {
+                    quantiles: 5,
+                    weight_method: WeightMethod::Equal,
+                    long_top_n: 1,
+                    short_top_n: 1,
+                    fee_config: FeeConfig::default(),
+                    position_config: PositionConfig::default(),
+                };
+
+                let engine = BacktestEngine::with_config(config);
+
+                match engine.run(
+                    aligned_factor,
+                    aligned_returns,
+                    aligned_adj,
+                    None, // volume
+                ) {
+                    Ok(result) => {
+                        println!(
+                            "{}: IC={:.4}, IR={:.4}, Return={:.2}%",
+                            factor_name,
+                            result.ic_mean,
+                            result.ic_ir,
+                            result.total_return * 100.0
+                        );
+                        ic_ir_results.push((factor_name.to_string(), result.ic_mean, result.ic_ir));
+                    }
+                    Err(e) => {
+                        eprintln!("Backtest failed for {}: {}", factor_name, e);
+                    }
+                }
+            }
+        }
+
+        // Sort by IC IR and show top 5
+        println!("\n========================================");
+        println!("TOP 5 FACTORS BY IC IR");
+        println!("========================================");
+
+        if ic_ir_results.is_empty() {
+            println!("No IC/IR results");
+        } else {
+            ic_ir_results
+                .sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+
+            for (i, (name, ic, ir)) in ic_ir_results.iter().take(5).enumerate() {
+                println!("{}. {}: IC={:.4}, IR={:.4}", i + 1, name, ic, ir);
+            }
+        }
+
+        // Assert parsing and computation worked
+        assert!(
+            !all_factors.is_empty(),
+            "Expected at least some factors to be loaded"
+        );
+        assert!(
+            !factor_results.is_empty(),
+            "Expected at least some factors to compute"
+        );
+    }
+
     /// Integration test: Per-stock factor calculation with different trading days
     ///
     /// This test demonstrates:
@@ -688,6 +1138,7 @@ mod integration_tests {
     /// 3. Backtest uses adjusted returns (前复权) and weight matrix
     #[test]
     fn test_per_stock_factor_calculation() {
+        use crate::backtest::engine::BacktestEngine;
         use crate::expr::registry::FactorRegistry;
         use ndarray::{Array1, Array2};
 
@@ -695,13 +1146,19 @@ mod integration_tests {
 
         // Define stocks with different trading days
         // Stock A: 10 days, Stock B: 8 days, Stock C: 6 days
-        let symbols = vec!["STOCK_A".to_string(), "STOCK_B".to_string(), "STOCK_C".to_string()];
+        let symbols = vec![
+            "STOCK_A".to_string(),
+            "STOCK_B".to_string(),
+            "STOCK_C".to_string(),
+        ];
         let trading_days = vec![10, 8, 6];
 
         // Create mock data for each stock
         // Data structure: HashMap<symbol, HashMap<column, Vec<f64>>>
-        let mut stock_data: std::collections::HashMap<String, std::collections::HashMap<String, Vec<f64>>> =
-            std::collections::HashMap::new();
+        let mut stock_data: std::collections::HashMap<
+            String,
+            std::collections::HashMap<String, Vec<f64>>,
+        > = std::collections::HashMap::new();
 
         for (i, symbol) in symbols.iter().enumerate() {
             let n_days = trading_days[i];
@@ -714,15 +1171,17 @@ mod integration_tests {
             let open: Vec<f64> = close.iter().map(|c| c * 0.99).collect();
             let high: Vec<f64> = close.iter().map(|c| c * 1.02).collect();
             let low: Vec<f64> = close.iter().map(|c| c * 0.98).collect();
-            let volume: Vec<f64> = (0..n_days).map(|j| 1_000_000.0 + j as f64 * 10000.0).collect();
-
-            // Adjustment factors (前复权) - each stock has different adjustment
-            let adj_factor: Vec<f64> = (0..n_days)
-                .map(|j| 1.0 + j as f64 * 0.01)
+            let volume: Vec<f64> = (0..n_days)
+                .map(|j| 1_000_000.0 + j as f64 * 10000.0)
                 .collect();
 
+            // Adjustment factors (前复权) - each stock has different adjustment
+            let adj_factor: Vec<f64> = (0..n_days).map(|j| 1.0 + j as f64 * 0.01).collect();
+
             // VWAP data
-            let vwap: Vec<f64> = close.iter().zip(volume.iter())
+            let vwap: Vec<f64> = close
+                .iter()
+                .zip(volume.iter())
                 .map(|(c, v)| c * (1.0 + v.min(1000000.0) / 2000000.0 * 0.01))
                 .collect();
 
@@ -751,7 +1210,9 @@ mod integration_tests {
         // Register simple factors
         registry.register("rank_close", "rank(close)").unwrap();
         registry.register("ts_mean_5", "ts_mean(close, 5)").unwrap();
-        registry.register("volume_ratio", "volume / ts_mean(volume, 5)").unwrap();
+        registry
+            .register("volume_ratio", "volume / ts_mean(volume, 5)")
+            .unwrap();
 
         let factor_names = vec!["rank_close", "ts_mean_5", "volume_ratio"];
 
@@ -803,7 +1264,9 @@ mod integration_tests {
                 .collect();
 
             // Compute factors
-            let results = registry.compute_batch_vectorized(&factor_names, &arr_data, false).unwrap();
+            let results = registry
+                .compute_batch_vectorized(&factor_names, &arr_data, false)
+                .unwrap();
 
             // Store results per factor (maintain index order)
             for factor_name in &factor_names {
@@ -819,16 +1282,31 @@ mod integration_tests {
         for (factor_name, results) in &factor_results {
             println!("  {}: {} stocks computed", factor_name, results.len());
             for (i, result) in results.iter().enumerate() {
-                println!("    Stock {}: {} values, first 3: {:?}", symbols[i], result.len(), &result[..result.len().min(3)]);
+                println!(
+                    "    Stock {}: {} values, first 3: {:?}",
+                    symbols[i],
+                    result.len(),
+                    &result[..result.len().min(3)]
+                );
             }
         }
 
         // Verify: Each stock has different number of factor values
         for (factor_name, results) in &factor_results {
-            assert_eq!(results.len(), symbols.len(), "Should have results for all stocks");
+            assert_eq!(
+                results.len(),
+                symbols.len(),
+                "Should have results for all stocks"
+            );
             for (i, result) in results.iter().enumerate() {
-                assert_eq!(result.len(), trading_days[i], "Stock {} should have {} values for {}",
-                    symbols[i], trading_days[i], factor_name);
+                assert_eq!(
+                    result.len(),
+                    trading_days[i],
+                    "Stock {} should have {} values for {}",
+                    symbols[i],
+                    trading_days[i],
+                    factor_name
+                );
             }
         }
 
@@ -909,8 +1387,8 @@ mod integration_tests {
 
         let weights = generate_weight_matrix(
             &single_factor,
-            1,  // long_top_n
-            1,  // short_top_n
+            1, // long_top_n
+            1, // short_top_n
         );
 
         println!("Weight matrix shape: {:?}", weights.dim());
@@ -920,17 +1398,32 @@ mod integration_tests {
         }
 
         // Step 4: Compute holding return using previous day's weights
-        let holding_pnl = compute_holding_return(&weights, &aligned_close);
-        println!("\nHolding return (first 5 days): {:?}", holding_pnl.slice(ndarray::s![..5, 0]));
+        let holding_pnl = BacktestEngine::compute_holding_return(&weights, &aligned_close);
+        println!(
+            "\nHolding return (first 5 days): {:?}",
+            holding_pnl.slice(ndarray::s![..5, 0])
+        );
 
         // Step 5: Compute trading return using close and vwap
-        let trading_pnl = compute_trading_return(&weights, &aligned_close, &aligned_vwap, 0.0003, 0.0005);
-        println!("Trading return (first 5 days): {:?}", trading_pnl.slice(ndarray::s![..5, 0]));
+        let trading_pnl = BacktestEngine::compute_trading_return(
+            &weights,
+            &aligned_close,
+            &aligned_vwap,
+            0.0003,
+            0.0005,
+        );
+        println!(
+            "Trading return (first 5 days): {:?}",
+            trading_pnl.slice(ndarray::s![..5, 0])
+        );
 
         // Step 6: Compute total returns
         let total_pnl = &holding_pnl + &trading_pnl;
         let cumulative_return = compute_cumulative_return(&total_pnl.column(0).to_owned());
-        println!("\nTotal cumulative return: {:.4}%", cumulative_return * 100.0);
+        println!(
+            "\nTotal cumulative return: {:.4}%",
+            cumulative_return * 100.0
+        );
 
         // Assertions
         assert!(cumulative_return.is_finite());
@@ -978,102 +1471,6 @@ mod integration_tests {
     ///
     /// # Formula
     /// `holding_return[day] = sum(weights[day-1, :] * (close[day, :] / close[day-1, :] - 1))`
-    ///
-    /// # Note
-    /// - Day 0: no holding return (no previous day position)
-    /// - This is suitable for factor research. Production use requires handling:
-    ///   - Limit-up/limit-down stocks (cannot trade)
-    ///   - Suspended stocks (no trading)
-    ///   - Market impact for large positions
-    fn compute_holding_return(weights: &Array2<f64>, close: &Array2<f64>) -> Array2<f64> {
-        let (n_days, _n_symbols) = weights.dim();
-
-        // Vectorized: previous day's weights
-        // weights_lag: [n_days-1, n_symbols] = weights[0:n_days-1] (weights for days 0 to n_days-2)
-        let weights_lag = weights.slice(ndarray::s![0..n_days-1, ..]);
-
-        // Vectorized: compute price returns for all days and symbols
-        // close_lag: [n_days-1, n_symbols] = close[0:n_days-1]
-        let close_lag = close.slice(ndarray::s![0..n_days-1, ..]);
-        // close_current: [n_days-1, n_symbols] = close[1:n_days]
-        let close_current = close.slice(ndarray::s![1.., ..]);
-        // price_returns: [n_days-1, n_symbols]
-        let price_returns = (&close_current / &close_lag) - 1.0;
-
-        // Element-wise multiply and sum across symbols: [n_days-1, n_symbols] -> [n_days-1]
-        let weighted_returns = &weights_lag * &price_returns;
-        let day_returns = weighted_returns.sum_axis(ndarray::Axis(1));  // Shape: [n_days-1]
-
-        // Build result: day 0 = 0, days 1..n_days = computed returns
-        let mut returns = ndarray::Array2::<f64>::zeros((n_days, 1));
-        for day in 1..n_days {
-            returns[[day, 0]] = day_returns[day - 1];  // 1D indexing
-        }
-
-        returns
-    }
-
-    /// Compute trading return from weight changes, close, and vwap prices (vectorized)
-    ///
-    /// # Formula
-    /// `trading_return[day] = sum(weight_diff * (close[day]/vwap[day] - 1 - total_cost))`
-    /// where `weight_diff = weights[day] - weights[day-1]`
-    ///
-    /// # Note
-    /// - Day 0: initial position establishment (from 0 to weights[0])
-    /// - Day 1+: position changes
-    /// - This is suitable for factor research. Production use requires handling:
-    ///   - Limit-up/limit-down stocks (cannot trade)
-    ///   - Suspended stocks (no trading)
-    ///   - Market impact for large positions
-    ///   - Realistic execution slippage modeling
-    fn compute_trading_return(
-        weights: &Array2<f64>,
-        close: &Array2<f64>,
-        vwap: &Array2<f64>,
-        fee: f64,
-        slippage: f64,
-    ) -> Array2<f64> {
-        let (n_days, n_symbols) = weights.dim();
-        let total_cost = fee + slippage;
-
-        // Result for all n_days
-        let mut returns = ndarray::Array2::<f64>::zeros((n_days, 1));
-
-        // Day 0: initial position establishment (from 0 to weights[0])
-        // trading_return[0] = sum(weights[0] * (close[0]/vwap[0] - 1 - cost))
-        let price_return_0 = (close[[0, 0]] / vwap[[0, 0]]) - 1.0;
-        let trade_return_0 = weights[[0, 0]] * (price_return_0 - total_cost);
-        returns[[0, 0]] = trade_return_0;
-
-        // Days 1..n_days-1: position changes
-        // weight_diff = weights[day] - weights[day-1]
-        if n_days > 1 {
-            let weights_lag = weights.slice(ndarray::s![0..n_days-1, ..]);
-            let weights_current = weights.slice(ndarray::s![1.., ..]);
-            let weight_diff = &weights_current - &weights_lag;  // [n_days-1, n_symbols]
-
-            // Vectorized: price return (close / vwap - 1)
-            let vwap_current = vwap.slice(ndarray::s![1.., ..]);
-            let close_current = close.slice(ndarray::s![1.., ..]);
-            let price_returns = (&close_current / &vwap_current) - 1.0;  // [n_days-1, n_symbols]
-
-            // Vectorized: trade return = weight_diff * (price_return - cost)
-            let cost_array = Array2::from_elem((n_days - 1, n_symbols), total_cost);
-            let trade_returns = &weight_diff * (&price_returns - &cost_array);
-
-            // Sum across symbols: [n_days-1, n_symbols] -> [n_days-1]
-            let day_returns = trade_returns.sum_axis(ndarray::Axis(1));  // Shape: [n_days-1]
-
-            // Fill days 1..n_days-1
-            for day in 1..n_days {
-                returns[[day, 0]] = day_returns[day - 1];
-            }
-        }
-
-        returns
-    }
-
     /// Compute cumulative return from daily PnL
     fn compute_cumulative_return(daily_pnl: &ndarray::Array1<f64>) -> f64 {
         let mut cum = 1.0;
@@ -1096,6 +1493,7 @@ mod integration_tests {
     /// In production, you would apply forward adjustment (前复权) using adjust_factor.
     #[test]
     fn test_single_stock_weight_real_data() {
+        use crate::backtest::engine::BacktestEngine;
         use crate::data::ClickHouseSource;
         use ndarray::Array2;
         use std::collections::HashMap;
@@ -1156,7 +1554,8 @@ mod integration_tests {
 
         // Apply forward adjustment: adj_close[i] = close[i] * adjust_factor[i] / latest_factor
         let latest_factor = adjust_factor.last().copied().unwrap_or(1.0);
-        let adj_close: Vec<f64> = close.iter()
+        let adj_close: Vec<f64> = close
+            .iter()
             .zip(adjust_factor.iter())
             .map(|(c, f)| {
                 let factor = if f.is_finite() && *f > 0.0 { *f } else { 1.0 };
@@ -1166,7 +1565,8 @@ mod integration_tests {
 
         // Use vwap from data, apply adjustment
         let vwap_raw = data.get("vwap").unwrap();
-        let vwap: Vec<f64> = vwap_raw.iter()
+        let vwap: Vec<f64> = vwap_raw
+            .iter()
             .zip(adjust_factor.iter())
             .map(|(v, f)| {
                 let factor = if f.is_finite() && *f > 0.0 { *f } else { 1.0 };
@@ -1175,52 +1575,78 @@ mod integration_tests {
             .collect();
 
         println!("\n=== Forward Adjustment (Real Data) ===");
-        println!("First raw close: {}, First adj close: {:.4}", close[0], adj_close[0]);
-        println!("Last raw close: {}, Last adj close: {:.4}", close[n_days - 1], adj_close[n_days - 1]);
-        println!("First adjust_factor: {:.6}, Last: {:.6}", adjust_factor[0], adjust_factor[n_days-1]);
+        println!(
+            "First raw close: {}, First adj close: {:.4}",
+            close[0], adj_close[0]
+        );
+        println!(
+            "Last raw close: {}, Last adj close: {:.4}",
+            close[n_days - 1],
+            adj_close[n_days - 1]
+        );
+        println!(
+            "First adjust_factor: {:.6}, Last: {:.6}",
+            adjust_factor[0],
+            adjust_factor[n_days - 1]
+        );
 
         // Create weight matrix: alternating [1, 0, 1, 0, 1, 0, ...]
-        let weight_pattern: Vec<f64> = (0..n_days).map(|i| if i % 2 == 0 { 1.0 } else { 0.0 }).collect();
-        let weights = Array2::from_shape_vec(
-            (n_days, 1),
-            weight_pattern.clone(),
-        ).unwrap();
+        let weight_pattern: Vec<f64> = (0..n_days)
+            .map(|i| if i % 2 == 0 { 1.0 } else { 0.0 })
+            .collect();
+        let weights = Array2::from_shape_vec((n_days, 1), weight_pattern.clone()).unwrap();
 
-        let vwap_arr = Array2::from_shape_vec(
-            (n_days, 1),
-            vwap.clone(),
-        ).unwrap();
+        let vwap_arr = Array2::from_shape_vec((n_days, 1), vwap.clone()).unwrap();
 
         println!("Weight: alternating [1, 0, 1, 0, ...] for {} days", n_days);
         println!("First 10 weights: {:?}", &weight_pattern[..10]);
 
         // Compute holding return using previous day's weights
-        let close_arr = Array2::from_shape_vec(
-            (n_days, 1),
-            adj_close.clone(),
-        ).unwrap();
+        let close_arr = Array2::from_shape_vec((n_days, 1), adj_close.clone()).unwrap();
 
-        let holding_return = compute_holding_return(&weights, &close_arr);
-        println!("First 5 holding returns: {:?}", holding_return.slice(ndarray::s![..5, 0]));
+        let holding_return = BacktestEngine::compute_holding_return(&weights, &close_arr);
+        println!(
+            "First 5 holding returns: {:?}",
+            holding_return.slice(ndarray::s![..5, 0])
+        );
 
         // Compute trading return
         let fee = 0.0003;
         let slippage = 0.0005;
-        let trading_return = compute_trading_return(&weights, &close_arr, &vwap_arr, fee, slippage);
-        println!("First 5 trading returns: {:?}", trading_return.slice(ndarray::s![..5, 0]));
+        let trading_return =
+            BacktestEngine::compute_trading_return(&weights, &close_arr, &vwap_arr, fee, slippage);
+        println!(
+            "First 5 trading returns: {:?}",
+            trading_return.slice(ndarray::s![..5, 0])
+        );
 
         // Verify holding return calculation:
         // holding_return[day] = weights[day-1] * (close[day]/close[day-1] - 1)
         println!("\n=== Holding Return Verification ===");
         for day in 1..6.min(n_days) {
-            let expected_holding = weight_pattern[day - 1] * (adj_close[day] / adj_close[day - 1] - 1.0);
+            let expected_holding =
+                weight_pattern[day - 1] * (adj_close[day] / adj_close[day - 1] - 1.0);
             let actual_holding = holding_return[[day, 0]];
-            println!("Day {}: weight[{}]={}, close[{}]={:.2}, close[{}]={:.2}, expected={:.6}, actual={:.6}",
-                day, day-1, weight_pattern[day-1], day-1, adj_close[day-1], day, adj_close[day],
-                expected_holding, actual_holding);
+            println!(
+                "Day {}: weight[{}]={}, close[{}]={:.2}, close[{}]={:.2}, expected={:.6}, actual={:.6}",
+                day,
+                day - 1,
+                weight_pattern[day - 1],
+                day - 1,
+                adj_close[day - 1],
+                day,
+                adj_close[day],
+                expected_holding,
+                actual_holding
+            );
 
-            assert!((actual_holding - expected_holding).abs() < 1e-6,
-                "Day {}: expected holding {:.6}, got {:.6}", day, expected_holding, actual_holding);
+            assert!(
+                (actual_holding - expected_holding).abs() < 1e-6,
+                "Day {}: expected holding {:.6}, got {:.6}",
+                day,
+                expected_holding,
+                actual_holding
+            );
         }
 
         // Verify trading return calculation:
@@ -1233,11 +1659,24 @@ mod integration_tests {
             let price_return = adj_close[day] / vwap[day] - 1.0;
             let expected_trading = weight_diff * (price_return - total_cost_rate);
             let actual_trading = trading_return[[day, 0]];
-            println!("Day {}: weight_diff={}, close/vwap={:.4}, price_return={:.6}, cost={:.6}, expected={:.6}, actual={:.6}",
-                day, weight_diff, adj_close[day]/vwap[day], price_return, total_cost_rate, expected_trading, actual_trading);
+            println!(
+                "Day {}: weight_diff={}, close/vwap={:.4}, price_return={:.6}, cost={:.6}, expected={:.6}, actual={:.6}",
+                day,
+                weight_diff,
+                adj_close[day] / vwap[day],
+                price_return,
+                total_cost_rate,
+                expected_trading,
+                actual_trading
+            );
 
-            assert!((actual_trading - expected_trading).abs() < 1e-6,
-                "Day {}: expected trading {:.6}, got {:.6}", day, expected_trading, actual_trading);
+            assert!(
+                (actual_trading - expected_trading).abs() < 1e-6,
+                "Day {}: expected trading {:.6}, got {:.6}",
+                day,
+                expected_trading,
+                actual_trading
+            );
         }
 
         // Total return

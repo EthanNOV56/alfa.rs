@@ -10,7 +10,7 @@
 //! - Enhanced backtest engine with fee and position configuration
 
 use crate::WeightMethod;
-use crate::backtest::{BacktestEngine, BacktestResult, FeeConfig, PositionConfig};
+use crate::backtest::{BacktestConfig, BacktestEngine, BacktestResult, FeeConfig, PositionConfig};
 use crate::expr::{BinaryOp, Expr, Literal, UnaryOp};
 use crate::types::{DataFrame, Series, evaluate_expr_on_dataframe};
 use lru::LruCache;
@@ -1166,21 +1166,23 @@ impl RealBacktestFitnessEvaluator {
         returns: &Array2<f64>,
     ) -> Option<BacktestResult> {
         // Use the enhanced BacktestEngine with fee and position config
-        let engine = BacktestEngine::new(
+        let config = BacktestConfig {
+            quantiles: 10,
+            weight_method: WeightMethod::Equal,
+            long_top_n: 1,
+            short_top_n: 1,
+            fee_config: self.fee_config.clone(),
+            position_config: self.position_config.clone(),
+        };
+
+        let engine = BacktestEngine::with_config(config);
+
+        match engine.run(
             factor.clone(),
             returns.clone(),
-            10, // quantiles
-            WeightMethod::Equal,
-            1, // long_top_n
-            1, // short_top_n
-            self.fee_config.clone(),
-            self.position_config.clone(),
-            None, // weights
             None, // adj_factor
             None, // volume
-        );
-
-        match engine.run() {
+        ) {
             Ok(result) => {
                 // Check for valid results
                 if result.ic_mean.is_nan() || result.ic_ir.is_nan() {

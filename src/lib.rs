@@ -948,7 +948,7 @@ impl From<PyPositionConfig> for PositionConfig {
 /// Python-exposed backtest engine
 #[pyclass]
 struct PyBacktestEngine {
-    engine: BacktestEngine,
+    config: backtest::BacktestConfig,
 }
 
 #[pymethods]
@@ -956,19 +956,12 @@ impl PyBacktestEngine {
     #[new]
     fn new(
         _py: Python<'_>,
-        factor: Bound<'_, PyArray2<f64>>,
-        returns: Bound<'_, PyArray2<f64>>,
         quantiles: usize,
         weight_method: &str,
         long_top_n: usize,
         short_top_n: usize,
         commission_rate: f64,
-        weights: Option<Bound<'_, PyArray2<f64>>>,
     ) -> PyResult<Self> {
-        let factor_array = factor.readonly().as_array().to_owned();
-        let returns_array = returns.readonly().as_array().to_owned();
-        let weights_array = weights.map(|w| w.readonly().as_array().to_owned());
-
         let wmethod = match weight_method {
             "equal" => WeightMethod::Equal,
             "weighted" => WeightMethod::Weighted,
@@ -979,22 +972,38 @@ impl PyBacktestEngine {
             }
         };
 
-        let engine = BacktestEngine::new_simple(
-            factor_array,
-            returns_array,
+        let fee_config = backtest::FeeConfig {
+            commission_rate,
+            ..Default::default()
+        };
+
+        let config = backtest::BacktestConfig {
             quantiles,
-            wmethod,
+            weight_method: wmethod,
             long_top_n,
             short_top_n,
-            commission_rate,
-            weights_array,
-        );
+            fee_config,
+            position_config: Default::default(),
+        };
 
-        Ok(Self { engine })
+        Ok(Self { config })
     }
 
-    fn run(&self) -> PyResult<PyBacktestResult> {
-        match self.engine.run() {
+    fn run(
+        &self,
+        factor: Bound<'_, PyArray2<f64>>,
+        returns: Bound<'_, PyArray2<f64>>,
+        adj_factor: Option<Bound<'_, PyArray2<f64>>>,
+        volume: Option<Bound<'_, PyArray2<f64>>>,
+    ) -> PyResult<PyBacktestResult> {
+        let factor_array = factor.readonly().as_array().to_owned();
+        let returns_array = returns.readonly().as_array().to_owned();
+        let adj_factor_array = adj_factor.map(|a| a.readonly().as_array().to_owned());
+        let volume_array = volume.map(|v| v.readonly().as_array().to_owned());
+
+        let engine = BacktestEngine::with_config(self.config.clone());
+
+        match engine.run(factor_array, returns_array, adj_factor_array, volume_array) {
             Ok(result) => Ok(PyBacktestResult::from(result)),
             Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(e)),
         }
@@ -1066,7 +1075,7 @@ impl From<BacktestResult> for PyBacktestResult {
 /// Standalone quantile backtest function (Python interface)
 #[pyfunction]
 fn quantile_backtest(
-    py: Python<'_>,
+    _py: Python<'_>,
     factor: Bound<'_, PyArray2<f64>>,
     returns: Bound<'_, PyArray2<f64>>,
     quantiles: usize,
@@ -1074,20 +1083,44 @@ fn quantile_backtest(
     long_top_n: usize,
     short_top_n: usize,
     commission_rate: f64,
-    weights: Option<Bound<'_, PyArray2<f64>>>,
+    adj_factor: Option<Bound<'_, PyArray2<f64>>>,
+    volume: Option<Bound<'_, PyArray2<f64>>>,
 ) -> PyResult<PyBacktestResult> {
-    let engine = PyBacktestEngine::new(
-        py,
-        factor,
-        returns,
+    let wmethod = match weight_method {
+        "equal" => WeightMethod::Equal,
+        "weighted" => WeightMethod::Weighted,
+        _ => {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "weight_method must be 'equal' or 'weighted'",
+            ));
+        }
+    };
+
+    let fee_config = backtest::FeeConfig {
+        commission_rate,
+        ..Default::default()
+    };
+
+    let config = backtest::BacktestConfig {
         quantiles,
-        weight_method,
+        weight_method: wmethod,
         long_top_n,
         short_top_n,
-        commission_rate,
-        weights,
-    )?;
-    engine.run()
+        fee_config,
+        position_config: Default::default(),
+    };
+
+    let engine = BacktestEngine::with_config(config);
+
+    let factor_array = factor.readonly().as_array().to_owned();
+    let returns_array = returns.readonly().as_array().to_owned();
+    let adj_factor_array = adj_factor.map(|a| a.readonly().as_array().to_owned());
+    let volume_array = volume.map(|v| v.readonly().as_array().to_owned());
+
+    match engine.run(factor_array, returns_array, adj_factor_array, volume_array) {
+        Ok(result) => Ok(PyBacktestResult::from(result)),
+        Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(e)),
+    }
 }
 
 /// Standalone IC computation (Python interface)

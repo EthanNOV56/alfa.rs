@@ -2,7 +2,7 @@
 //!
 //! This module provides ClickHouse-specific data source implementation.
 
-use super::{DataError, DataSource};
+use super::{DataDerivation, DataError, DataSource};
 use crate::types::DataFrame;
 use std::collections::HashMap;
 
@@ -88,7 +88,14 @@ impl ClickHouseSource {
     }
 
     /// Create a new ClickHouse source with custom volume/amount units
-    pub fn with_units(host: &str, port: u16, database: &str, username: &str, volume_unit: u16, amount_unit: u16) -> Self {
+    pub fn with_units(
+        host: &str,
+        port: u16,
+        database: &str,
+        username: &str,
+        volume_unit: u16,
+        amount_unit: u16,
+    ) -> Self {
         ClickHouseSource {
             host: host.to_string(),
             port,
@@ -244,6 +251,135 @@ impl ClickHouseSource {
         );
 
         self.query_to_hashmap(&sql)
+    }
+
+    /// Fetch stock data with complete derived fields
+    ///
+    /// This method fetches raw data from ClickHouse and computes all derived fields
+    /// including holding returns, adjusted prices, and adjusted VWAP.
+    ///
+    /// # Parameters
+    /// - symbols: List of stock symbols to fetch
+    /// - start_date: Start date (YYYY-MM-DD)
+    /// - end_date: End date (YYYY-MM-DD)
+    /// - table_name: Table name (e.g., "stock_1d")
+    ///
+    /// # Returns
+    /// - HashMap containing both raw and derived fields:
+    ///   - Raw: symbol, trading_date, open, high, low, close, volume, amount, adjust_factor
+    ///   - Derived: returns (simple), holding_return, vwap, close_adj, vwap_adj
+    pub fn fetch_stock_data_with_derivation(
+        &self,
+        symbols: &[String],
+        start_date: &str,
+        end_date: &str,
+        table_name: &str,
+    ) -> Result<HashMap<String, Vec<f64>>, DataError> {
+        // 1. Fetch raw data
+        let mut data = self.fetch_stock_data(symbols, start_date, end_date, table_name)?;
+
+        // 2. Compute derived fields
+        let derivation = DataDerivation::new();
+        data = derivation.derive_all(&data, self.amount_unit as f64, self.volume_unit as f64);
+
+        Ok(data)
+    }
+
+    /// Get top N stocks by market cap
+    ///
+    /// # Parameters
+    /// - n: Number of stocks to return
+    /// - table_name: Table name (e.g., "stock_1d")
+    ///
+    /// # Returns
+    /// - Vec of stock symbols
+    pub fn get_top_stocks(&self, n: usize, table_name: &str) -> Result<Vec<String>, DataError> {
+        // First try market_cap, then fall back to total_mv
+        let sql = format!(
+            "SELECT symbol FROM {} ORDER BY market_cap DESC NULLS LAST LIMIT {}",
+            table_name, n
+        );
+
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| DataError::Connection(format!("Failed to create client: {}", e)))?;
+
+        let mut url = format!(
+            "{}?database={}&default_format=JSONCompact&query={}",
+            self.build_url(),
+            self.database,
+            urlencoding::encode(&sql)
+        );
+        if !self.username.is_empty() {
+            url.push_str(&format!("&user={}", self.username));
+        }
+        if let Some(ref password) = self.password {
+            url.push_str(&format!("&password={}", password));
+        }
+
+        let response = client
+            .get(&url)
+            .send()
+            .map_err(|e| DataError::Connection(format!("Failed to execute query: {}", e)))?;
+
+        let text = response
+            .text()
+            .map_err(|e| DataError::Query(format!("Failed to read response: {}", e)))?;
+
+        // Parse JSON response - clickhouse returns data in "data" field
+        let json: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|e| DataError::Query(format!("Failed to parse JSON: {}", e)))?;
+
+        // Check for error in response
+        if let Some(_error) = json.get("error") {
+            eprintln!("Query error: {:?}", json.get("error"));
+            // Try alternative column name
+            let alt_sql = format!(
+                "SELECT symbol FROM {} ORDER BY total_mv DESC NULLS LAST LIMIT {}",
+                table_name, n
+            );
+            let alt_url = format!(
+                "{}?database={}&default_format=JSONCompact&query={}",
+                self.build_url(),
+                self.database,
+                urlencoding::encode(&alt_sql)
+            );
+
+            let alt_response = client
+                .get(&alt_url)
+                .send()
+                .map_err(|e| DataError::Connection(format!("Failed to execute alt query: {}", e)))?;
+
+            let alt_text = alt_response
+                .text()
+                .map_err(|e| DataError::Query(format!("Failed to read alt response: {}", e)))?;
+
+            let alt_json: serde_json::Value = serde_json::from_str(&alt_text)
+                .map_err(|e| DataError::Query(format!("Failed to parse alt JSON: {}", e)))?;
+
+            let symbols: Vec<String> = alt_json["data"]
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            return Ok(symbols);
+        }
+
+        let symbols: Vec<String> = json["data"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(symbols)
     }
 }
 

@@ -4,4 +4,4 @@
 
 pub mod engine;
 
-pub use engine::{BacktestEngine, BacktestResult, FeeConfig, PositionConfig, SlippageConfig};
+pub use engine::{BacktestConfig, BacktestEngine, BacktestResult, FeeConfig, PositionConfig, SlippageConfig};
