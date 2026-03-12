@@ -137,7 +137,7 @@ impl AlParser {
     /// Load all factors from both ~/.alfars/ (readonly) and ~/.alfars/user/ (writable)
     /// Files in the main directory are marked as readonly, files in user/ are writable
     /// Also loads from subdirectories like alpha101/, alpha191/
-    pub fn load_all_with_readonly_flag() -> Result<Vec<AlFactor>, String> {
+    pub fn load_all() -> Result<Vec<AlFactor>, String> {
         let mut all_factors = Vec::new();
         let default_dir = Self::default_dir();
         let user_dir = Self::user_dir();
@@ -788,9 +788,7 @@ mod integration_tests {
                 // Fallback: use a known list of top 300 A-share stocks by code
                 // These are the top stocks by market cap as of 2024
                 println!("Using fallback stock list (top 300 A-shares by code)");
-                (1..=300)
-                    .map(|i| format!("{:06}.SZ", i))
-                    .collect()
+                (1..=300).map(|i| format!("{:06}.SZ", i)).collect()
             }
         };
 
@@ -1085,15 +1083,10 @@ mod integration_tests {
                 let vwap = aligned_factor.clone();
 
                 // adj_factor is now required - use None as ones if not available
-                let adj = aligned_adj.unwrap_or_else(|| Array2::from_elem(aligned_factor.dim(), 1.0));
+                let adj =
+                    aligned_adj.unwrap_or_else(|| Array2::from_elem(aligned_factor.dim(), 1.0));
 
-                match engine.run(
-                    aligned_factor,
-                    aligned_returns,
-                    adj,
-                    close,
-                    vwap,
-                ) {
+                match engine.run(aligned_factor, aligned_returns, adj, close, vwap) {
                     Ok(result) => {
                         println!(
                             "{}: IC={:.4}, IR={:.4}, Return={:.2}%",

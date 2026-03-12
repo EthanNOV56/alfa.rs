@@ -705,10 +705,7 @@ async fn run_backtest(
 
     let n_days = factor.len();
     if n_days == 0 {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "Factor data is empty".to_string(),
-        ));
+        return Err((StatusCode::BAD_REQUEST, "Factor data is empty".to_string()));
     }
     let n_assets = factor[0].len();
 
@@ -740,13 +737,14 @@ async fn run_backtest(
 
     // Convert close to ndarray, or use returns as fallback (for backward compatibility)
     let close_array = if let Some(close) = close_data {
-        Array2::from_shape_vec((n_days, n_assets), close.into_iter().flatten().collect())
-            .map_err(|e| {
+        Array2::from_shape_vec((n_days, n_assets), close.into_iter().flatten().collect()).map_err(
+            |e| {
                 (
                     StatusCode::BAD_REQUEST,
                     format!("Invalid close shape: {}", e),
                 )
-            })?
+            },
+        )?
     } else {
         // Fallback: use close = 1.0 for all (so returns are based purely on price changes)
         Array2::from_elem((n_days, n_assets), 1.0)
@@ -754,13 +752,14 @@ async fn run_backtest(
 
     // Convert vwap to ndarray, or use close as fallback
     let vwap_array = if let Some(vwap) = vwap_data {
-        Array2::from_shape_vec((n_days, n_assets), vwap.into_iter().flatten().collect())
-            .map_err(|e| {
+        Array2::from_shape_vec((n_days, n_assets), vwap.into_iter().flatten().collect()).map_err(
+            |e| {
                 (
                     StatusCode::BAD_REQUEST,
                     format!("Invalid vwap shape: {}", e),
                 )
-            })?
+            },
+        )?
     } else {
         // Fallback: use vwap = close (trading return will be ~0)
         close_array.clone()
@@ -804,7 +803,13 @@ async fn run_backtest(
 
     eprintln!("[run_backtest] Running backtest engine...");
     let result = engine
-        .run(factor_array, returns_array, adj_factor, close_array, vwap_array)
+        .run(
+            factor_array,
+            returns_array,
+            adj_factor,
+            close_array,
+            vwap_array,
+        )
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     eprintln!("[run_backtest] Backtest engine completed");
 
@@ -1131,7 +1136,7 @@ async fn list_alphas() -> Result<Json<AlphaListResponse>, (StatusCode, String)> 
         .collect();
 
     // Then, add user-defined alphas from .al files
-    let user_factors = alfars::al::parser::AlParser::load_all_with_readonly_flag()
+    let user_factors = alfars::al::parser::AlParser::load_all()
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     let user_alphas: Vec<Alpha> = user_factors

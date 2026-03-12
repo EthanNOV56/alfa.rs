@@ -436,275 +436,275 @@ impl FactorRegistry {
         Ok(results)
     }
 
-    /// Evaluate expression with cached intermediate results
-    #[allow(dead_code)]
-    fn eval_expr_with_cache(
-        &self,
-        expr: &Expr,
-        data: &HashMap<String, Vec<f64>>,
-        n_rows: usize,
-        cache: &HashMap<u64, Vec<f64>>,
-    ) -> Result<Vec<f64>, String> {
-        // Check cache first
-        let hash = expr_hash(expr);
-        if let Some(cached) = cache.get(&hash) {
-            return Ok(cached.clone());
-        }
+    // /// Evaluate expression with cached intermediate results
+    // #[allow(dead_code)]
+    // fn eval_expr_with_cache(
+    //     &self,
+    //     expr: &Expr,
+    //     data: &HashMap<String, Vec<f64>>,
+    //     n_rows: usize,
+    //     cache: &HashMap<u64, Vec<f64>>,
+    // ) -> Result<Vec<f64>, String> {
+    //     // Check cache first
+    //     let hash = expr_hash(expr);
+    //     if let Some(cached) = cache.get(&hash) {
+    //         return Ok(cached.clone());
+    //     }
 
-        let result = self.eval_expr_with_cache_inner(expr, data, n_rows, cache)?;
+    //     let result = self.eval_expr_with_cache_inner(expr, data, n_rows, cache)?;
 
-        // Cache the result
-        // Note: We can't modify the cache here because it's immutable
-        // So we'll rely on the pre-computed cache from step 2
-        Ok(result)
-    }
+    //     // Cache the result
+    //     // Note: We can't modify the cache here because it's immutable
+    //     // So we'll rely on the pre-computed cache from step 2
+    //     Ok(result)
+    // }
 
-    /// Inner evaluation that actually computes the expression
-    #[allow(dead_code)]
-    fn eval_expr_with_cache_inner(
-        &self,
-        expr: &Expr,
-        data: &HashMap<String, Vec<f64>>,
-        n_rows: usize,
-        cache: &HashMap<u64, Vec<f64>>,
-    ) -> Result<Vec<f64>, String> {
-        match expr {
-            Expr::Column(name) => data
-                .get(name)
-                .cloned()
-                .ok_or_else(|| format!("Column '{}' not found", name)),
-            Expr::Literal(lit) => {
-                let val = match lit {
-                    Literal::Float(f) => *f,
-                    Literal::Integer(i) => *i as f64,
-                    _ => 0.0,
-                };
-                Ok(vec![val; n_rows])
-            }
-            Expr::BinaryExpr { left, op, right } => {
-                let left_vals = self.eval_expr_with_cache(left, data, n_rows, cache)?;
-                let right_vals = self.eval_expr_with_cache(right, data, n_rows, cache)?;
-                let mut result = vec![0.0; n_rows];
-                for i in 0..n_rows {
-                    result[i] = match op {
-                        BinaryOp::Add => left_vals[i] + right_vals[i],
-                        BinaryOp::Subtract => left_vals[i] - right_vals[i],
-                        BinaryOp::Multiply => left_vals[i] * right_vals[i],
-                        BinaryOp::Divide => {
-                            if right_vals[i].abs() < 1e-10 {
-                                0.0
-                            } else {
-                                left_vals[i] / right_vals[i]
-                            }
-                        }
-                        _ => 0.0,
-                    };
-                }
-                Ok(result)
-            }
-            Expr::FunctionCall { name, args } => {
-                self.eval_function_with_cache(name, args, data, n_rows, cache)
-            }
-            Expr::UnaryExpr { op, expr: e } => {
-                let vals = self.eval_expr_with_cache(e, data, n_rows, cache)?;
-                Ok(vals
-                    .into_iter()
-                    .map(|v| match op {
-                        UnaryOp::Negate => -v,
-                        _ => v,
-                    })
-                    .collect())
-            }
-            _ => Err("Unsupported expr type".to_string()),
-        }
-    }
+    // /// Inner evaluation that actually computes the expression
+    // #[allow(dead_code)]
+    // fn eval_expr_with_cache_inner(
+    //     &self,
+    //     expr: &Expr,
+    //     data: &HashMap<String, Vec<f64>>,
+    //     n_rows: usize,
+    //     cache: &HashMap<u64, Vec<f64>>,
+    // ) -> Result<Vec<f64>, String> {
+    //     match expr {
+    //         Expr::Column(name) => data
+    //             .get(name)
+    //             .cloned()
+    //             .ok_or_else(|| format!("Column '{}' not found", name)),
+    //         Expr::Literal(lit) => {
+    //             let val = match lit {
+    //                 Literal::Float(f) => *f,
+    //                 Literal::Integer(i) => *i as f64,
+    //                 _ => 0.0,
+    //             };
+    //             Ok(vec![val; n_rows])
+    //         }
+    //         Expr::BinaryExpr { left, op, right } => {
+    //             let left_vals = self.eval_expr_with_cache(left, data, n_rows, cache)?;
+    //             let right_vals = self.eval_expr_with_cache(right, data, n_rows, cache)?;
+    //             let mut result = vec![0.0; n_rows];
+    //             for i in 0..n_rows {
+    //                 result[i] = match op {
+    //                     BinaryOp::Add => left_vals[i] + right_vals[i],
+    //                     BinaryOp::Subtract => left_vals[i] - right_vals[i],
+    //                     BinaryOp::Multiply => left_vals[i] * right_vals[i],
+    //                     BinaryOp::Divide => {
+    //                         if right_vals[i].abs() < 1e-10 {
+    //                             0.0
+    //                         } else {
+    //                             left_vals[i] / right_vals[i]
+    //                         }
+    //                     }
+    //                     _ => 0.0,
+    //                 };
+    //             }
+    //             Ok(result)
+    //         }
+    //         Expr::FunctionCall { name, args } => {
+    //             self.eval_function_with_cache(name, args, data, n_rows, cache)
+    //         }
+    //         Expr::UnaryExpr { op, expr: e } => {
+    //             let vals = self.eval_expr_with_cache(e, data, n_rows, cache)?;
+    //             Ok(vals
+    //                 .into_iter()
+    //                 .map(|v| match op {
+    //                     UnaryOp::Negate => -v,
+    //                     _ => v,
+    //                 })
+    //                 .collect())
+    //         }
+    //         _ => Err("Unsupported expr type".to_string()),
+    //     }
+    // }
 
-    #[allow(dead_code)]
-    fn eval_function_with_cache(
-        &self,
-        name: &str,
-        args: &[Expr],
-        data: &HashMap<String, Vec<f64>>,
-        n_rows: usize,
-        cache: &HashMap<u64, Vec<f64>>,
-    ) -> Result<Vec<f64>, String> {
-        let name_lower = name.to_lowercase();
+    // #[allow(dead_code)]
+    // fn eval_function_with_cache(
+    //     &self,
+    //     name: &str,
+    //     args: &[Expr],
+    //     data: &HashMap<String, Vec<f64>>,
+    //     n_rows: usize,
+    //     cache: &HashMap<u64, Vec<f64>>,
+    // ) -> Result<Vec<f64>, String> {
+    //     let name_lower = name.to_lowercase();
 
-        if name_lower.starts_with("ts_") {
-            return self.eval_ts_function_with_cache(&name_lower, args, data, n_rows, cache);
-        }
+    //     if name_lower.starts_with("ts_") {
+    //         return self.eval_ts_function_with_cache(&name_lower, args, data, n_rows, cache);
+    //     }
 
-        // First compute all args
-        let mut arg_values: Vec<Vec<f64>> = Vec::new();
-        for arg in args {
-            arg_values.push(self.eval_expr_with_cache(arg, data, n_rows, cache)?);
-        }
+    //     // First compute all args
+    //     let mut arg_values: Vec<Vec<f64>> = Vec::new();
+    //     for arg in args {
+    //         arg_values.push(self.eval_expr_with_cache(arg, data, n_rows, cache)?);
+    //     }
 
-        match name_lower.as_str() {
-            "rank" => Ok(timeseries::rank(&arg_values[0])),
-            "delay" => {
-                let periods = functions::get_literal_int(&args[1]).unwrap_or(1);
-                Ok(timeseries::delay(&arg_values[0], periods))
-            }
-            "scale" => Ok(timeseries::scale(&arg_values[0])),
-            "sign" => Ok(timeseries::sign(&arg_values[0])),
-            "abs" => Ok(arg_values[0].iter().map(|v| v.abs()).collect()),
-            // Element-wise min of two series
-            "min" => {
-                if arg_values.len() >= 2 {
-                    Ok(arg_values[0]
-                        .iter()
-                        .zip(arg_values[1].iter())
-                        .map(|(&a, &b)| a.min(b))
-                        .collect())
-                } else {
-                    Ok(arg_values[0].clone())
-                }
-            }
-            // Element-wise max of two series
-            "max" => {
-                if arg_values.len() >= 2 {
-                    Ok(arg_values[0]
-                        .iter()
-                        .zip(arg_values[1].iter())
-                        .map(|(&a, &b)| a.max(b))
-                        .collect())
-                } else {
-                    Ok(arg_values[0].clone())
-                }
-            }
-            // Sum of all elements in a series
-            "sum" => {
-                let total: f64 = arg_values[0].iter().sum();
-                Ok(arg_values[0].iter().map(|_| total).collect())
-            }
-            "log" => Ok(arg_values[0]
-                .iter()
-                .map(|v| if *v > 0.0 { v.ln() } else { f64::NAN })
-                .collect()),
-            "log10" => Ok(arg_values[0]
-                .iter()
-                .map(|v| if *v > 0.0 { v.log10() } else { f64::NAN })
-                .collect()),
-            "sqrt" => Ok(arg_values[0].iter().map(|v| v.sqrt()).collect()),
-            "power" => {
-                let exponent = functions::get_literal_int(&args[1])
-                    .map(|e| e as f64)
-                    .unwrap_or(2.0);
-                Ok(arg_values[0].iter().map(|v| v.powf(exponent)).collect())
-            }
-            "decay_linear" | "decay" => {
-                let periods = functions::get_literal_int(&args[1]).unwrap_or(10);
-                Ok(timeseries::decay_linear(&arg_values[0], periods))
-            }
-            "delta" => {
-                let periods = functions::get_literal_int(&args[1]).unwrap_or(1);
-                Ok(timeseries::ts_delta(&arg_values[0], periods))
-            }
-            "if" => {
-                if args.len() != 3 {
-                    return Err("IF requires 3 arguments".to_string());
-                }
-                let result: Vec<f64> = arg_values[0]
-                    .iter()
-                    .zip(arg_values[1].iter())
-                    .zip(arg_values[2].iter())
-                    .map(|((&c, &t), &f)| if c > 0.0 { t } else { f })
-                    .collect();
-                Ok(result)
-            }
-            "gt" | "greater" => Ok(arg_values[0]
-                .iter()
-                .zip(arg_values[1].iter())
-                .map(|(&x, &y)| if x > y { 1.0 } else { 0.0 })
-                .collect()),
-            "lt" | "less" => Ok(arg_values[0]
-                .iter()
-                .zip(arg_values[1].iter())
-                .map(|(&x, &y)| if x < y { 1.0 } else { 0.0 })
-                .collect()),
-            "ge" | "greater_equal" | "gte" => Ok(arg_values[0]
-                .iter()
-                .zip(arg_values[1].iter())
-                .map(|(&x, &y)| if x >= y { 1.0 } else { 0.0 })
-                .collect()),
-            "le" | "less_equal" | "lte" => Ok(arg_values[0]
-                .iter()
-                .zip(arg_values[1].iter())
-                .map(|(&x, &y)| if x <= y { 1.0 } else { 0.0 })
-                .collect()),
-            "eq" | "equal" => Ok(arg_values[0]
-                .iter()
-                .zip(arg_values[1].iter())
-                .map(|(&x, &y)| if (x - y).abs() < 1e-10 { 1.0 } else { 0.0 })
-                .collect()),
-            "ne" | "not_equal" => Ok(arg_values[0]
-                .iter()
-                .zip(arg_values[1].iter())
-                .map(|(&x, &y)| if (x - y).abs() >= 1e-10 { 1.0 } else { 0.0 })
-                .collect()),
-            _ => Err(format!("Unknown function: {}", name)),
-        }
-    }
+    //     match name_lower.as_str() {
+    //         "rank" => Ok(timeseries::rank(&arg_values[0])),
+    //         "delay" => {
+    //             let periods = functions::get_literal_int(&args[1]).unwrap_or(1);
+    //             Ok(timeseries::delay(&arg_values[0], periods))
+    //         }
+    //         "scale" => Ok(timeseries::scale(&arg_values[0])),
+    //         "sign" => Ok(timeseries::sign(&arg_values[0])),
+    //         "abs" => Ok(arg_values[0].iter().map(|v| v.abs()).collect()),
+    //         // Element-wise min of two series
+    //         "min" => {
+    //             if arg_values.len() >= 2 {
+    //                 Ok(arg_values[0]
+    //                     .iter()
+    //                     .zip(arg_values[1].iter())
+    //                     .map(|(&a, &b)| a.min(b))
+    //                     .collect())
+    //             } else {
+    //                 Ok(arg_values[0].clone())
+    //             }
+    //         }
+    //         // Element-wise max of two series
+    //         "max" => {
+    //             if arg_values.len() >= 2 {
+    //                 Ok(arg_values[0]
+    //                     .iter()
+    //                     .zip(arg_values[1].iter())
+    //                     .map(|(&a, &b)| a.max(b))
+    //                     .collect())
+    //             } else {
+    //                 Ok(arg_values[0].clone())
+    //             }
+    //         }
+    //         // Sum of all elements in a series
+    //         "sum" => {
+    //             let total: f64 = arg_values[0].iter().sum();
+    //             Ok(arg_values[0].iter().map(|_| total).collect())
+    //         }
+    //         "log" => Ok(arg_values[0]
+    //             .iter()
+    //             .map(|v| if *v > 0.0 { v.ln() } else { f64::NAN })
+    //             .collect()),
+    //         "log10" => Ok(arg_values[0]
+    //             .iter()
+    //             .map(|v| if *v > 0.0 { v.log10() } else { f64::NAN })
+    //             .collect()),
+    //         "sqrt" => Ok(arg_values[0].iter().map(|v| v.sqrt()).collect()),
+    //         "power" => {
+    //             let exponent = functions::get_literal_int(&args[1])
+    //                 .map(|e| e as f64)
+    //                 .unwrap_or(2.0);
+    //             Ok(arg_values[0].iter().map(|v| v.powf(exponent)).collect())
+    //         }
+    //         "decay_linear" | "decay" => {
+    //             let periods = functions::get_literal_int(&args[1]).unwrap_or(10);
+    //             Ok(timeseries::decay_linear(&arg_values[0], periods))
+    //         }
+    //         "delta" => {
+    //             let periods = functions::get_literal_int(&args[1]).unwrap_or(1);
+    //             Ok(timeseries::ts_delta(&arg_values[0], periods))
+    //         }
+    //         "if" => {
+    //             if args.len() != 3 {
+    //                 return Err("IF requires 3 arguments".to_string());
+    //             }
+    //             let result: Vec<f64> = arg_values[0]
+    //                 .iter()
+    //                 .zip(arg_values[1].iter())
+    //                 .zip(arg_values[2].iter())
+    //                 .map(|((&c, &t), &f)| if c > 0.0 { t } else { f })
+    //                 .collect();
+    //             Ok(result)
+    //         }
+    //         "gt" | "greater" => Ok(arg_values[0]
+    //             .iter()
+    //             .zip(arg_values[1].iter())
+    //             .map(|(&x, &y)| if x > y { 1.0 } else { 0.0 })
+    //             .collect()),
+    //         "lt" | "less" => Ok(arg_values[0]
+    //             .iter()
+    //             .zip(arg_values[1].iter())
+    //             .map(|(&x, &y)| if x < y { 1.0 } else { 0.0 })
+    //             .collect()),
+    //         "ge" | "greater_equal" | "gte" => Ok(arg_values[0]
+    //             .iter()
+    //             .zip(arg_values[1].iter())
+    //             .map(|(&x, &y)| if x >= y { 1.0 } else { 0.0 })
+    //             .collect()),
+    //         "le" | "less_equal" | "lte" => Ok(arg_values[0]
+    //             .iter()
+    //             .zip(arg_values[1].iter())
+    //             .map(|(&x, &y)| if x <= y { 1.0 } else { 0.0 })
+    //             .collect()),
+    //         "eq" | "equal" => Ok(arg_values[0]
+    //             .iter()
+    //             .zip(arg_values[1].iter())
+    //             .map(|(&x, &y)| if (x - y).abs() < 1e-10 { 1.0 } else { 0.0 })
+    //             .collect()),
+    //         "ne" | "not_equal" => Ok(arg_values[0]
+    //             .iter()
+    //             .zip(arg_values[1].iter())
+    //             .map(|(&x, &y)| if (x - y).abs() >= 1e-10 { 1.0 } else { 0.0 })
+    //             .collect()),
+    //         _ => Err(format!("Unknown function: {}", name)),
+    //     }
+    // }
 
-    #[allow(dead_code)]
-    fn eval_ts_function_with_cache(
-        &self,
-        name: &str,
-        args: &[Expr],
-        data: &HashMap<String, Vec<f64>>,
-        n_rows: usize,
-        cache: &HashMap<u64, Vec<f64>>,
-    ) -> Result<Vec<f64>, String> {
-        let vals = self.eval_expr_with_cache(&args[0], data, n_rows, cache)?;
-        let window = args
-            .get(1)
-            .and_then(|a| functions::get_literal_int(a))
-            .unwrap_or(20);
+    // #[allow(dead_code)]
+    // fn eval_ts_function_with_cache(
+    //     &self,
+    //     name: &str,
+    //     args: &[Expr],
+    //     data: &HashMap<String, Vec<f64>>,
+    //     n_rows: usize,
+    //     cache: &HashMap<u64, Vec<f64>>,
+    // ) -> Result<Vec<f64>, String> {
+    //     let vals = self.eval_expr_with_cache(&args[0], data, n_rows, cache)?;
+    //     let window = args
+    //         .get(1)
+    //         .and_then(|a| functions::get_literal_int(a))
+    //         .unwrap_or(20);
 
-        match name {
-            "ts_mean" => Ok(timeseries::ts_mean(&vals, window)),
-            "ts_sum" => Ok(timeseries::ts_sum(&vals, window)),
-            "ts_count" => Ok(timeseries::ts_count(&vals, window)),
-            "ts_std" => Ok(timeseries::ts_std(&vals, window)),
-            "ts_max" => Ok(timeseries::ts_max(&vals, window)),
-            "ts_min" => Ok(timeseries::ts_min(&vals, window)),
-            "ts_rank" => Ok(timeseries::ts_rank(&vals, window)),
-            "ts_argmax" => Ok(timeseries::ts_argmax(&vals, window)),
-            "ts_argmin" => Ok(timeseries::ts_argmin(&vals, window)),
-            "ts_delta" => Ok(timeseries::ts_delta(&vals, window)),
-            "ts_product" => Ok(timeseries::ts_product(&vals, window)),
-            "ts_correlation" => {
-                let vals2 = self.eval_expr_with_cache(&args[1], data, n_rows, cache)?;
-                Ok(timeseries::ts_correlation(&vals, &vals2, window))
-            }
-            "ts_cov" | "ts_covariance" => {
-                let vals2 = self.eval_expr_with_cache(&args[1], data, n_rows, cache)?;
-                Ok(timeseries::ts_cov(&vals, &vals2, window))
-            }
-            "sma" => {
-                let n = window;
-                let m = args
-                    .get(2)
-                    .and_then(|a| functions::get_literal_int(a))
-                    .unwrap_or(2);
-                let alpha = m as f64 / n as f64;
-                let alpha = if alpha > 0.0 && alpha <= 1.0 {
-                    alpha
-                } else {
-                    0.5
-                };
-                Ok(timeseries::sma(&vals, alpha))
-            }
-            "lowday" => Ok(timeseries::lowday(&vals, window)),
-            "highday" => Ok(timeseries::highday(&vals, window)),
-            "wma" => Ok(timeseries::wma(&vals, window)),
-            "min" => Ok(timeseries::ts_min(&vals, window)),
-            "max" => Ok(timeseries::ts_max(&vals, window)),
-            "sum" => Ok(timeseries::ts_sum(&vals, window)),
-            _ => Err(format!("Unknown ts function: {}", name)),
-        }
-    }
+    //     match name {
+    //         "ts_mean" => Ok(timeseries::ts_mean(&vals, window)),
+    //         "ts_sum" => Ok(timeseries::ts_sum(&vals, window)),
+    //         "ts_count" => Ok(timeseries::ts_count(&vals, window)),
+    //         "ts_std" => Ok(timeseries::ts_std(&vals, window)),
+    //         "ts_max" => Ok(timeseries::ts_max(&vals, window)),
+    //         "ts_min" => Ok(timeseries::ts_min(&vals, window)),
+    //         "ts_rank" => Ok(timeseries::ts_rank(&vals, window)),
+    //         "ts_argmax" => Ok(timeseries::ts_argmax(&vals, window)),
+    //         "ts_argmin" => Ok(timeseries::ts_argmin(&vals, window)),
+    //         "ts_delta" => Ok(timeseries::ts_delta(&vals, window)),
+    //         "ts_product" => Ok(timeseries::ts_product(&vals, window)),
+    //         "ts_correlation" => {
+    //             let vals2 = self.eval_expr_with_cache(&args[1], data, n_rows, cache)?;
+    //             Ok(timeseries::ts_correlation(&vals, &vals2, window))
+    //         }
+    //         "ts_cov" | "ts_covariance" => {
+    //             let vals2 = self.eval_expr_with_cache(&args[1], data, n_rows, cache)?;
+    //             Ok(timeseries::ts_cov(&vals, &vals2, window))
+    //         }
+    //         "sma" => {
+    //             let n = window;
+    //             let m = args
+    //                 .get(2)
+    //                 .and_then(|a| functions::get_literal_int(a))
+    //                 .unwrap_or(2);
+    //             let alpha = m as f64 / n as f64;
+    //             let alpha = if alpha > 0.0 && alpha <= 1.0 {
+    //                 alpha
+    //             } else {
+    //                 0.5
+    //             };
+    //             Ok(timeseries::sma(&vals, alpha))
+    //         }
+    //         "lowday" => Ok(timeseries::lowday(&vals, window)),
+    //         "highday" => Ok(timeseries::highday(&vals, window)),
+    //         "wma" => Ok(timeseries::wma(&vals, window)),
+    //         "min" => Ok(timeseries::ts_min(&vals, window)),
+    //         "max" => Ok(timeseries::ts_max(&vals, window)),
+    //         "sum" => Ok(timeseries::ts_sum(&vals, window)),
+    //         _ => Err(format!("Unknown ts function: {}", name)),
+    //     }
+    // }
 
     /// Execute the logical plan to compute factor values
     fn execute_plan(
