@@ -1374,6 +1374,9 @@ mod integration_tests {
             }
         }
 
+        // Build aligned adjustment factor matrix (all ones for no adjustment)
+        let aligned_adj_factor: Array2<f64> = Array2::ones((min_days, n_symbols));
+
         println!("Aligned returns matrix shape: {:?}", aligned_returns.dim());
 
         // Step 3: Generate weight matrix using factor ranking
@@ -1399,7 +1402,7 @@ mod integration_tests {
         }
 
         // Step 4: Compute holding return using previous day's weights
-        let holding_pnl = BacktestEngine::compute_holding_return(&weights, &aligned_close);
+        let holding_pnl = BacktestEngine::compute_holding_return(&weights, &aligned_close, &aligned_adj_factor);
         println!(
             "\nHolding return (first 5 days): {:?}",
             holding_pnl.slice(ndarray::s![..5, 0])
@@ -1410,6 +1413,7 @@ mod integration_tests {
             &weights,
             &aligned_close,
             &aligned_vwap,
+            &aligned_adj_factor,
             0.0003,
             0.0005,
         );
@@ -1604,8 +1608,9 @@ mod integration_tests {
 
         // Compute holding return using previous day's weights
         let close_arr = Array2::from_shape_vec((n_days, 1), adj_close.clone()).unwrap();
+        let adj_factor_arr = Array2::ones((n_days, 1));
 
-        let holding_return = BacktestEngine::compute_holding_return(&weights, &close_arr);
+        let holding_return = BacktestEngine::compute_holding_return(&weights, &close_arr, &adj_factor_arr);
         println!(
             "First 5 holding returns: {:?}",
             holding_return.slice(ndarray::s![..5, 0])
@@ -1615,7 +1620,7 @@ mod integration_tests {
         let fee = 0.0003;
         let slippage = 0.0005;
         let trading_return =
-            BacktestEngine::compute_trading_return(&weights, &close_arr, &vwap_arr, fee, slippage);
+            BacktestEngine::compute_trading_return(&weights, &close_arr, &vwap_arr, &adj_factor_arr, fee, slippage);
         println!(
             "First 5 trading returns: {:?}",
             trading_return.slice(ndarray::s![..5, 0])

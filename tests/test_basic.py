@@ -4,7 +4,7 @@ exprs 基本功能测试
 
 import numpy as np
 import pytest
-from exprs import quantile_backtest, compute_information_coefficient
+from alfars import quantile_backtest, compute_information_coefficient
 
 
 def test_quantile_backtest_basic():

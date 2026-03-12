@@ -227,50 +227,92 @@ impl BacktestEngine {
         );
 
         let (n_days, n_assets) = factor.dim();
+        let quantiles = self.config.quantiles;
 
         // Compute quantile groups
-        let group_labels = Self::compute_quantile_groups(&factor, self.config.quantiles)?;
+        let group_labels = Self::compute_quantile_groups(&factor, quantiles)?;
 
-        // Compute weight matrix from factor using quantile-based approach
-        let weights = Self::compute_weight_matrix_from_factor(
+        // Compute group weights based on factor values
+        let group_weights = Self::compute_group_weights(
             &factor,
             &group_labels,
-            n_days,
-            n_assets,
-            self.config.quantiles,
+            quantiles,
+            self.config.weight_method,
+        );
+
+        // Compute group returns by calling compute_portfolio_return for each group
+        let mut group_returns = Array2::<f64>::zeros((n_days - 1, quantiles));
+
+        for group in 0..quantiles {
+            // Extract weights for this specific group
+            let subgroup_weights =
+                Self::compute_subgroup_weights(&group_weights, &group_labels, group);
+
+            // Compute returns for this group using adjusted prices
+            let group_portfolio_returns = Self::compute_portfolio_return(
+                &subgroup_weights,
+                &close,
+                &vwap,
+                &adj_factor,
+                self.config.fee_config.commission_rate,
+                self.config.fee_config.slippage.normal_slippage_rate,
+            );
+
+            // Extract returns (skip first day which is always 0)
+            for day in 1..n_days {
+                group_returns[[day - 1, group]] = group_portfolio_returns[[day, 0]];
+            }
+        }
+
+        // Compute long/short weights using the new function
+        let long_short_weights = Self::compute_long_short_weights(
+            &group_weights,
+            &group_labels,
+            quantiles,
             self.config.long_top_n,
             self.config.short_top_n,
             &self.config.position_config,
         );
 
-        // Compute portfolio returns using weight matrix, close, and vwap
-        let _portfolio_returns = Self::compute_portfolio_return(
-            &weights,
+        // Compute long/short returns using adjusted prices
+        let long_short_portfolio_returns = Self::compute_portfolio_return(
+            &long_short_weights,
             &close,
             &vwap,
+            &adj_factor,
             self.config.fee_config.commission_rate,
             self.config.fee_config.slippage.normal_slippage_rate,
         );
 
-        // Compute group returns first (needed for long/short calculation)
-        let (_, group_returns) = Self::compute_group_returns(
-            &factor,
-            &returns,
-            Some(&adj_factor),
-            &group_labels,
-            self.config.quantiles,
-            self.config.weight_method,
-            None,
-        )?;
+        // Extract long/short returns
+        let mut long_short_returns = Array1::<f64>::zeros(n_days - 1);
+        for day in 1..n_days {
+            long_short_returns[day - 1] = long_short_portfolio_returns[[day, 0]];
+        }
 
-        // Compute long/short returns using group returns
-        let (long_returns, short_returns, long_short_returns) = Self::compute_long_short_returns(
-            &group_returns,
-            self.config.quantiles,
-            self.config.long_top_n,
-            self.config.short_top_n,
-            &self.config.position_config,
-        );
+        // Compute long returns (top quantiles)
+        let mut long_returns = Array1::<f64>::zeros(n_days - 1);
+        let long_groups: Vec<usize> = (quantiles - self.config.long_top_n..quantiles).collect();
+        for day in 0..(n_days - 1) {
+            let mut sum = 0.0;
+            for &g in &long_groups {
+                sum += group_returns[[day, g]];
+            }
+            long_returns[day] =
+                sum / self.config.long_top_n as f64 * self.config.position_config.long_ratio;
+        }
+
+        // Compute short returns (bottom quantiles)
+        let mut short_returns = Array1::<f64>::zeros(n_days - 1);
+        let short_groups: Vec<usize> = (0..self.config.short_top_n).collect();
+        for day in 0..(n_days - 1) {
+            let mut sum = 0.0;
+            for &g in &short_groups {
+                sum += group_returns[[day, g]];
+            }
+            short_returns[day] =
+                -sum / self.config.short_top_n as f64 * self.config.position_config.short_ratio;
+        }
 
         // Compute IC series
         let (ic_series, ic_mean, ic_ir) = Self::compute_ic_series(&factor, &returns)?;
@@ -306,76 +348,82 @@ impl BacktestEngine {
         })
     }
 
-    /// Compute weight matrix from factor using quantile-based approach
-    ///
-    /// Returns a weight matrix of shape [n_days, n_symbols] where:
-    /// - Long positions (top quantiles): positive weights
-    /// - Short positions (bottom quantiles): negative weights
-    /// - Other positions: zero weights
-    fn compute_weight_matrix_from_factor(
-        factor: &Array2<f64>,
-        group_labels: &Array2<usize>,
-        n_days: usize,
-        n_assets: usize,
-        quantiles: usize,
-        long_top_n: usize,
-        short_top_n: usize,
-        position_config: &PositionConfig,
-    ) -> Array2<f64> {
-        // Validate parameters - fail fast with clear error messages
-        if long_top_n == 0 || long_top_n > quantiles {
-            panic!("long_top_n must be in range [1, quantiles], got {} but quantiles={}", long_top_n, quantiles);
-        }
-        if short_top_n == 0 || short_top_n > quantiles {
-            panic!("short_top_n must be in range [1, quantiles], got {} but quantiles={}", short_top_n, quantiles);
-        }
+    // /// Compute weight matrix from factor using quantile-based approach
+    // ///
+    // /// Returns a weight matrix of shape [n_days, n_symbols] where:
+    // /// - Long positions (top quantiles): positive weights
+    // /// - Short positions (bottom quantiles): negative weights
+    // /// - Other positions: zero weights
+    // fn compute_weight_matrix_from_factor(
+    //     factor: &Array2<f64>,
+    //     group_labels: &Array2<usize>,
+    //     n_days: usize,
+    //     n_assets: usize,
+    //     quantiles: usize,
+    //     long_top_n: usize,
+    //     short_top_n: usize,
+    //     position_config: &PositionConfig,
+    // ) -> Array2<f64> {
+    //     // Validate parameters - fail fast with clear error messages
+    //     if long_top_n == 0 || long_top_n > quantiles {
+    //         panic!(
+    //             "long_top_n must be in range [1, quantiles], got {} but quantiles={}",
+    //             long_top_n, quantiles
+    //         );
+    //     }
+    //     if short_top_n == 0 || short_top_n > quantiles {
+    //         panic!(
+    //             "short_top_n must be in range [1, quantiles], got {} but quantiles={}",
+    //             short_top_n, quantiles
+    //         );
+    //     }
 
-        let mut weights = Array2::<f64>::zeros((n_days, n_assets));
+    //     let mut weights = Array2::<f64>::zeros((n_days, n_assets));
 
-        let long_groups: Vec<usize> = (quantiles - long_top_n + 1..=quantiles).collect();
-        let short_groups: Vec<usize> = (1..=short_top_n).collect();
+    //     let long_groups: Vec<usize> = (quantiles - long_top_n + 1..=quantiles).collect();
+    //     let short_groups: Vec<usize> = (1..=short_top_n).collect();
 
-        let long_ratio = position_config.long_ratio;
-        let short_ratio = position_config.short_ratio;
+    //     let long_ratio = position_config.long_ratio;
+    //     let short_ratio = position_config.short_ratio;
 
-        for day in 0..n_days {
-            // Count long and short assets
-            let mut long_indices = Vec::new();
-            let mut short_indices = Vec::new();
+    //     for day in 0..n_days {
+    //         // Count long and short assets
+    //         let mut long_indices = Vec::new();
+    //         let mut short_indices = Vec::new();
 
-            for asset in 0..n_assets {
-                let label = group_labels[[day, asset]];
-                if long_groups.contains(&label) {
-                    long_indices.push(asset);
-                } else if short_groups.contains(&label) {
-                    short_indices.push(asset);
-                }
-            }
+    //         for asset in 0..n_assets {
+    //             let label = group_labels[[day, asset]];
+    //             if long_groups.contains(&label) {
+    //                 long_indices.push(asset);
+    //             } else if short_groups.contains(&label) {
+    //                 short_indices.push(asset);
+    //             }
+    //         }
 
-            // Compute equal weights for long and short positions
-            let long_weight = if !long_indices.is_empty() {
-                long_ratio / long_indices.len() as f64
-            } else {
-                0.0
-            };
+    //         // Compute equal weights for long and short positions
+    //         let long_weight = if !long_indices.is_empty() {
+    //             long_ratio / long_indices.len() as f64
+    //         } else {
+    //             0.0
+    //         };
 
-            let short_weight = if !short_indices.is_empty() {
-                -short_ratio / short_indices.len() as f64
-            } else {
-                0.0
-            };
+    //         let short_weight = if !short_indices.is_empty() {
+    //             -short_ratio / short_indices.len() as f64
+    //         } else {
+    //             0.0
+    //         };
 
-            // Assign weights
-            for &idx in &long_indices {
-                weights[[day, idx]] = long_weight;
-            }
-            for &idx in &short_indices {
-                weights[[day, idx]] = short_weight;
-            }
-        }
+    //         // Assign weights
+    //         for &idx in &long_indices {
+    //             weights[[day, idx]] = long_weight;
+    //         }
+    //         for &idx in &short_indices {
+    //             weights[[day, idx]] = short_weight;
+    //         }
+    //     }
 
-        weights
-    }
+    //     weights
+    // }
 
     fn compute_quantile_groups(
         factor: &Array2<f64>,
@@ -411,86 +459,173 @@ impl BacktestEngine {
         Ok(groups)
     }
 
-    fn compute_group_returns(
+    /// Compute group weights based on factor values
+    ///
+    /// For each day, sorts assets by factor value (descending) and assigns to quantiles.
+    /// Then computes weights within each group based on the weight method.
+    ///
+    /// # Parameters
+    /// - factor: Factor matrix [n_days, n_symbols]
+    /// - group_labels: Group labels from compute_quantile_groups [n_days, n_symbols]
+    /// - quantiles: Number of quantile groups
+    /// - weight_method: Weight allocation method (Equal or Weighted)
+    ///
+    /// # Returns
+    /// - Array2<f64> of shape [n_days, n_symbols] with group weights
+    fn compute_group_weights(
         factor: &Array2<f64>,
-        returns: &Array2<f64>,
-        adj_factor: Option<&Array2<f64>>,
         group_labels: &Array2<usize>,
         quantiles: usize,
         weight_method: WeightMethod,
-        weights: Option<&Array2<f64>>,
-    ) -> Result<(Array2<f64>, Array2<f64>), String> {
+    ) -> Array2<f64> {
         let (n_days, n_assets) = factor.dim();
-        let mut group_weights = Array2::<f64>::zeros((n_days, quantiles));
-        let mut group_returns = Array2::<f64>::zeros((n_days - 1, quantiles));
+        let mut group_weights = Array2::<f64>::zeros((n_days, n_assets));
 
-        for day in 0..(n_days - 1) {
+        for day in 0..n_days {
             let labels_today = group_labels.row(day);
-            let returns_today = returns.row(day);
+            let factor_today = factor.row(day);
 
-            for group in 1..=quantiles {
-                let mut asset_indices = Vec::new();
-                for asset in 0..n_assets {
-                    if labels_today[asset] == group {
-                        asset_indices.push(asset);
-                    }
+            // Collect valid assets for each group
+            let mut group_assets: Vec<Vec<usize>> = vec![Vec::new(); quantiles];
+            for asset in 0..n_assets {
+                let label = labels_today[asset];
+                if label > 0 && label <= quantiles {
+                    group_assets[label - 1].push(asset);
                 }
+            }
 
-                if asset_indices.is_empty() {
+            // Compute weights for each group
+            for group in 0..quantiles {
+                let assets = &group_assets[group];
+                if assets.is_empty() {
                     continue;
                 }
 
-                // Compute weights
-                let computed_weights = match weight_method {
+                let group_weight = 1.0 / quantiles as f64; // Each group gets equal total weight
+
+                let weights: Vec<f64> = match weight_method {
                     WeightMethod::Equal => {
-                        let w = 1.0 / asset_indices.len() as f64;
-                        vec![w; asset_indices.len()]
+                        let w = group_weight / assets.len() as f64;
+                        vec![w; assets.len()]
                     }
                     WeightMethod::Weighted => {
-                        if let Some(weight_data) = weights {
-                            let total_weight: f64 = asset_indices
-                                .iter()
-                                .map(|&idx| weight_data[[day, idx]])
-                                .filter(|&w| !w.is_nan())
-                                .sum();
-                            if total_weight == 0.0 {
-                                vec![0.0; asset_indices.len()]
-                            } else {
-                                asset_indices
-                                    .iter()
-                                    .map(|&idx| weight_data[[day, idx]] / total_weight)
-                                    .collect()
-                            }
+                        // Use factor values as weights
+                        let total_factor: f64 = assets
+                            .iter()
+                            .map(|&idx| factor_today[idx])
+                            .filter(|&v| !v.is_nan())
+                            .sum();
+                        if total_factor == 0.0 {
+                            vec![0.0; assets.len()]
                         } else {
-                            return Err("Weighted method requires weight data".to_string());
+                            assets
+                                .iter()
+                                .map(|&idx| {
+                                    let f = factor_today[idx];
+                                    if f.is_nan() {
+                                        0.0
+                                    } else {
+                                        group_weight * f / total_factor
+                                    }
+                                })
+                                .collect()
                         }
                     }
                 };
 
-                // Store group weight
-                group_weights[[day, group - 1]] = computed_weights.iter().sum();
-
-                // Apply adjustment factor if available
-                let weighted_return: f64 = asset_indices
-                    .iter()
-                    .zip(computed_weights.iter())
-                    .map(|(&idx, &w)| {
-                        let ret = returns_today[idx];
-                        let adj = adj_factor.map_or(1.0, |adj| adj[[day + 1, idx]]);
-                        let adjusted_ret = if adj.is_nan() { ret } else { ret * adj };
-                        if adjusted_ret.is_nan() {
-                            0.0
-                        } else {
-                            w * adjusted_ret
-                        }
-                    })
-                    .sum();
-
-                group_returns[[day, group - 1]] = weighted_return;
+                // Assign weights
+                for (&asset, &weight) in assets.iter().zip(weights.iter()) {
+                    group_weights[[day, asset]] = weight;
+                }
             }
         }
 
-        Ok((group_weights, group_returns))
+        group_weights
+    }
+
+    /// Compute weights for a specific subgroup (extract weights for target group, zero out others)
+    ///
+    /// # Parameters
+    /// - group_weights: Full group weights [n_days, n_symbols]
+    /// - group_labels: Group labels [n_days, n_symbols]
+    /// - target_group: Target group index (0-based)
+    ///
+    /// # Returns
+    /// - Array2<f64> of shape [n_days, n_symbols] with weights for target group only
+    fn compute_subgroup_weights(
+        group_weights: &Array2<f64>,
+        group_labels: &Array2<usize>,
+        target_group: usize,
+    ) -> Array2<f64> {
+        let (n_days, n_assets) = group_weights.dim();
+        let mut subgroup_weights = Array2::<f64>::zeros((n_days, n_assets));
+
+        for day in 0..n_days {
+            for asset in 0..n_assets {
+                // Labels are 1-based, convert to 0-based for comparison
+                if group_labels[[day, asset]] == target_group + 1 {
+                    subgroup_weights[[day, asset]] = group_weights[[day, asset]];
+                }
+            }
+        }
+
+        subgroup_weights
+    }
+
+    /// Compute long/short weights from group weights
+    ///
+    /// Long positions: highest factor groups (quantiles-1, quantiles-2, ...)
+    /// Short positions: lowest factor groups (0, 1, ...)
+    ///
+    /// # Parameters
+    /// - group_weights: Full group weights [n_days, n_symbols]
+    /// - group_labels: Group labels [n_days, n_symbols]
+    /// - quantiles: Number of quantile groups
+    /// - long_top_n: Number of top groups to go long
+    /// - short_top_n: Number of bottom groups to go short
+    /// - position_config: Position configuration
+    ///
+    /// # Returns
+    /// - Array2<f64> of shape [n_days, n_symbols] with long/short weights
+    fn compute_long_short_weights(
+        group_weights: &Array2<f64>,
+        group_labels: &Array2<usize>,
+        quantiles: usize,
+        long_top_n: usize,
+        short_top_n: usize,
+        position_config: &PositionConfig,
+    ) -> Array2<f64> {
+        let (n_days, n_assets) = group_weights.dim();
+        let mut long_short_weights = Array2::<f64>::zeros((n_days, n_assets));
+
+        let long_groups: Vec<usize> = (quantiles - long_top_n..quantiles).collect();
+        let short_groups: Vec<usize> = (0..short_top_n).collect();
+
+        let long_ratio = position_config.long_ratio;
+        let short_ratio = position_config.short_ratio;
+
+        for day in 0..n_days {
+            for asset in 0..n_assets {
+                let label = group_labels[[day, asset]]; // 1-based
+                let weight = group_weights[[day, asset]];
+
+                if weight == 0.0 {
+                    continue;
+                }
+
+                // Check if this asset is in a long group (highest factor groups)
+                // Labels: 1 = lowest, quantiles = highest
+                if long_groups.contains(&(label - 1)) {
+                    long_short_weights[[day, asset]] = weight * long_ratio;
+                }
+                // Check if this asset is in a short group (lowest factor groups)
+                else if short_groups.contains(&(label - 1)) {
+                    long_short_weights[[day, asset]] = -weight * short_ratio;
+                }
+            }
+        }
+
+        long_short_weights
     }
 
     fn compute_long_short_returns(
@@ -507,10 +642,16 @@ impl BacktestEngine {
 
         // Validate parameters - fail fast with clear error messages
         if long_top_n == 0 || long_top_n > quantiles {
-            panic!("long_top_n must be in range [1, quantiles], got {} but quantiles={}", long_top_n, quantiles);
+            panic!(
+                "long_top_n must be in range [1, quantiles], got {} but quantiles={}",
+                long_top_n, quantiles
+            );
         }
         if short_top_n == 0 || short_top_n > quantiles {
-            panic!("short_top_n must be in range [1, quantiles], got {} but quantiles={}", short_top_n, quantiles);
+            panic!(
+                "short_top_n must be in range [1, quantiles], got {} but quantiles={}",
+                short_top_n, quantiles
+            );
         }
 
         let long_groups: Vec<usize> = (quantiles - long_top_n + 1..=quantiles).collect();
@@ -796,19 +937,46 @@ impl BacktestEngine {
         }
     }
 
-    /// Compute holding return (隔夜持仓收益) using previous day's weights
+    /// Compute holding return (隔夜持仓收益) using adjusted prices
     ///
-    /// Formula: holding_return[day] = sum(weights[day-1] * (close[day] / close[day-1] - 1))
-    /// - Day 0: no holding return (no previous day position)
+    /// Formula:
+    /// - adj_close[t] = close[t] * adj_factor[t] / adj_factor[last]
+    /// - holding_return[t] = (adj_close[t+1] / adj_close[t]) - 1
     ///
     /// # Parameters
     /// - weights: Weight matrix [n_days, n_symbols]
     /// - close: Close price matrix [n_days, n_symbols]
+    /// - adj_factor: Adjustment factor matrix [n_days, n_symbols]
     ///
     /// # Returns
     /// - Array2<f64> of shape [n_days, 1] with holding returns per day
-    pub fn compute_holding_return(weights: &Array2<f64>, close: &Array2<f64>) -> Array2<f64> {
-        let (n_days, _n_symbols) = weights.dim();
+    pub fn compute_holding_return(
+        weights: &Array2<f64>,
+        close: &Array2<f64>,
+        adj_factor: &Array2<f64>,
+    ) -> Array2<f64> {
+        let (n_days, n_symbols) = weights.dim();
+        let (_, n_symbols_check) = close.dim();
+        assert_eq!(
+            n_symbols, n_symbols_check,
+            "Weights and close must have same number of symbols"
+        );
+
+        // Compute adjusted close prices: adj_close[t] = close[t] * adj_factor[t] / adj_factor[last]
+        let last_adj_factor = adj_factor.row(n_days - 1); // [n_symbols]
+        let mut adj_close = Array2::<f64>::zeros((n_days, n_symbols));
+        for day in 0..n_days {
+            let adj_factors = adj_factor.row(day);
+            for symbol in 0..n_symbols {
+                let adj = adj_factors[symbol];
+                let last_adj = last_adj_factor[symbol];
+                if !adj.is_nan() && !last_adj.is_nan() && last_adj != 0.0 {
+                    adj_close[[day, symbol]] = close[[day, symbol]] * adj / last_adj;
+                } else {
+                    adj_close[[day, symbol]] = close[[day, symbol]];
+                }
+            }
+        }
 
         // Vectorized: previous day's weights
         // weights_lag: [n_days-1, n_symbols] = weights[0:n_days-1] (weights for days 0 to n_days-2)
@@ -816,11 +984,11 @@ impl BacktestEngine {
 
         // Vectorized: compute price returns for all days and symbols
         // close_lag: [n_days-1, n_symbols] = close[0:n_days-1]
-        let close_lag = close.slice(ndarray::s![0..n_days - 1, ..]);
+        let adj_close_lag = adj_close.slice(ndarray::s![0..n_days - 1, ..]);
         // close_current: [n_days-1, n_symbols] = close[1:n_days]
-        let close_current = close.slice(ndarray::s![1.., ..]);
+        let adj_close_current = adj_close.slice(ndarray::s![1.., ..]);
         // price_returns: [n_days-1, n_symbols]
-        let price_returns = (&close_current / &close_lag) - 1.0;
+        let price_returns = (&adj_close_current / &adj_close_lag) - 1.0;
 
         // Element-wise multiply and sum across symbols: [n_days-1, n_symbols] -> [n_days-1]
         let weighted_returns = &weights_lag * &price_returns;
@@ -835,16 +1003,19 @@ impl BacktestEngine {
         returns
     }
 
-    /// Compute trading return (日内交易收益) from weight changes, close, and vwap prices
+    /// Compute trading return (日内交易收益) using adjusted prices
     ///
     /// Formula:
-    /// - Day 0: trading_return[0] = sum(weights[0] * (close[0]/vwap[0] - 1 - cost))
-    /// - Days 1..: trading_return[day] = sum((weights[day] - weights[day-1]) * (close[day]/vwap[day] - 1 - cost))
+    /// - adj_close[t] = close[t] * adj_factor[t] / adj_factor[last]
+    /// - adj_vwap[t] = vwap[t] * adj_factor[t] / adj_factor[last]
+    /// - Day 0: trading_return[0] = sum(weights[0] * (adj_close[0]/adj_vwap[0] - 1 - cost))
+    /// - Days 1..: trading_return[day] = sum((weights[day] - weights[day-1]) * (adj_close[day]/adj_vwap[day] - 1 - cost))
     ///
     /// # Parameters
     /// - weights: Weight matrix [n_days, n_symbols]
     /// - close: Close price matrix [n_days, n_symbols]
     /// - vwap: VWAP price matrix [n_days, n_symbols]
+    /// - adj_factor: Adjustment factor matrix [n_days, n_symbols]
     /// - fee: Commission fee rate (e.g., 0.0003 for 0.03%)
     /// - slippage: Slippage rate (e.g., 0.0005 for 0.05%)
     ///
@@ -854,18 +1025,38 @@ impl BacktestEngine {
         weights: &Array2<f64>,
         close: &Array2<f64>,
         vwap: &Array2<f64>,
+        adj_factor: &Array2<f64>,
         fee: f64,
         slippage: f64,
     ) -> Array2<f64> {
         let (n_days, n_symbols) = weights.dim();
         let total_cost = fee + slippage;
 
+        // Compute adjusted prices: adj_price[t] = price[t] * adj_factor[t] / adj_factor[last]
+        let last_adj_factor = adj_factor.row(n_days - 1); // [n_symbols]
+        let mut adj_close = Array2::<f64>::zeros((n_days, n_symbols));
+        let mut adj_vwap = Array2::<f64>::zeros((n_days, n_symbols));
+        for day in 0..n_days {
+            let adj_factors = adj_factor.row(day);
+            for symbol in 0..n_symbols {
+                let adj = adj_factors[symbol];
+                let last_adj = last_adj_factor[symbol];
+                if !adj.is_nan() && !last_adj.is_nan() && last_adj != 0.0 {
+                    adj_close[[day, symbol]] = close[[day, symbol]] * adj / last_adj;
+                    adj_vwap[[day, symbol]] = vwap[[day, symbol]] * adj / last_adj;
+                } else {
+                    adj_close[[day, symbol]] = close[[day, symbol]];
+                    adj_vwap[[day, symbol]] = vwap[[day, symbol]];
+                }
+            }
+        }
+
         // Result for all n_days
         let mut returns = ndarray::Array2::<f64>::zeros((n_days, 1));
 
         // Day 0: initial position establishment (from 0 to weights[0])
-        // trading_return[0] = sum(weights[0] * (close[0]/vwap[0] - 1 - cost))
-        let price_return_0 = (close[[0, 0]] / vwap[[0, 0]]) - 1.0;
+        // trading_return[0] = sum(weights[0] * (adj_close[0]/adj_vwap[0] - 1 - cost))
+        let price_return_0 = (adj_close[[0, 0]] / adj_vwap[[0, 0]]) - 1.0;
         let trade_return_0 = weights[[0, 0]] * (price_return_0 - total_cost);
         returns[[0, 0]] = trade_return_0;
 
@@ -876,10 +1067,10 @@ impl BacktestEngine {
             let weights_current = weights.slice(ndarray::s![1.., ..]);
             let weight_diff = &weights_current - &weights_lag; // [n_days-1, n_symbols]
 
-            // Vectorized: price return (close / vwap - 1)
-            let vwap_current = vwap.slice(ndarray::s![1.., ..]);
-            let close_current = close.slice(ndarray::s![1.., ..]);
-            let price_returns = (&close_current / &vwap_current) - 1.0; // [n_days-1, n_symbols]
+            // Vectorized: price return using adjusted prices (adj_close / adj_vwap - 1)
+            let adj_vwap_current = adj_vwap.slice(ndarray::s![1.., ..]);
+            let adj_close_current = adj_close.slice(ndarray::s![1.., ..]);
+            let price_returns = (&adj_close_current / &adj_vwap_current) - 1.0; // [n_days-1, n_symbols]
 
             // Vectorized: trade return = weight_diff * (price_return - cost)
             let cost_array = Array2::from_elem((n_days - 1, n_symbols), total_cost);
@@ -903,6 +1094,7 @@ impl BacktestEngine {
     /// - weights: Weight matrix [n_days, n_symbols]
     /// - close: Close price matrix [n_days, n_symbols]
     /// - vwap: VWAP price matrix [n_days, n_symbols]
+    /// - adj_factor: Adjustment factor matrix [n_days, n_symbols]
     /// - fee: Commission fee rate
     /// - slippage: Slippage rate
     ///
@@ -912,11 +1104,13 @@ impl BacktestEngine {
         weights: &Array2<f64>,
         close: &Array2<f64>,
         vwap: &Array2<f64>,
+        adj_factor: &Array2<f64>,
         fee: f64,
         slippage: f64,
     ) -> Array2<f64> {
-        let holding_return = Self::compute_holding_return(weights, close);
-        let trading_return = Self::compute_trading_return(weights, close, vwap, fee, slippage);
+        let holding_return = Self::compute_holding_return(weights, close, adj_factor);
+        let trading_return =
+            Self::compute_trading_return(weights, close, vwap, adj_factor, fee, slippage);
         holding_return + trading_return
     }
 }
@@ -1102,7 +1296,9 @@ mod tests {
 
         let adj_factor = Array2::from_elem((3, 4), 1.0);
         let engine = BacktestEngine::with_config(config);
-        let result = engine.run(factor, returns.clone(), adj_factor, close, vwap).unwrap();
+        let result = engine
+            .run(factor, returns.clone(), adj_factor, close, vwap)
+            .unwrap();
 
         // Verify result is valid
         assert!(result.group_returns.dim().1 == 4);
@@ -1142,7 +1338,9 @@ mod tests {
 
         let adj_factor = Array2::from_elem((3, 4), 1.0);
         let engine = BacktestEngine::with_config(config);
-        let result = engine.run(factor, returns.clone(), adj_factor, close, vwap).unwrap();
+        let result = engine
+            .run(factor, returns.clone(), adj_factor, close, vwap)
+            .unwrap();
 
         // group_returns should have shape (n_days-1, quantiles) = (2, 4)
         assert_eq!(result.group_returns.dim(), (2, 4));
@@ -1182,7 +1380,9 @@ mod tests {
 
         let engine = BacktestEngine::with_config(config);
         let adj_factor = Array2::from_elem((3, 4), 1.0);
-        let result = engine.run(factor.clone(), returns.clone(), adj_factor, close, vwap).unwrap();
+        let result = engine
+            .run(factor.clone(), returns.clone(), adj_factor, close, vwap)
+            .unwrap();
 
         // Verify long/short returns exist
         assert!(result.long_returns.len() > 0);
@@ -1220,7 +1420,15 @@ mod tests {
         };
 
         let engine = BacktestEngine::with_config(config);
-        let result = engine.run(factor, returns.clone(), Array2::from_elem((3, 4), 1.0), close.clone(), vwap.clone()).unwrap();
+        let result = engine
+            .run(
+                factor,
+                returns.clone(),
+                Array2::from_elem((3, 4), 1.0),
+                close.clone(),
+                vwap.clone(),
+            )
+            .unwrap();
 
         // Verify result is valid
         assert!(result.long_short_returns.len() > 0);
@@ -1258,7 +1466,15 @@ mod tests {
         };
 
         let engine = BacktestEngine::with_config(config);
-        let result = engine.run(factor, returns.clone(), Array2::from_elem((3, 4), 1.0), close.clone(), vwap.clone()).unwrap();
+        let result = engine
+            .run(
+                factor,
+                returns.clone(),
+                Array2::from_elem((3, 4), 1.0),
+                close.clone(),
+                vwap.clone(),
+            )
+            .unwrap();
 
         // Cumulative returns should have same shape as group_returns
         assert_eq!(result.group_cum_returns.dim(), result.group_returns.dim());
@@ -1296,7 +1512,15 @@ mod tests {
         };
 
         let engine = BacktestEngine::with_config(config);
-        let result = engine.run(factor, returns.clone(), Array2::from_elem((3, 4), 1.0), close.clone(), vwap.clone()).unwrap();
+        let result = engine
+            .run(
+                factor,
+                returns.clone(),
+                Array2::from_elem((3, 4), 1.0),
+                close.clone(),
+                vwap.clone(),
+            )
+            .unwrap();
 
         // IC series length should be n_days - 1
         assert_eq!(result.ic_series.len(), 2);
@@ -1358,7 +1582,15 @@ mod tests {
         let engine = BacktestEngine::with_config(config);
 
         // Should handle NaN gracefully
-        let result = engine.run(factor, returns.clone(), Array2::from_elem((3, 4), 1.0), close.clone(), vwap.clone()).unwrap();
+        let result = engine
+            .run(
+                factor,
+                returns.clone(),
+                Array2::from_elem((3, 4), 1.0),
+                close.clone(),
+                vwap.clone(),
+            )
+            .unwrap();
         assert!(result.long_short_cum_return.is_finite());
     }
 
@@ -1444,9 +1676,9 @@ mod tests {
         let close = Array2::from_shape_vec(
             (3, 4),
             vec![
-                1.0, 1.0, 1.0, 1.0,       // day 0
-                0.99, 0.98, 0.97, 0.96,   // day 1: returns = -0.01, -0.02, -0.03, -0.04
-                0.95, 0.94, 0.93, 0.92,   // day 2
+                1.0, 1.0, 1.0, 1.0, // day 0
+                0.99, 0.98, 0.97, 0.96, // day 1: returns = -0.01, -0.02, -0.03, -0.04
+                0.95, 0.94, 0.93, 0.92, // day 2
             ],
         )
         .unwrap();
@@ -1542,7 +1774,13 @@ mod tests {
         let vwap = Array2::from_elem((10, 5), 1.0);
 
         let result = engine
-            .run(factor, returns, Array2::from_elem((10, 5), 1.0), close, vwap)
+            .run(
+                factor,
+                returns,
+                Array2::from_elem((10, 5), 1.0),
+                close,
+                vwap,
+            )
             .unwrap();
 
         // Verify all result fields are present and finite
@@ -1602,7 +1840,13 @@ mod tests {
 
         let engine = BacktestEngine::with_config(config);
         let result = engine
-            .run(factor.clone(), returns.clone(), Array2::from_elem((5, 10), 1.0), close.clone(), vwap.clone())
+            .run(
+                factor.clone(),
+                returns.clone(),
+                Array2::from_elem((5, 10), 1.0),
+                close.clone(),
+                vwap.clone(),
+            )
             .unwrap();
         assert_eq!(result.group_returns.dim(), (4, 5));
 
@@ -1675,7 +1919,13 @@ mod tests {
 
         let engine_neutral = BacktestEngine::with_config(config_neutral);
         let result_neutral = engine_neutral
-            .run(factor.clone(), returns.clone(), adj_factor.clone(), close.clone(), vwap.clone())
+            .run(
+                factor.clone(),
+                returns.clone(),
+                adj_factor.clone(),
+                close.clone(),
+                vwap.clone(),
+            )
             .unwrap();
 
         // Directional (long only)

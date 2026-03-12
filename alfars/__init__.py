@@ -830,6 +830,12 @@ def quantile_backtest(
             weights,
         )
 
+    # Create arrays for adj_factor, close, vwap if not provided (default to ones)
+    n_days, n_assets = factor.shape
+    adj_factor = np.ones((n_days, n_assets))
+    close = np.ones((n_days, n_assets))
+    vwap = np.ones((n_days, n_assets))
+
     rust_result = _quantile_backtest(
         factor,
         returns,
@@ -838,7 +844,9 @@ def quantile_backtest(
         long_top_n,
         short_top_n,
         commission_rate,
-        weights,
+        adj_factor,
+        close,
+        vwap,
     )
     return BacktestResult.from_rust_result(rust_result)
 
