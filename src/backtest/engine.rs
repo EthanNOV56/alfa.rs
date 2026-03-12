@@ -628,120 +628,120 @@ impl BacktestEngine {
         long_short_weights
     }
 
-    fn compute_long_short_returns(
-        group_returns: &Array2<f64>,
-        quantiles: usize,
-        long_top_n: usize,
-        short_top_n: usize,
-        position_config: &PositionConfig,
-    ) -> (Array1<f64>, Array1<f64>, Array1<f64>) {
-        let n_days = group_returns.dim().0;
-        let mut long_returns = Array1::<f64>::zeros(n_days);
-        let mut short_returns = Array1::<f64>::zeros(n_days);
-        let mut long_short = Array1::<f64>::zeros(n_days);
+    // fn compute_long_short_returns(
+    //     group_returns: &Array2<f64>,
+    //     quantiles: usize,
+    //     long_top_n: usize,
+    //     short_top_n: usize,
+    //     position_config: &PositionConfig,
+    // ) -> (Array1<f64>, Array1<f64>, Array1<f64>) {
+    //     let n_days = group_returns.dim().0;
+    //     let mut long_returns = Array1::<f64>::zeros(n_days);
+    //     let mut short_returns = Array1::<f64>::zeros(n_days);
+    //     let mut long_short = Array1::<f64>::zeros(n_days);
 
-        // Validate parameters - fail fast with clear error messages
-        if long_top_n == 0 || long_top_n > quantiles {
-            panic!(
-                "long_top_n must be in range [1, quantiles], got {} but quantiles={}",
-                long_top_n, quantiles
-            );
-        }
-        if short_top_n == 0 || short_top_n > quantiles {
-            panic!(
-                "short_top_n must be in range [1, quantiles], got {} but quantiles={}",
-                short_top_n, quantiles
-            );
-        }
+    //     // Validate parameters - fail fast with clear error messages
+    //     if long_top_n == 0 || long_top_n > quantiles {
+    //         panic!(
+    //             "long_top_n must be in range [1, quantiles], got {} but quantiles={}",
+    //             long_top_n, quantiles
+    //         );
+    //     }
+    //     if short_top_n == 0 || short_top_n > quantiles {
+    //         panic!(
+    //             "short_top_n must be in range [1, quantiles], got {} but quantiles={}",
+    //             short_top_n, quantiles
+    //         );
+    //     }
 
-        let long_groups: Vec<usize> = (quantiles - long_top_n + 1..=quantiles).collect();
-        let short_groups: Vec<usize> = (1..=short_top_n).collect();
+    //     let long_groups: Vec<usize> = (quantiles - long_top_n + 1..=quantiles).collect();
+    //     let short_groups: Vec<usize> = (1..=short_top_n).collect();
 
-        let long_ratio = position_config.long_ratio;
-        let short_ratio = position_config.short_ratio;
-        let market_neutral = position_config.market_neutral;
+    //     let long_ratio = position_config.long_ratio;
+    //     let short_ratio = position_config.short_ratio;
+    //     let market_neutral = position_config.market_neutral;
 
-        for day in 0..n_days {
-            let long_return: f64 = long_groups
-                .iter()
-                .map(|&g| group_returns[[day, g - 1]])
-                .sum::<f64>()
-                / long_groups.len() as f64;
+    //     for day in 0..n_days {
+    //         let long_return: f64 = long_groups
+    //             .iter()
+    //             .map(|&g| group_returns[[day, g - 1]])
+    //             .sum::<f64>()
+    //             / long_groups.len() as f64;
 
-            let short_return: f64 = short_groups
-                .iter()
-                .map(|&g| group_returns[[day, g - 1]])
-                .sum::<f64>()
-                / short_groups.len() as f64;
+    //         let short_return: f64 = short_groups
+    //             .iter()
+    //             .map(|&g| group_returns[[day, g - 1]])
+    //             .sum::<f64>()
+    //             / short_groups.len() as f64;
 
-            // Apply position ratios
-            let long_position = long_return * long_ratio;
-            let short_position = short_return * short_ratio;
+    //         // Apply position ratios
+    //         let long_position = long_return * long_ratio;
+    //         let short_position = short_return * short_ratio;
 
-            long_returns[day] = long_position;
-            short_returns[day] = -short_position; // Short returns are negative
+    //         long_returns[day] = long_position;
+    //         short_returns[day] = -short_position; // Short returns are negative
 
-            if market_neutral {
-                // Market neutral: long - short
-                long_short[day] = long_position - short_position;
-            } else {
-                // Directional: long position only
-                long_short[day] = long_position;
-            }
-        }
+    //         if market_neutral {
+    //             // Market neutral: long - short
+    //             long_short[day] = long_position - short_position;
+    //         } else {
+    //             // Directional: long position only
+    //             long_short[day] = long_position;
+    //         }
+    //     }
 
-        (long_returns, short_returns, long_short)
-    }
+    //     (long_returns, short_returns, long_short)
+    // }
 
-    fn apply_fees(
-        long_short_returns: &Array1<f64>,
-        volume: Option<&Array2<f64>>,
-        fee_config: &FeeConfig,
-    ) -> Array1<f64> {
-        let commission_rate = fee_config.commission_rate;
-        let min_commission = fee_config.min_commission;
-        let slippage_config = &fee_config.slippage;
+    // fn apply_fees(
+    //     long_short_returns: &Array1<f64>,
+    //     volume: Option<&Array2<f64>>,
+    //     fee_config: &FeeConfig,
+    // ) -> Array1<f64> {
+    //     let commission_rate = fee_config.commission_rate;
+    //     let min_commission = fee_config.min_commission;
+    //     let slippage_config = &fee_config.slippage;
 
-        let mut result = long_short_returns.clone();
+    //     let mut result = long_short_returns.clone();
 
-        // Simple fee calculation: subtract commission from each day
-        // In real implementation, this would calculate actual position changes
-        for i in 0..result.len() {
-            // Apply commission
-            let commission = commission_rate.abs();
-            result[i] -= commission;
+    //     // Simple fee calculation: subtract commission from each day
+    //     // In real implementation, this would calculate actual position changes
+    //     for i in 0..result.len() {
+    //         // Apply commission
+    //         let commission = commission_rate.abs();
+    //         result[i] -= commission;
 
-            // Apply slippage if volume is available
-            if let Some(vol) = volume {
-                // Get average volume for this day (approximation)
-                let day_volumes: Vec<f64> = vol
-                    .row(i)
-                    .iter()
-                    .filter(|&&v| !v.is_nan())
-                    .cloned()
-                    .collect();
+    //         // Apply slippage if volume is available
+    //         if let Some(vol) = volume {
+    //             // Get average volume for this day (approximation)
+    //             let day_volumes: Vec<f64> = vol
+    //                 .row(i)
+    //                 .iter()
+    //                 .filter(|&&v| !v.is_nan())
+    //                 .cloned()
+    //                 .collect();
 
-                if !day_volumes.is_empty() {
-                    let avg_volume: f64 =
-                        day_volumes.iter().sum::<f64>() / day_volumes.len() as f64;
-                    let slippage_rate = if avg_volume > slippage_config.large_volume_threshold {
-                        slippage_config.large_slippage_rate
-                    } else {
-                        slippage_config.normal_slippage_rate
-                    };
-                    // Apply slippage (symmetric for long and short)
-                    result[i] -= slippage_rate;
-                }
-            }
+    //             if !day_volumes.is_empty() {
+    //                 let avg_volume: f64 =
+    //                     day_volumes.iter().sum::<f64>() / day_volumes.len() as f64;
+    //                 let slippage_rate = if avg_volume > slippage_config.large_volume_threshold {
+    //                     slippage_config.large_slippage_rate
+    //                 } else {
+    //                     slippage_config.normal_slippage_rate
+    //                 };
+    //                 // Apply slippage (symmetric for long and short)
+    //                 result[i] -= slippage_rate;
+    //             }
+    //         }
 
-            // Apply minimum commission floor
-            if result[i] < -min_commission {
-                // This would only affect if we track actual trade values
-            }
-        }
+    //         // Apply minimum commission floor
+    //         if result[i] < -min_commission {
+    //             // This would only affect if we track actual trade values
+    //         }
+    //     }
 
-        result
-    }
+    //     result
+    // }
 
     fn compute_cumulative_returns(daily_returns: &Array2<f64>) -> Array2<f64> {
         let (n_days, n_groups) = daily_returns.dim();

@@ -4,9 +4,11 @@
 //! for connecting to various data backends.
 
 pub mod clickhouse;
+pub mod convention;
 pub mod derivation;
 pub mod source;
 
 pub use clickhouse::ClickHouseSource;
+pub use convention::*;
 pub use derivation::DataDerivation;
-pub use source::{DataError, DataSource};
+pub use source::{DataError, DataSource, QueryFilter};

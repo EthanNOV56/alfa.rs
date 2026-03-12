@@ -20,6 +20,7 @@ name = "alfars"
 version = "0.4.3"
 dependencies = [
  "ahash",
+ "anyhow",
  "axum",
  "bincode",
  "dirs",

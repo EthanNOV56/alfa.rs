@@ -12,7 +12,7 @@ use axum::{
     response::Json,
     routing::{get, post},
 };
-use ndarray::Array2;
+use ndarray::{Array1, Array2};
 use rand::Rng;
 use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
@@ -135,6 +135,8 @@ struct BacktestRequest {
     commission_rate: Option<f64>,
     /// Data source config for on-demand loading from database
     data_source: Option<DataSourceConfig>,
+    /// Factor ID to compute (when using data_source)
+    factor_id: Option<String>,
 }
 
 /// NAV data for chart visualization
@@ -593,6 +595,8 @@ struct CachedFactor {
     factor: Vec<Vec<f64>>,
     returns: Vec<Vec<f64>>,
     dates: Vec<String>,
+    close: Vec<Vec<f64>>,
+    vwap: Vec<Vec<f64>>,
 }
 
 #[derive(Clone)]
@@ -628,6 +632,23 @@ async fn run_backtest(
                 cached.factor.first().map(|r| r.len()).unwrap_or(0),
                 cached.factor_id
             );
+            // Set close and vwap from cache
+            close_data = Some(cached.close.clone());
+            vwap_data = Some(cached.vwap.clone());
+
+            // Debug: check cached factor and returns values
+            let flat_factor: Vec<f64> = cached.factor.iter().flatten().cloned().collect();
+            let flat_returns: Vec<f64> = cached.returns.iter().flatten().cloned().collect();
+            let factor_valid = flat_factor.iter().filter(|v| v.is_finite()).count();
+            let factor_nan = flat_factor.iter().filter(|v| v.is_nan()).count();
+            let returns_valid = flat_returns.iter().filter(|v| v.is_finite()).count();
+            let returns_nan = flat_returns.iter().filter(|v| v.is_nan()).count();
+            let returns_zero = flat_returns.iter().filter(|v| (*v - 0.0).abs() < 1e-10).count();
+            eprintln!("[run_backtest] Factor: valid={}, nan={}, shape={}x{}", factor_valid, factor_nan, cached.factor.len(), cached.factor.first().map(|r| r.len()).unwrap_or(0));
+            eprintln!("[run_backtest] Returns: valid={}, nan={}, zero={}", returns_valid, returns_nan, returns_zero);
+            eprintln!("[run_backtest] Factor day0 first 5: {:?}", &cached.factor[0][..5]);
+            eprintln!("[run_backtest] Returns day0 first 5: {:?}", &cached.returns[0][..5]);
+
             (
                 cached.factor.clone(),
                 cached.returns.clone(),
@@ -659,21 +680,127 @@ async fn run_backtest(
         let n_days = loaded.dates.len();
         let n_assets = loaded.symbols.len();
 
-        // Use close prices as factor (rank them)
-        let mut factor: Vec<Vec<f64>> = Vec::with_capacity(n_days);
-        for d in 0..n_days {
-            let mut pairs: Vec<(usize, f64)> = loaded.close[d]
-                .iter()
-                .enumerate()
-                .map(|(i, &v)| (i, v))
-                .collect();
-            pairs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-            let mut ranked = vec![0.0; n_assets];
-            for (rank, (idx, _)) in pairs.iter().enumerate() {
-                ranked[*idx] = rank as f64 / n_assets as f64;
+        let factor = if let Some(ref factor_id) = req.factor_id {
+            // Use FactorRegistry to compute factor from expression
+            eprintln!(
+                "[run_backtest] Computing factor '{}' with {} days x {} assets",
+                factor_id, n_days, n_assets
+            );
+
+            // Prepare data for FactorRegistry: transpose and flatten
+            // FactorRegistry expects: [asset0_day0, asset0_day1, ..., asset1_day0, ...]
+            let mut data: HashMap<String, Vec<f64>> = HashMap::new();
+
+            let mut close_flat: Vec<f64> = Vec::with_capacity(n_days * n_assets);
+            let mut open_flat: Vec<f64> = Vec::with_capacity(n_days * n_assets);
+            let mut high_flat: Vec<f64> = Vec::with_capacity(n_days * n_assets);
+            let mut low_flat: Vec<f64> = Vec::with_capacity(n_days * n_assets);
+            let mut volume_flat: Vec<f64> = Vec::with_capacity(n_days * n_assets);
+            let mut returns_flat: Vec<f64> = Vec::with_capacity(n_days * n_assets);
+
+            for day in 0..n_days {
+                for asset in 0..n_assets {
+                    close_flat.push(loaded.close[day][asset]);
+                    open_flat.push(loaded.open[day][asset]);
+                    high_flat.push(loaded.high[day][asset]);
+                    low_flat.push(loaded.low[day][asset]);
+                    volume_flat.push(loaded.volume[day][asset]);
+                    returns_flat.push(loaded.returns[day][asset]);
+                }
             }
-            factor.push(ranked);
-        }
+
+            data.insert("close".to_string(), close_flat);
+            data.insert("open".to_string(), open_flat);
+            data.insert("high".to_string(), high_flat);
+            data.insert("low".to_string(), low_flat);
+            data.insert("volume".to_string(), volume_flat);
+            data.insert("returns".to_string(), returns_flat);
+
+            // Create FactorRegistry and register factor
+            let mut registry = FactorRegistry::new();
+            registry.register("factor", factor_id).map_err(|e| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    format!("Failed to register factor: {}", e),
+                )
+            })?;
+
+            // Get required columns (for logging)
+            let required_cols = registry.required_columns();
+            eprintln!("[run_backtest] Required columns: {:?}", required_cols);
+
+            // Convert to Array1 format for vectorized computation
+            let mut data_array1: HashMap<String, Array1<f64>> = HashMap::new();
+            for (key, values) in data.iter() {
+                data_array1.insert(key.clone(), Array1::from_vec(values.clone()));
+            }
+
+            // Compute factor using vectorized batch computation
+            let results = registry.compute_batch_vectorized(&["factor"], &data_array1, true)
+                .map_err(|e| {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        format!("Failed to compute factor: {}", e),
+                    )
+                })?;
+
+            let result = results.get("factor").ok_or_else(|| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Factor computation failed".to_string(),
+                )
+            })?;
+
+            eprintln!("[run_backtest] Computed factor, n_rows={}", result.n_rows);
+
+            // Debug: check factor values from compute
+            let valid_count = result.values.iter().filter(|v| v.is_finite()).count();
+            let nan_count = result.values.iter().filter(|v| v.is_nan()).count();
+            let inf_count = result.values.iter().filter(|v| v.is_infinite()).count();
+            eprintln!("[run_backtest] Computed factor stats: valid={}, nan={}, inf={}", valid_count, nan_count, inf_count);
+            eprintln!("[run_backtest] Computed factor first 10: {:?}", &result.values[..10]);
+            let valid_count = result.values.iter().filter(|v| v.is_finite()).count();
+            let nan_count = result.values.iter().filter(|v| v.is_nan()).count();
+            let inf_count = result.values.iter().filter(|v| v.is_infinite()).count();
+            eprintln!("[run_backtest] Factor stats: valid={}, nan={}, inf={}", valid_count, nan_count, inf_count);
+            if let Some(first) = result.values.first() {
+                eprintln!("[run_backtest] First 5 values: {:?}", &result.values[..5]);
+            }
+
+            // Reshape result back to (n_days, n_assets)
+            // Data was flattened as [day0_asset0, day0_asset1, ..., day1_asset0, ...]
+            // So we use: idx = day * n_assets + asset
+            let values = result.values.clone();
+            let mut factor: Vec<Vec<f64>> = Vec::with_capacity(n_days);
+            for day in 0..n_days {
+                let mut day_factor: Vec<f64> = Vec::with_capacity(n_assets);
+                for asset in 0..n_assets {
+                    let idx = day * n_assets + asset;
+                    day_factor.push(values[idx]);
+                }
+                factor.push(day_factor);
+            }
+
+            factor
+        } else {
+            // Fallback: use close prices as factor (rank them)
+            eprintln!("[run_backtest] No factor_id provided, using ranked close prices");
+            let mut factor: Vec<Vec<f64>> = Vec::with_capacity(n_days);
+            for d in 0..n_days {
+                let mut pairs: Vec<(usize, f64)> = loaded.close[d]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &v)| (i, v))
+                    .collect();
+                pairs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                let mut ranked = vec![0.0; n_assets];
+                for (rank, (idx, _)) in pairs.iter().enumerate() {
+                    ranked[*idx] = rank as f64 / n_assets as f64;
+                }
+                factor.push(ranked);
+            }
+            factor
+        };
 
         // Extract close and compute vwap (high + low + close) / 3
         close_data = Some(loaded.close.clone());
@@ -735,35 +862,35 @@ async fn run_backtest(
                 )
             })?;
 
-    // Convert close to ndarray, or use returns as fallback (for backward compatibility)
-    let close_array = if let Some(close) = close_data {
-        Array2::from_shape_vec((n_days, n_assets), close.into_iter().flatten().collect()).map_err(
-            |e| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    format!("Invalid close shape: {}", e),
-                )
-            },
-        )?
-    } else {
-        // Fallback: use close = 1.0 for all (so returns are based purely on price changes)
-        Array2::from_elem((n_days, n_assets), 1.0)
-    };
+    // Convert close to ndarray (required)
+    let close_array = close_data.ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            "Close data is required".to_string(),
+        )
+    })?;
+    let close_array = Array2::from_shape_vec((n_days, n_assets), close_array.into_iter().flatten().collect())
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("Invalid close shape: {}", e),
+            )
+        })?;
 
-    // Convert vwap to ndarray, or use close as fallback
-    let vwap_array = if let Some(vwap) = vwap_data {
-        Array2::from_shape_vec((n_days, n_assets), vwap.into_iter().flatten().collect()).map_err(
-            |e| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    format!("Invalid vwap shape: {}", e),
-                )
-            },
-        )?
-    } else {
-        // Fallback: use vwap = close (trading return will be ~0)
-        close_array.clone()
-    };
+    // Convert vwap to ndarray (required)
+    let vwap_array = vwap_data.ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            "VWAP data is required".to_string(),
+        )
+    })?;
+    let vwap_array = Array2::from_shape_vec((n_days, n_assets), vwap_array.into_iter().flatten().collect())
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("Invalid vwap shape: {}", e),
+            )
+        })?;
 
     // Default parameters
     let quantiles = req.quantiles.unwrap_or(10);
@@ -802,6 +929,26 @@ async fn run_backtest(
     let adj_factor = Array2::from_elem(factor_array.dim(), 1.0);
 
     eprintln!("[run_backtest] Running backtest engine...");
+    eprintln!("[run_backtest] factor_array: {}x{}", factor_array.dim().0, factor_array.dim().1);
+    eprintln!("[run_backtest] returns_array: {}x{}", returns_array.dim().0, returns_array.dim().1);
+    eprintln!("[run_backtest] close_array: {}x{}", close_array.dim().0, close_array.dim().1);
+    eprintln!("[run_backtest] vwap_array: {}x{}", vwap_array.dim().0, vwap_array.dim().1);
+    eprintln!("[run_backtest] factor_array sample [0,:5]: {:?}", factor_array.row(0).slice(ndarray::s![..5]));
+    eprintln!("[run_backtest] returns_array sample [0,:5]: {:?}", returns_array.row(0).slice(ndarray::s![..5]));
+    eprintln!("[run_backtest] returns_array sample [1,:5]: {:?}", returns_array.row(1).slice(ndarray::s![..5]));
+    eprintln!("[run_backtest] close_array sample [0,:5]: {:?}", close_array.row(0).slice(ndarray::s![..5]));
+
+    // Check for NaN/Inf in arrays
+    let factor_nan = factor_array.iter().filter(|v| v.is_nan()).count();
+    let factor_inf = factor_array.iter().filter(|v| v.is_infinite()).count();
+    let returns_nan = returns_array.iter().filter(|v| v.is_nan()).count();
+    let returns_inf = returns_array.iter().filter(|v| v.is_infinite()).count();
+    let close_nan = close_array.iter().filter(|v| v.is_nan()).count();
+    let close_inf = close_array.iter().filter(|v| v.is_infinite()).count();
+    let close_zero = close_array.iter().filter(|v| (*v - 0.0).abs() < 1e-10).count();
+    eprintln!("[run_backtest] NaN/Inf: factor={}/{}, returns={}/{}, close={}/{}, close_zero={}",
+        factor_nan, factor_inf, returns_nan, returns_inf, close_nan, close_inf, close_zero);
+
     let result = engine
         .run(
             factor_array,
@@ -851,6 +998,12 @@ fn convert_to_nav_data(
     let group_cum_returns = result.group_cum_returns;
     let n_quantile_days = group_cum_returns.nrows();
     let n_quantiles = group_cum_returns.ncols();
+    eprintln!("[convert_to_nav_data] n_quantile_days={}, n_quantiles={}", n_quantile_days, n_quantiles);
+
+    // Debug: check group_cum_returns values
+    let first_col = group_cum_returns.column(0);
+    let sample: Vec<f64> = first_col.iter().take(10).cloned().collect();
+    eprintln!("[convert_to_nav_data] First column sample: {:?}", sample);
 
     // Each quantile group's NAV curve
     let mut quantiles_nav = Vec::with_capacity(n_quantiles);
@@ -1035,17 +1188,32 @@ async fn compute_factor(
         eprintln!("[compute_factor] Failed to register factor: {}", e);
         // Fall back to close price
     } else {
-        // Compute the factor
-        match registry.compute(factor_name, &data) {
-            Ok(result) => {
+        // Convert data to Array1 format for vectorized computation
+        let mut data_array1: HashMap<String, Array1<f64>> = HashMap::new();
+        for (key, values) in data.iter() {
+            data_array1.insert(key.clone(), Array1::from_vec(values.clone()));
+        }
+
+        // Compute the factor using vectorized batch computation
+        match registry.compute_batch_vectorized(&[factor_name], &data_array1, true) {
+            Ok(results) => {
+                // Extract the result for our factor
+                let result = results.get(factor_name).ok_or_else(|| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Factor computation failed".to_string(),
+                    )
+                })?;
                 eprintln!("[compute_factor] Computed factor, n_rows={}", result.n_rows);
                 // Reshape result back to (n_days, n_assets)
-                let values = result.values;
+                // Data was flattened as [day0_asset0, day0_asset1, ..., day1_asset0, ...]
+                // So we use: idx = day * n_assets + asset
+                let values = result.values.clone();
                 let mut factor: Vec<Vec<f64>> = Vec::with_capacity(n_days);
                 for day in 0..n_days {
                     let mut day_factor: Vec<f64> = Vec::with_capacity(n_assets);
                     for asset in 0..n_assets {
-                        let idx = asset * n_days + day;
+                        let idx = day * n_assets + asset;
                         day_factor.push(values[idx]);
                     }
                     factor.push(day_factor);
@@ -1054,12 +1222,34 @@ async fn compute_factor(
                 // Generate a unique cache ID
                 let cache_id = uuid::Uuid::new_v4().to_string();
 
+                // Compute vwap: (high + low + close) / 3
+                let n_days = loaded.dates.len();
+                let n_assets = loaded.symbols.len();
+                let mut computed_vwap: Vec<Vec<f64>> = Vec::with_capacity(n_days);
+                for d in 0..n_days {
+                    let mut vwap_row = Vec::with_capacity(n_assets);
+                    for a in 0..n_assets {
+                        let h = loaded.high[d][a];
+                        let l = loaded.low[d][a];
+                        let c = loaded.close[d][a];
+                        let v = if h.is_finite() && l.is_finite() && c.is_finite() {
+                            (h + l + c) / 3.0
+                        } else {
+                            c
+                        };
+                        vwap_row.push(v);
+                    }
+                    computed_vwap.push(vwap_row);
+                }
+
                 // Store in cache
                 let cached = CachedFactor {
                     factor_id: req.factor_id.clone(),
                     factor: factor.clone(),
                     returns: loaded.returns.clone(),
                     dates: loaded.dates.clone(),
+                    close: loaded.close.clone(),
+                    vwap: computed_vwap,
                 };
                 eprintln!(
                     "[compute_factor] Caching factor for {} with id {}",
@@ -1090,6 +1280,26 @@ async fn compute_factor(
     let returns = loaded.returns;
     let dates = loaded.dates;
 
+    // Compute vwap: (high + low + close) / 3
+    let n_days = dates.len();
+    let n_assets = loaded.symbols.len();
+    let mut computed_vwap: Vec<Vec<f64>> = Vec::with_capacity(n_days);
+    for d in 0..n_days {
+        let mut vwap_row = Vec::with_capacity(n_assets);
+        for a in 0..n_assets {
+            let h = loaded.high[d][a];
+            let l = loaded.low[d][a];
+            let c = loaded.close[d][a];
+            let v = if h.is_finite() && l.is_finite() && c.is_finite() {
+                (h + l + c) / 3.0
+            } else {
+                c
+            };
+            vwap_row.push(v);
+        }
+        computed_vwap.push(vwap_row);
+    }
+
     // Generate a unique cache ID
     let cache_id = uuid::Uuid::new_v4().to_string();
 
@@ -1099,6 +1309,8 @@ async fn compute_factor(
         factor: factor.clone(),
         returns: returns.clone(),
         dates: dates.clone(),
+        close: loaded.close.clone(),
+        vwap: computed_vwap,
     };
     eprintln!(
         "[compute_factor] Caching factor for {} with id {}",
@@ -1839,6 +2051,7 @@ async fn load_data_from_config(
         FROM {}
         WHERE {}
         GROUP BY {}, {}
+        HAVING {} > 0 AND {} > 0
         ORDER BY {}, {}"#,
         date_column,
         symbol_column,
@@ -1851,6 +2064,8 @@ async fn load_data_from_config(
         where_str,
         date_column,
         symbol_column,
+        close_col,
+        volume_col,
         date_column,
         symbol_column
     );

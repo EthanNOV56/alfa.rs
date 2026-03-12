@@ -32,6 +32,7 @@ pub struct FactorRegistry {
     factors: HashMap<String, FactorInfo>,
     config: ComputeConfig,
     available_columns: HashMap<String, ColumnMeta>,
+    required_columns: HashSet<String>,
 }
 
 impl Default for FactorRegistry {
@@ -46,6 +47,7 @@ impl FactorRegistry {
             factors: HashMap::new(),
             config: ComputeConfig::default(),
             available_columns: HashMap::new(),
+            required_columns: HashSet::new(),
         }
     }
 
@@ -54,6 +56,7 @@ impl FactorRegistry {
             factors: HashMap::new(),
             config,
             available_columns: HashMap::new(),
+            required_columns: HashSet::new(),
         }
     }
 
@@ -76,11 +79,10 @@ impl FactorRegistry {
     pub fn register(&mut self, name: &str, expression: &str) -> Result<String, String> {
         let expr = parse_expression(expression)?;
 
+        // Add required columns to the tracked set
         let used_cols = extract_columns(&expr);
         for col in &used_cols {
-            if !self.available_columns.contains_key(col) {
-                return Err(format!("Column '{}' not found", col));
-            }
+            self.required_columns.insert(col.clone());
         }
 
         let plan = functions::expr_to_logical_plan(&expr, name)?;
@@ -748,17 +750,32 @@ impl FactorRegistry {
 
     /// Unregister a factor by name
     pub fn unregister(&mut self, name: &str) -> bool {
-        self.factors.remove(name).is_some()
+        if let Some(info) = self.factors.remove(name) {
+            // Remove columns used by this factor from required_columns
+            let cols = extract_columns(&info.parsed_expr);
+            for col in cols {
+                self.required_columns.remove(&col);
+            }
+            true
+        } else {
+            false
+        }
     }
 
     /// Clear all registered factors
     pub fn clear(&mut self) {
         self.factors.clear();
+        self.required_columns.clear();
     }
 
     /// Get the configuration
     pub fn config(&self) -> &ComputeConfig {
         &self.config
+    }
+
+    /// Get all columns required by registered factors (deduplicated)
+    pub fn required_columns(&self) -> &HashSet<String> {
+        &self.required_columns
     }
 
     /// Update configuration
@@ -816,9 +833,15 @@ mod tests {
         let mut registry = FactorRegistry::new();
         registry.set_columns(vec!["close".to_string()]);
 
+        // Registration now succeeds even if column is not in available_columns
+        // The required column is tracked for later validation at compute time
         let result = registry.register("alpha_001", "close + volume");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Column 'volume' not found"));
+        assert!(result.is_ok());
+
+        // Verify the required column is tracked
+        let required = registry.required_columns();
+        assert!(required.contains("close"));
+        assert!(required.contains("volume"));
     }
 
     #[test]
@@ -956,6 +979,43 @@ mod tests {
         let config = ComputeConfig::high_performance();
         assert_eq!(config.timeout_secs, 120);
         assert_eq!(config.max_workers, 8);
+    }
+
+    #[test]
+    fn test_required_columns() {
+        let mut registry = FactorRegistry::new();
+        registry.set_columns(vec![
+            "close".to_string(),
+            "open".to_string(),
+            "volume".to_string(),
+            "high".to_string(),
+            "low".to_string(),
+        ]);
+
+        // Register factors
+        registry.register("alpha_001", "close + open").unwrap();
+        registry
+            .register("alpha_002", "rank(ts_mean(close, 20))")
+            .unwrap();
+        registry.register("alpha_003", "volume / close").unwrap();
+
+        // Get required columns
+        let cols = registry.required_columns();
+
+        // Should have close, open, volume (deduplicated)
+        assert!(cols.contains("close"));
+        assert!(cols.contains("open"));
+        assert!(cols.contains("volume"));
+        // high and low not needed by any factor
+        assert!(!cols.contains("high"));
+        assert!(!cols.contains("low"));
+    }
+
+    #[test]
+    fn test_required_columns_empty() {
+        let registry = FactorRegistry::new();
+        let cols = registry.required_columns();
+        assert!(cols.is_empty());
     }
 
     // ==================== Time Series Function Tests ====================
