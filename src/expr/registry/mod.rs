@@ -1088,4 +1088,94 @@ mod tests {
         let result = timeseries::ts_delta(&vals, 1);
         assert_eq!(result, vec![0.0, 2.0, -1.0, 4.0, -1.0]);
     }
+
+    #[test]
+    fn test_winsor() {
+        // 2 dates, 5 symbols each: [1, 2, 3, 4, 5] and [10, 20, 30, 40, 50]
+        let vals = vec![
+            1.0, 2.0, 3.0, 4.0, 5.0, // date 0
+            10.0, 20.0, 30.0, 40.0, 50.0, // date 1
+        ];
+        let n_symbols = 5;
+        let result = timeseries::winsor(&vals, n_symbols);
+
+        // For [1,2,3,4,5]: mean=3, std≈1.41, 3*std≈4.24, bounds=[-1.24, 7.24]
+        // So [1,2,3,4,5] stays [1,2,3,4,5] (all within bounds)
+        // For [10,20,30,40,50]: mean=30, std≈14.14, 3*std≈42.43, bounds=[-12.43, 72.43]
+        // So [10,20,30,40,50] stays [10,20,30,40,50] (all within bounds)
+        assert_eq!(result, vals);
+    }
+
+    #[test]
+    fn test_winsor_with_outliers() {
+        // Test with extreme outliers
+        let vals = vec![
+            1.0, 2.0, 100.0, 4.0, 5.0, // date 0: 100 is way outside normal range
+        ];
+        let n_symbols = 5;
+        let result = timeseries::winsor(&vals, n_symbols);
+
+        // mean=22.4, std≈39.3, 3*std≈118, bounds=[-95.6, 140.4]
+        // 100 is within bounds, so no clipping
+        // Actually let me recalculate
+        // 1,2,100,4,5: sum=112, mean=22.4
+        // variance = ((1-22.4)^2 + (2-22.4)^2 + (100-22.4)^2 + (4-22.4)^2 + (5-22.4)^2) / 5
+        // = (457.96 + 416.16 + 6021.76 + 338.56 + 302.76) / 5 = 7537.2 / 5 = 1507.44
+        // std = sqrt(1507.44) = 38.83
+        // 3*std = 116.49, bounds = [22.4-116.49, 22.4+116.49] = [-94.09, 138.89]
+        // 100 is within bounds, so no change
+        assert_eq!(result, vals);
+    }
+
+    #[test]
+    fn test_zscore() {
+        // Test zscore per cross-section
+        let vals = vec![
+            1.0, 2.0, 3.0, 4.0, 5.0, // date 0
+            2.0, 4.0, 6.0, 8.0, 10.0, // date 1
+        ];
+        let n_symbols = 5;
+        let result = timeseries::zscore(&vals, n_symbols);
+
+        // For [1,2,3,4,5]: mean=3, std=sqrt(2)=1.41
+        // zscore = [(1-3)/1.41, (2-3)/1.41, 0, (4-3)/1.41, (5-3)/1.41]
+        // = [-1.41, -0.71, 0, 0.71, 1.41]
+        let date0 = &result[0..5];
+        let mean0: f64 = date0.iter().sum::<f64>() / 5.0;
+        let std0 = (date0.iter().map(|x| x.powi(2)).sum::<f64>() / 5.0).sqrt();
+        assert!((mean0 - 0.0).abs() < 1e-10);
+        assert!((std0 - 1.0).abs() < 0.01);
+
+        // For [2,4,6,8,10]: mean=6, std=sqrt(8)=2.83
+        let date1 = &result[5..10];
+        let mean1: f64 = date1.iter().sum::<f64>() / 5.0;
+        let std1 = (date1.iter().map(|x| x.powi(2)).sum::<f64>() / 5.0).sqrt();
+        assert!((mean1 - 0.0).abs() < 1e-10);
+        assert!((std1 - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_cap_neu() {
+        // Test market cap neutralization with values that won't cancel exactly
+        // alpha: [10.0, 20.0, 30.0, 40.0, 50.0] (one date, 5 symbols)
+        // market_cap: [1.0, 2.0, 3.0, 4.0, 5.0] (small values to avoid log issues)
+        let vals: Vec<f64> = vec![10.0, 20.0, 30.0, 40.0, 50.0];
+        let market_cap: Vec<f64> = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let n_symbols = 5;
+
+        let result = timeseries::cap_neu(&vals, &market_cap, n_symbols);
+
+        // The result should have mean ≈ 0 (standardized residuals)
+        let mean: f64 = result.iter().sum::<f64>() / 5.0;
+        let variance: f64 = result.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / 5.0;
+        let std = variance.sqrt();
+
+        eprintln!("cap_neu result: {:?}", result);
+        eprintln!("mean: {}, std: {}", mean, std);
+
+        // Check mean is ~0
+        assert!((mean - 0.0).abs() < 1e-10, "mean = {}, expected ~0", mean);
+        // Check that result is not all zeros (some signal should remain)
+        assert!(result.iter().any(|x| x.abs() > 0.01), "result should have some non-zero values");
+    }
 }

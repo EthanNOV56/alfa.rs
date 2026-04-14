@@ -9,9 +9,9 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 pub use crate::expr::registry::timeseries::{
-    decay_linear, delay, highday, lowday, rank, scale, sign, sma, ts_argmax, ts_argmin,
-    ts_correlation, ts_count, ts_cov, ts_delta, ts_max, ts_mean, ts_min, ts_product, ts_rank,
-    ts_std, ts_sum, wma,
+    cap_neu, cap_neu_ndarray, decay_linear, delay, highday, lowday, rank, scale, sign, sma,
+    ts_argmax, ts_argmin, ts_correlation, ts_count, ts_cov, ts_delta, ts_max, ts_mean, ts_min,
+    ts_product, ts_rank, ts_std, ts_sum, winsor, winsor_ndarray, wma, zscore, zscore_ndarray,
 };
 
 /// Extract column names from an expression
@@ -315,6 +315,33 @@ pub fn eval_function_memoized(
             .zip(arg_values[1].iter())
             .map(|(&x, &y)| if (x - y).abs() >= 1e-10 { 1.0 } else { 0.0 })
             .collect()),
+        "winsor" => {
+            // winsor(alpha, n_symbols) - clip to [mean - 3*std, mean + 3*std] per date
+            let n_symbols = args
+                .get(1)
+                .and_then(|a| get_literal_int(a))
+                .unwrap_or(100); // default 100 symbols
+            Ok(winsor(&arg_values[0], n_symbols))
+        }
+        "zscore" => {
+            // zscore(alpha, n_symbols) - (x - mean) / std per date
+            let n_symbols = args
+                .get(1)
+                .and_then(|a| get_literal_int(a))
+                .unwrap_or(100); // default 100 symbols
+            Ok(zscore(&arg_values[0], n_symbols))
+        }
+        "cap_neu" => {
+            // cap_neu(alpha, market_cap, n_symbols) - regress on log(market_cap), return standardized residuals
+            if args.len() < 2 {
+                return Err("cap_neu requires 2 arguments: alpha and market_cap".to_string());
+            }
+            let n_symbols = args
+                .get(2)
+                .and_then(|a| get_literal_int(a))
+                .unwrap_or(100); // default 100 symbols
+            Ok(cap_neu(&arg_values[0], &arg_values[1], n_symbols))
+        }
         _ => Err(format!("Unknown function: {}", name)),
     }
 }
@@ -662,6 +689,41 @@ pub fn eval_function_vectorized(
                 };
             }
             Ok(result)
+        }
+        "winsor" => {
+            // winsor(alpha, n_symbols) - clip to [mean - 3*std, mean + 3*std] per date
+            let n_symbols = args
+                .get(1)
+                .and_then(|a| get_literal_int(a))
+                .unwrap_or(100); // default 100 symbols
+            let result = winsor(arg_values[0].as_slice().unwrap(), n_symbols);
+            Ok(result.into())
+        }
+        "zscore" => {
+            // zscore(alpha, n_symbols) - (x - mean) / std per date
+            let n_symbols = args
+                .get(1)
+                .and_then(|a| get_literal_int(a))
+                .unwrap_or(100); // default 100 symbols
+            let result = zscore(arg_values[0].as_slice().unwrap(), n_symbols);
+            Ok(result.into())
+        }
+        "cap_neu" => {
+            // cap_neu(alpha, market_cap, n_symbols) - regress on log(market_cap), return standardized residuals
+            if args.len() < 2 {
+                return Err("cap_neu requires 2 arguments: alpha and market_cap".to_string());
+            }
+            let market_cap = eval_expr_vectorized(&args[1], data, cache)?;
+            let n_symbols = args
+                .get(2)
+                .and_then(|a| get_literal_int(a))
+                .unwrap_or(100); // default 100 symbols
+            let result = cap_neu(
+                arg_values[0].as_slice().unwrap(),
+                market_cap.as_slice().unwrap(),
+                n_symbols,
+            );
+            Ok(result.into())
         }
         _ => Err(format!("Unknown function: {}", name)),
     }
