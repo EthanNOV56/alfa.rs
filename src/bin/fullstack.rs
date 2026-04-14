@@ -367,6 +367,21 @@ fn main() {
 
         let adj_factor = ndarray::Array2::from_elem((n_dates, n_symbols), 1.0);
 
+        let open_array =
+            ndarray::Array2::from_shape_vec((n_dates, n_symbols), open_flat.clone())
+                .expect("Invalid open shape");
+
+        // Tradable: high > low means the stock can be traded (had a real transaction)
+        let tradable_array = ndarray::Array2::from_shape_vec(
+            (n_dates, n_symbols),
+            high_flat
+                .iter()
+                .zip(low_flat.iter())
+                .map(|(&h, &l)| if h > l { 1.0 } else { 0.0 })
+                .collect(),
+        )
+        .expect("Invalid tradable shape");
+
         // Debug: check arrays before backtest
         println!("  Backtest input:");
         println!(
@@ -404,6 +419,7 @@ fn main() {
             short_top_n: 1,
             fee_config: FeeConfig::default(),
             position_config: Default::default(),
+            limit_up_down_config: Default::default(),
         };
 
         let engine = BacktestEngine::with_config(config);
@@ -413,7 +429,9 @@ fn main() {
             returns_array,
             adj_factor,
             close_array,
+            open_array,
             vwap_array,
+            tradable_array,
         ) {
             Ok(r) => r,
             Err(e) => {

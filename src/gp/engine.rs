@@ -1172,14 +1172,17 @@ impl RealBacktestFitnessEvaluator {
             long_top_n: 1,
             short_top_n: 1,
             fee_config: self.fee_config.clone(),
+            limit_up_down_config: Default::default(),
             position_config: self.position_config.clone(),
         };
 
         let engine = BacktestEngine::with_config(config);
 
-        // Create close and vwap as placeholder (using returns as proxy)
+        // Create close, open, vwap, and tradable as placeholder (using returns as proxy)
         let close = Array2::from_elem(returns.dim(), 1.0);
+        let open = Array2::from_elem(returns.dim(), 1.0);
         let vwap = Array2::from_elem(returns.dim(), 1.0);
+        let tradable = Array2::from_elem(returns.dim(), 1.0);
         // adj_factor is now required - use ones as default
         let adj_factor = Array2::from_elem(returns.dim(), 1.0);
 
@@ -1188,7 +1191,9 @@ impl RealBacktestFitnessEvaluator {
             returns.clone(),
             adj_factor,
             close,
+            open,
             vwap,
+            tradable,
         ) {
             Ok(result) => {
                 // Check for valid results

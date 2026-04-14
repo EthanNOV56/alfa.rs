@@ -984,6 +984,7 @@ impl PyBacktestEngine {
             short_top_n,
             fee_config,
             position_config: Default::default(),
+            limit_up_down_config: Default::default(),
         };
 
         Ok(Self { config })
@@ -995,17 +996,21 @@ impl PyBacktestEngine {
         returns: Bound<'_, PyArray2<f64>>,
         adj_factor: Bound<'_, PyArray2<f64>>,
         close: Bound<'_, PyArray2<f64>>,
+        open: Bound<'_, PyArray2<f64>>,
         vwap: Bound<'_, PyArray2<f64>>,
+        tradable: Bound<'_, PyArray2<f64>>,
     ) -> PyResult<PyBacktestResult> {
         let factor_array = factor.readonly().as_array().to_owned();
         let returns_array = returns.readonly().as_array().to_owned();
         let adj_factor_array = adj_factor.readonly().as_array().to_owned();
         let close_array = close.readonly().as_array().to_owned();
+        let open_array = open.readonly().as_array().to_owned();
         let vwap_array = vwap.readonly().as_array().to_owned();
+        let tradable_array = tradable.readonly().as_array().to_owned();
 
         let engine = BacktestEngine::with_config(self.config.clone());
 
-        match engine.run(factor_array, returns_array, adj_factor_array, close_array, vwap_array) {
+        match engine.run(factor_array, returns_array, adj_factor_array, close_array, open_array, vwap_array, tradable_array) {
             Ok(result) => Ok(PyBacktestResult::from(result)),
             Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(e)),
         }
@@ -1087,7 +1092,9 @@ fn quantile_backtest(
     commission_rate: f64,
     adj_factor: Bound<'_, PyArray2<f64>>,
     close: Bound<'_, PyArray2<f64>>,
+    open: Bound<'_, PyArray2<f64>>,
     vwap: Bound<'_, PyArray2<f64>>,
+    tradable: Bound<'_, PyArray2<f64>>,
 ) -> PyResult<PyBacktestResult> {
     let wmethod = match weight_method {
         "equal" => WeightMethod::Equal,
@@ -1111,6 +1118,7 @@ fn quantile_backtest(
         short_top_n,
         fee_config,
         position_config: Default::default(),
+            limit_up_down_config: Default::default(),
     };
 
     let engine = BacktestEngine::with_config(config);
@@ -1119,9 +1127,11 @@ fn quantile_backtest(
     let returns_array = returns.readonly().as_array().to_owned();
     let adj_factor_array = adj_factor.readonly().as_array().to_owned();
     let close_array = close.readonly().as_array().to_owned();
+    let open_array = open.readonly().as_array().to_owned();
     let vwap_array = vwap.readonly().as_array().to_owned();
+    let tradable_array = tradable.readonly().as_array().to_owned();
 
-    match engine.run(factor_array, returns_array, adj_factor_array, close_array, vwap_array) {
+    match engine.run(factor_array, returns_array, adj_factor_array, close_array, open_array, vwap_array, tradable_array) {
         Ok(result) => Ok(PyBacktestResult::from(result)),
         Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(e)),
     }

@@ -84,6 +84,21 @@ impl Default for PositionConfig {
     }
 }
 
+/// Limit up/down handling configuration
+#[derive(Debug, Clone)]
+pub struct LimitUpDownConfig {
+    /// Whether to enable limit up/down handling
+    pub enabled: bool,
+}
+
+impl Default for LimitUpDownConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+        }
+    }
+}
+
 /// Backtest configuration - follows dependency inversion principle
 /// Only contains configuration parameters, no data
 #[derive(Debug, Clone)]
@@ -100,6 +115,8 @@ pub struct BacktestConfig {
     pub fee_config: FeeConfig,
     /// Position configuration (long/short ratios)
     pub position_config: PositionConfig,
+    /// Limit up/down handling configuration
+    pub limit_up_down_config: LimitUpDownConfig,
 }
 
 impl Default for BacktestConfig {
@@ -111,6 +128,7 @@ impl Default for BacktestConfig {
             short_top_n: 1,
             fee_config: FeeConfig::default(),
             position_config: PositionConfig::default(),
+            limit_up_down_config: LimitUpDownConfig::default(),
         }
     }
 }
@@ -203,7 +221,9 @@ impl BacktestEngine {
         returns: Array2<f64>,
         adj_factor: Array2<f64>,
         close: Array2<f64>,
+        open: Array2<f64>,
         vwap: Array2<f64>,
+        tradable: Array2<f64>,
     ) -> Result<BacktestResult, String> {
         assert_eq!(
             factor.shape(),
@@ -217,6 +237,11 @@ impl BacktestEngine {
         );
         assert_eq!(
             factor.shape(),
+            open.shape(),
+            "Factor and open must have same shape"
+        );
+        assert_eq!(
+            factor.shape(),
             vwap.shape(),
             "Factor and vwap must have same shape"
         );
@@ -224,6 +249,11 @@ impl BacktestEngine {
             adj_factor.shape(),
             factor.shape(),
             "Adjustment factor must have same shape as factor"
+        );
+        assert_eq!(
+            tradable.shape(),
+            factor.shape(),
+            "Tradable must have same shape as factor"
         );
 
         let (n_days, n_assets) = factor.dim();
@@ -252,10 +282,12 @@ impl BacktestEngine {
             let group_portfolio_returns = Self::compute_portfolio_return(
                 &subgroup_weights,
                 &close,
+                &open,
                 &vwap,
                 &adj_factor,
                 self.config.fee_config.commission_rate,
                 self.config.fee_config.slippage.normal_slippage_rate,
+                &tradable,
             );
 
             // Extract returns (skip first day which is always 0)
@@ -278,10 +310,12 @@ impl BacktestEngine {
         let long_short_portfolio_returns = Self::compute_portfolio_return(
             &long_short_weights,
             &close,
+            &open,
             &vwap,
             &adj_factor,
             self.config.fee_config.commission_rate,
             self.config.fee_config.slippage.normal_slippage_rate,
+            &tradable,
         );
 
         // Extract long/short returns
@@ -1003,39 +1037,42 @@ impl BacktestEngine {
         returns
     }
 
-    /// Compute trading return (日内交易收益) using adjusted prices
+    /// Compute trading return (日内交易收益) using adjusted prices with limit-up/down handling
     ///
-    /// Formula:
-    /// - adj_close[t] = close[t] * adj_factor[t] / adj_factor[last]
-    /// - adj_vwap[t] = vwap[t] * adj_factor[t] / adj_factor[last]
-    /// - Day 0: trading_return[0] = sum(weights[0] * (adj_close[0]/adj_vwap[0] - 1 - cost))
-    /// - Days 1..: trading_return[day] = sum((weights[day] - weights[day-1]) * (adj_close[day]/adj_vwap[day] - 1 - cost))
+    /// Position calculation uses open price, actual execution uses vwap.
+    /// If stock is not tradable (limit-up/down), position is carried forward.
     ///
     /// # Parameters
     /// - weights: Weight matrix [n_days, n_symbols]
-    /// - close: Close price matrix [n_days, n_symbols]
-    /// - vwap: VWAP price matrix [n_days, n_symbols]
+    /// - close: Close price matrix [n_days, n_symbols] - used for mark-to-market
+    /// - open: Open price matrix [n_days, n_symbols] - used for position sizing
+    /// - vwap: VWAP price matrix [n_days, n_symbols] - used for fee calculation
     /// - adj_factor: Adjustment factor matrix [n_days, n_symbols]
     /// - fee: Commission fee rate (e.g., 0.0003 for 0.03%)
     /// - slippage: Slippage rate (e.g., 0.0005 for 0.05%)
+    /// - tradable: Tradable mask [n_days, n_symbols] - 1.0 = can trade, 0.0 = locked
     ///
     /// # Returns
     /// - Array2<f64> of shape [n_days, 1] with trading returns per day
     pub fn compute_trading_return(
         weights: &Array2<f64>,
         close: &Array2<f64>,
+        open: &Array2<f64>,
         vwap: &Array2<f64>,
         adj_factor: &Array2<f64>,
         fee: f64,
         slippage: f64,
+        tradable: &Array2<f64>,
     ) -> Array2<f64> {
         let (n_days, n_symbols) = weights.dim();
         let total_cost = fee + slippage;
 
-        // Compute adjusted prices: adj_price[t] = price[t] * adj_factor[t] / adj_factor[last]
-        let last_adj_factor = adj_factor.row(n_days - 1); // [n_symbols]
+        // Compute adjusted prices using SIMD-friendly row-wise operations
+        let last_adj_factor = adj_factor.row(n_days - 1);
         let mut adj_close = Array2::<f64>::zeros((n_days, n_symbols));
+        let mut adj_open = Array2::<f64>::zeros((n_days, n_symbols));
         let mut adj_vwap = Array2::<f64>::zeros((n_days, n_symbols));
+
         for day in 0..n_days {
             let adj_factors = adj_factor.row(day);
             for symbol in 0..n_symbols {
@@ -1043,9 +1080,11 @@ impl BacktestEngine {
                 let last_adj = last_adj_factor[symbol];
                 if !adj.is_nan() && !last_adj.is_nan() && last_adj != 0.0 {
                     adj_close[[day, symbol]] = close[[day, symbol]] * adj / last_adj;
+                    adj_open[[day, symbol]] = open[[day, symbol]] * adj / last_adj;
                     adj_vwap[[day, symbol]] = vwap[[day, symbol]] * adj / last_adj;
                 } else {
                     adj_close[[day, symbol]] = close[[day, symbol]];
+                    adj_open[[day, symbol]] = open[[day, symbol]];
                     adj_vwap[[day, symbol]] = vwap[[day, symbol]];
                 }
             }
@@ -1054,34 +1093,104 @@ impl BacktestEngine {
         // Result for all n_days
         let mut returns = ndarray::Array2::<f64>::zeros((n_days, 1));
 
-        // Day 0: initial position establishment (from 0 to weights[0])
-        // trading_return[0] = sum(weights[0] * (adj_close[0]/adj_vwap[0] - 1 - cost))
-        let price_return_0 = (adj_close[[0, 0]] / adj_vwap[[0, 0]]) - 1.0;
-        let trade_return_0 = weights[[0, 0]] * (price_return_0 - total_cost);
-        returns[[0, 0]] = trade_return_0;
+        // Day 0: initial position establishment using open price
+        // Position = weight / open (shares per unit of weight)
+        // Asset at close = sum(weight[i] * close[i] for tradable[i])
+        // Fee = sum(|weight[i]| * vwap[i] * cost) for all positions
+        let tradable_0 = tradable.row(0);
+        let adj_open_0 = adj_open.row(0);
+        let adj_close_0 = adj_close.row(0);
+        let adj_vwap_0 = adj_vwap.row(0);
+        let weights_0 = weights.row(0);
 
-        // Days 1..n_days-1: position changes
-        // weight_diff = weights[day] - weights[day-1]
+        let mut asset_0 = 0.0;
+        let mut fee_0 = 0.0;
+        for symbol in 0..n_symbols {
+            let w = weights_0[symbol];
+            if w != 0.0 && tradable_0[symbol] > 0.5 {
+                let shares = w / adj_open_0[symbol];
+                asset_0 += shares * adj_close_0[symbol];
+                fee_0 += w.abs() * adj_vwap_0[symbol] * total_cost;
+            }
+        }
+        let nav_0 = if asset_0 > 0.0 { asset_0 - fee_0 } else { 1.0 };
+        returns[[0, 0]] = 0.0; // Day 0 has no previous day to compare
+
+        // Days 1..n_days-1: position changes with tradable constraint
         if n_days > 1 {
             let weights_lag = weights.slice(ndarray::s![0..n_days - 1, ..]);
             let weights_current = weights.slice(ndarray::s![1.., ..]);
-            let weight_diff = &weights_current - &weights_lag; // [n_days-1, n_symbols]
-
-            // Vectorized: price return using adjusted prices (adj_close / adj_vwap - 1)
-            let adj_vwap_current = adj_vwap.slice(ndarray::s![1.., ..]);
+            let adj_open_current = adj_open.slice(ndarray::s![1.., ..]);
             let adj_close_current = adj_close.slice(ndarray::s![1.., ..]);
-            let price_returns = (&adj_close_current / &adj_vwap_current) - 1.0; // [n_days-1, n_symbols]
+            let adj_vwap_current = adj_vwap.slice(ndarray::s![1.., ..]);
+            let tradable_current = tradable.slice(ndarray::s![1.., ..]);
 
-            // Vectorized: trade return = weight_diff * (price_return - cost)
-            let cost_array = Array2::from_elem((n_days - 1, n_symbols), total_cost);
-            let trade_returns = &weight_diff * (&price_returns - &cost_array);
+            for day_idx in 0..(n_days - 1) {
+                let day = day_idx + 1;
+                let prev_day = day - 1;
 
-            // Sum across symbols: [n_days-1, n_symbols] -> [n_days-1]
-            let day_returns = trade_returns.sum_axis(ndarray::Axis(1)); // Shape: [n_days-1]
+                // Previous day's weights and tradable
+                let prev_weights = weights_lag.row(day_idx);
+                let prev_tradable = tradable.slice(ndarray::s![prev_day, ..]);
 
-            // Fill days 1..n_days-1
-            for day in 1..n_days {
-                returns[[day, 0]] = day_returns[day - 1];
+                // Current day's weights, tradable, prices
+                let curr_weights = weights_current.row(day_idx);
+                let curr_tradable = tradable_current.row(day_idx);
+                let curr_open = adj_open_current.row(day_idx);
+                let curr_close = adj_close_current.row(day_idx);
+                let curr_vwap = adj_vwap_current.row(day_idx);
+
+                // Calculate asset at end of current day using close
+                let mut curr_asset = 0.0;
+                let mut prev_asset = 0.0;
+                let mut fee = 0.0;
+
+                for symbol in 0..n_symbols {
+                    let pt = prev_tradable[symbol];
+                    let ct = curr_tradable[symbol];
+                    let pw = prev_weights[symbol];
+                    let cw = curr_weights[symbol];
+                    let co = curr_open[symbol];
+                    let ccl = curr_close[symbol];
+                    let cv = curr_vwap[symbol];
+
+                    // If not tradable, carry forward previous position
+                    let effective_weight = if ct <= 0.5 { pw } else { cw };
+
+                    // Previous day's asset using close price
+                    if pt > 0.5 && pw != 0.0 {
+                        let prev_shares = pw / adj_close.row(prev_day)[symbol];
+                        prev_asset += prev_shares * ccl;
+                    }
+
+                    // Current day's asset using close
+                    if ct > 0.5 && effective_weight != 0.0 {
+                        let curr_shares = effective_weight / co;
+                        curr_asset += curr_shares * ccl;
+                    }
+
+                    // Fee calculation following reference:
+                    // delta = weight_today - weight_prev (both in dollars)
+                    // fee_rate = BUY_FEE + BUY_SLPG for buys, SELL_FEE + SELL_SLPG for sells
+                    // fee_dollars = delta * fee_rate (still in dollars)
+                    // actual_fee = fee_dollars * vwap (converts to actual cost)
+                    let weight_change = effective_weight - pw;
+                    if weight_change.abs() > 1e-10 {
+                        // Apply buy or sell fee rate
+                        let fee_rate = if weight_change > 0.0 {
+                            (fee + slippage)  // Buy: commission + slippage
+                        } else {
+                            (fee + slippage)  // Sell: same rates
+                        };
+                        // delta * rate gives dollar change, multiplied by vwap gives actual fee
+                        fee += weight_change.abs() * fee_rate * cv;
+                    }
+                }
+
+                // Return = (current_asset - fee) / previous_asset - 1
+                let nav = if prev_asset > 0.0 { curr_asset - fee } else { curr_asset };
+                let day_return = if prev_asset > 0.0 { nav / prev_asset - 1.0 } else { 0.0 };
+                returns[[day, 0]] = day_return;
             }
         }
 
@@ -1103,14 +1212,16 @@ impl BacktestEngine {
     pub fn compute_portfolio_return(
         weights: &Array2<f64>,
         close: &Array2<f64>,
+        open: &Array2<f64>,
         vwap: &Array2<f64>,
         adj_factor: &Array2<f64>,
         fee: f64,
         slippage: f64,
+        tradable: &Array2<f64>,
     ) -> Array2<f64> {
         let holding_return = Self::compute_holding_return(weights, close, adj_factor);
         let trading_return =
-            Self::compute_trading_return(weights, close, vwap, adj_factor, fee, slippage);
+            Self::compute_trading_return(weights, close, open, vwap, adj_factor, fee, slippage, tradable);
         holding_return + trading_return
     }
 }
@@ -1200,12 +1311,13 @@ mod tests {
                 ..Default::default()
             },
             position_config: Default::default(),
+            limit_up_down_config: Default::default(),
         };
 
         let engine = BacktestEngine::with_config(config);
 
         let result = engine
-            .run(factor, returns, adj_factor, close, vwap)
+            .run(factor, returns, adj_factor, close.clone(), close.clone(), vwap.clone(), Array2::from_elem(close.dim(), 1.0))
             .unwrap();
         assert!(result.long_short_cum_return.is_finite());
     }
@@ -1292,12 +1404,13 @@ mod tests {
                 ..Default::default()
             },
             position_config: Default::default(),
+            limit_up_down_config: Default::default(),
         };
 
         let adj_factor = Array2::from_elem((3, 4), 1.0);
         let engine = BacktestEngine::with_config(config);
         let result = engine
-            .run(factor, returns.clone(), adj_factor, close, vwap)
+            .run(factor, returns.clone(), adj_factor, close.clone(), close.clone(), vwap.clone(), Array2::from_elem(close.dim(), 1.0))
             .unwrap();
 
         // Verify result is valid
@@ -1334,12 +1447,13 @@ mod tests {
                 ..Default::default()
             },
             position_config: Default::default(),
+            limit_up_down_config: Default::default(),
         };
 
         let adj_factor = Array2::from_elem((3, 4), 1.0);
         let engine = BacktestEngine::with_config(config);
         let result = engine
-            .run(factor, returns.clone(), adj_factor, close, vwap)
+            .run(factor, returns.clone(), adj_factor, close.clone(), close.clone(), vwap.clone(), Array2::from_elem(close.dim(), 1.0))
             .unwrap();
 
         // group_returns should have shape (n_days-1, quantiles) = (2, 4)
@@ -1376,12 +1490,15 @@ mod tests {
                 ..Default::default()
             },
             position_config: Default::default(),
+            limit_up_down_config: Default::default(),
         };
 
         let engine = BacktestEngine::with_config(config);
+        let open = close.clone();
+        let tradable = Array2::from_elem(close.dim(), 1.0);
         let adj_factor = Array2::from_elem((3, 4), 1.0);
         let result = engine
-            .run(factor.clone(), returns.clone(), adj_factor, close, vwap)
+            .run(factor.clone(), returns.clone(), adj_factor, close, open, vwap, tradable)
             .unwrap();
 
         // Verify long/short returns exist
@@ -1417,16 +1534,21 @@ mod tests {
                 ..Default::default()
             },
             position_config: Default::default(),
+            limit_up_down_config: Default::default(),
         };
 
         let engine = BacktestEngine::with_config(config);
+        let open = close.clone();
+        let tradable = Array2::from_elem(close.dim(), 1.0);
         let result = engine
             .run(
                 factor,
                 returns.clone(),
                 Array2::from_elem((3, 4), 1.0),
                 close.clone(),
+                open,
                 vwap.clone(),
+                tradable,
             )
             .unwrap();
 
@@ -1463,16 +1585,21 @@ mod tests {
                 ..Default::default()
             },
             position_config: Default::default(),
+            limit_up_down_config: Default::default(),
         };
 
         let engine = BacktestEngine::with_config(config);
+        let open = close.clone();
+        let tradable = Array2::from_elem(close.dim(), 1.0);
         let result = engine
             .run(
                 factor,
                 returns.clone(),
                 Array2::from_elem((3, 4), 1.0),
                 close.clone(),
+                open,
                 vwap.clone(),
+                tradable,
             )
             .unwrap();
 
@@ -1509,16 +1636,21 @@ mod tests {
                 ..Default::default()
             },
             position_config: Default::default(),
+            limit_up_down_config: Default::default(),
         };
 
         let engine = BacktestEngine::with_config(config);
+        let open = close.clone();
+        let tradable = Array2::from_elem(close.dim(), 1.0);
         let result = engine
             .run(
                 factor,
                 returns.clone(),
                 Array2::from_elem((3, 4), 1.0),
                 close.clone(),
+                open,
                 vwap.clone(),
+                tradable,
             )
             .unwrap();
 
@@ -1574,6 +1706,7 @@ mod tests {
                 ..Default::default()
             },
             position_config: Default::default(),
+            limit_up_down_config: Default::default(),
         };
 
         let close = Array2::from_elem((3, 4), 1.0);
@@ -1588,7 +1721,9 @@ mod tests {
                 returns.clone(),
                 Array2::from_elem((3, 4), 1.0),
                 close.clone(),
+                close.clone(),
                 vwap.clone(),
+                Array2::from_elem(close.dim(), 1.0),
             )
             .unwrap();
         assert!(result.long_short_cum_return.is_finite());
@@ -1610,16 +1745,18 @@ mod tests {
                 ..Default::default()
             },
             position_config: Default::default(),
+            limit_up_down_config: Default::default(),
         };
 
         let engine = BacktestEngine::with_config(config);
-
         let close = Array2::from_elem((1, 4), 1.0);
+        let open = Array2::from_elem((1, 4), 1.0);
         let vwap = Array2::from_elem((1, 4), 1.0);
+        let tradable = Array2::from_elem((1, 4), 1.0);
         let adj_factor = Array2::from_elem((1, 4), 1.0);
 
         // Single day returns - should work but produce empty results
-        let result = engine.run(factor, returns.clone(), adj_factor, close, vwap);
+        let result = engine.run(factor, returns.clone(), adj_factor, close, open, vwap, tradable);
         // Single day might fail or produce empty results - that's expected
         assert!(result.is_err() || result.unwrap().group_returns.dim().0 == 0);
     }
@@ -1641,17 +1778,19 @@ mod tests {
                 ..Default::default()
             },
             position_config: Default::default(),
+            limit_up_down_config: Default::default(),
         };
 
         let engine = BacktestEngine::with_config(config);
-
         let close = Array2::from_elem((3, 1), 1.0);
+        let open = Array2::from_elem((3, 1), 1.0);
         let vwap = Array2::from_elem((3, 1), 1.0);
+        let tradable = Array2::from_elem((3, 1), 1.0);
         let adj_factor = Array2::from_elem((3, 1), 1.0);
 
         // Single asset - run might fail due to edge case handling
         // Just verify it doesn't panic
-        let _ = engine.run(factor, returns.clone(), adj_factor, close, vwap);
+        let _ = engine.run(factor, returns.clone(), adj_factor, close, open, vwap, tradable);
     }
 
     #[test]
@@ -1695,13 +1834,14 @@ mod tests {
                 ..Default::default()
             },
             position_config: Default::default(),
+            limit_up_down_config: Default::default(),
         };
 
         let engine = BacktestEngine::with_config(config);
 
         let adj_factor = Array2::from_elem((3, 4), 1.0);
         let result = engine
-            .run(factor, returns, adj_factor, close, vwap)
+            .run(factor, returns, adj_factor, close.clone(), close.clone(), vwap.clone(), Array2::from_elem(close.dim(), 1.0))
             .unwrap();
         assert!(result.long_short_cum_return.is_finite());
         // Negative returns should result in negative cumulative return
@@ -1766,20 +1906,24 @@ mod tests {
             short_top_n: 1,
             fee_config,
             position_config,
+            limit_up_down_config: Default::default(),
         };
 
-        let engine = BacktestEngine::with_config(config);
-
         let close = Array2::from_elem((10, 5), 1.0);
+        let open = Array2::from_elem((10, 5), 1.0);
         let vwap = Array2::from_elem((10, 5), 1.0);
+        let tradable = Array2::from_elem((10, 5), 1.0);
 
+        let engine = BacktestEngine::with_config(config);
         let result = engine
             .run(
                 factor,
                 returns,
                 Array2::from_elem((10, 5), 1.0),
                 close,
+                open,
                 vwap,
+                tradable,
             )
             .unwrap();
 
@@ -1833,10 +1977,13 @@ mod tests {
                 ..Default::default()
             },
             position_config: Default::default(),
+            limit_up_down_config: Default::default(),
         };
 
         let close = Array2::from_elem((5, 10), 1.0);
+        let open = Array2::from_elem((5, 10), 1.0);
         let vwap = Array2::from_elem((5, 10), 1.0);
+        let tradable = Array2::from_elem((5, 10), 1.0);
 
         let engine = BacktestEngine::with_config(config);
         let result = engine
@@ -1845,7 +1992,9 @@ mod tests {
                 returns.clone(),
                 Array2::from_elem((5, 10), 1.0),
                 close.clone(),
+                open.clone(),
                 vwap.clone(),
+                tradable.clone(),
             )
             .unwrap();
         assert_eq!(result.group_returns.dim(), (4, 5));
@@ -1861,12 +2010,13 @@ mod tests {
                 ..Default::default()
             },
             position_config: Default::default(),
+            limit_up_down_config: Default::default(),
         };
 
         let engine2 = BacktestEngine::with_config(config2);
         let adj_factor2 = Array2::from_elem((5, 10), 1.0);
         let result2 = engine2
-            .run(factor, returns, adj_factor2, close, vwap)
+            .run(factor, returns, adj_factor2, close.clone(), open.clone(), vwap.clone(), tradable.clone())
             .unwrap();
         assert_eq!(result2.group_returns.dim(), (4, 2));
     }
@@ -1915,6 +2065,7 @@ mod tests {
             short_top_n: 1,
             fee_config: FeeConfig::default(),
             position_config: position_neutral,
+            limit_up_down_config: Default::default(),
         };
 
         let engine_neutral = BacktestEngine::with_config(config_neutral);
@@ -1924,7 +2075,9 @@ mod tests {
                 returns.clone(),
                 adj_factor.clone(),
                 close.clone(),
+                close.clone(),
                 vwap.clone(),
+                Array2::from_elem(close.dim(), 1.0),
             )
             .unwrap();
 
@@ -1942,11 +2095,12 @@ mod tests {
             short_top_n: 1,
             fee_config: FeeConfig::default(),
             position_config: position_directional,
+            limit_up_down_config: Default::default(),
         };
 
         let engine_directional = BacktestEngine::with_config(config_directional);
         let result_directional = engine_directional
-            .run(factor, returns, adj_factor, close, vwap)
+            .run(factor, returns, adj_factor, close.clone(), close.clone(), vwap.clone(), Array2::from_elem(close.dim(), 1.0))
             .unwrap();
 
         // Both should produce finite results

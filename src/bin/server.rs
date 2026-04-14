@@ -597,6 +597,8 @@ struct CachedFactor {
     dates: Vec<String>,
     close: Vec<Vec<f64>>,
     vwap: Vec<Vec<f64>>,
+    high: Vec<Vec<f64>>,
+    low: Vec<Vec<f64>>,
 }
 
 #[derive(Clone)]
@@ -617,6 +619,9 @@ async fn run_backtest(
     // Extract close and vwap data - track whether we have real data
     let mut close_data: Option<Vec<Vec<f64>>> = None;
     let mut vwap_data: Option<Vec<Vec<f64>>> = None;
+    let mut high_data: Option<Vec<Vec<f64>>> = None;
+    let mut low_data: Option<Vec<Vec<f64>>> = None;
+    let mut open_data: Option<Vec<Vec<f64>>> = None;
 
     // Check if cache_id is provided
     let (factor, returns, dates) = if let Some(cache_id) = &req.cache_id {
@@ -632,9 +637,12 @@ async fn run_backtest(
                 cached.factor.first().map(|r| r.len()).unwrap_or(0),
                 cached.factor_id
             );
-            // Set close and vwap from cache
+            // Set close, vwap, high, low, and open from cache
             close_data = Some(cached.close.clone());
             vwap_data = Some(cached.vwap.clone());
+            high_data = Some(cached.high.clone());
+            low_data = Some(cached.low.clone());
+            open_data = Some(cached.close.clone()); // Use close as open proxy for cached data
 
             // Debug: check cached factor and returns values
             let flat_factor: Vec<f64> = cached.factor.iter().flatten().cloned().collect();
@@ -802,8 +810,11 @@ async fn run_backtest(
             factor
         };
 
-        // Extract close and compute vwap (high + low + close) / 3
+        // Extract close, open, high, low and compute vwap (high + low + close) / 3
         close_data = Some(loaded.close.clone());
+        open_data = Some(loaded.open.clone());
+        high_data = Some(loaded.high.clone());
+        low_data = Some(loaded.low.clone());
         let mut computed_vwap: Vec<Vec<f64>> = Vec::with_capacity(n_days);
         for d in 0..n_days {
             let mut vwap_row = Vec::with_capacity(n_assets);
@@ -892,6 +903,49 @@ async fn run_backtest(
             )
         })?;
 
+    // Open data is required for position sizing
+    let open_array = open_data.ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            "Open data is required for backtest (needed for position sizing)".to_string(),
+        )
+    })?;
+    let open_array = Array2::from_shape_vec((n_days, n_assets), open_array.into_iter().flatten().collect())
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("Invalid open shape: {}", e),
+            )
+        })?;
+
+    // High and low data are required for tradable calculation
+    let (high_data, low_data) = match (high_data, low_data) {
+        (Some(h), Some(l)) => (h, l),
+        (None, _) => return Err((
+            StatusCode::BAD_REQUEST,
+            "High price data is required for tradable calculation (high > low)".to_string(),
+        )),
+        (_, None) => return Err((
+            StatusCode::BAD_REQUEST,
+            "Low price data is required for tradable calculation (high > low)".to_string(),
+        )),
+    };
+
+    // Compute tradable: high > low means the stock can be traded
+    let tradable_flat: Vec<f64> = high_data.iter()
+        .zip(low_data.iter())
+        .flat_map(|(h_row, l_row)| {
+            h_row.iter().zip(l_row.iter()).map(|(&h, &l)| if h > l { 1.0 } else { 0.0 })
+        })
+        .collect();
+    let tradable_array = Array2::from_shape_vec((n_days, n_assets), tradable_flat)
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("Invalid tradable shape: {}", e),
+            )
+        })?;
+
     // Default parameters
     let quantiles = req.quantiles.unwrap_or(10);
     let long_top_n = req.long_top_n.unwrap_or(1);
@@ -921,6 +975,7 @@ async fn run_backtest(
         short_top_n,
         fee_config,
         position_config: Default::default(),
+        limit_up_down_config: Default::default(),
     };
 
     let engine = BacktestEngine::with_config(config);
@@ -955,7 +1010,9 @@ async fn run_backtest(
             returns_array,
             adj_factor,
             close_array,
+            open_array,
             vwap_array,
+            tradable_array,
         )
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     eprintln!("[run_backtest] Backtest engine completed");
@@ -1250,6 +1307,8 @@ async fn compute_factor(
                     dates: loaded.dates.clone(),
                     close: loaded.close.clone(),
                     vwap: computed_vwap,
+                    high: loaded.high.clone(),
+                    low: loaded.low.clone(),
                 };
                 eprintln!(
                     "[compute_factor] Caching factor for {} with id {}",
@@ -1311,6 +1370,8 @@ async fn compute_factor(
         dates: dates.clone(),
         close: loaded.close.clone(),
         vwap: computed_vwap,
+        high: loaded.high.clone(),
+        low: loaded.low.clone(),
     };
     eprintln!(
         "[compute_factor] Caching factor for {} with id {}",
