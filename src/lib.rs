@@ -492,6 +492,7 @@ fn lag(expr: &PyExpr, periods: usize) -> PyResult<PyExpr> {
             expr.inner.clone(),
             Expr::Literal(Literal::Integer(periods as i64)),
         ],
+        freq: None,
     };
     Ok(PyExpr { inner: lag_expr })
 }
@@ -505,6 +506,7 @@ fn diff(expr: &PyExpr, periods: usize) -> PyResult<PyExpr> {
             expr.inner.clone(),
             Expr::Literal(Literal::Integer(periods as i64)),
         ],
+        freq: None,
     };
     Ok(PyExpr { inner: diff_expr })
 }
@@ -518,6 +520,7 @@ fn rolling_mean(expr: &PyExpr, window: usize) -> PyResult<PyExpr> {
             expr.inner.clone(),
             Expr::Literal(Literal::Integer(window as i64)),
         ],
+        freq: None,
     };
     Ok(PyExpr { inner: ma_expr })
 }
@@ -528,6 +531,7 @@ fn cumsum(expr: &PyExpr) -> PyResult<PyExpr> {
     let cumsum_expr = Expr::FunctionCall {
         name: "cumsum".to_string(),
         args: vec![expr.inner.clone()],
+        freq: None,
     };
     Ok(PyExpr { inner: cumsum_expr })
 }
@@ -538,6 +542,7 @@ fn cumprod(expr: &PyExpr) -> PyResult<PyExpr> {
     let cumprod_expr = Expr::FunctionCall {
         name: "cumprod".to_string(),
         args: vec![expr.inner.clone()],
+        freq: None,
     };
     Ok(PyExpr {
         inner: cumprod_expr,
@@ -553,6 +558,7 @@ fn rolling_std(expr: &PyExpr, window: usize) -> PyResult<PyExpr> {
             expr.inner.clone(),
             Expr::Literal(Literal::Integer(window as i64)),
         ],
+        freq: None,
     };
     Ok(PyExpr { inner: std_expr })
 }
@@ -570,6 +576,7 @@ fn ts_rank(expr: &PyExpr, window: usize) -> PyResult<PyExpr> {
             expr.inner.clone(),
             Expr::Literal(Literal::Integer(window as i64)),
         ],
+        freq: None,
     };
     Ok(PyExpr {
         inner: ts_rank_expr,
@@ -585,6 +592,7 @@ fn ts_argmax(expr: &PyExpr, window: usize) -> PyResult<PyExpr> {
             expr.inner.clone(),
             Expr::Literal(Literal::Integer(window as i64)),
         ],
+        freq: None,
     };
     Ok(PyExpr {
         inner: ts_argmax_expr,
@@ -600,6 +608,7 @@ fn ts_argmin(expr: &PyExpr, window: usize) -> PyResult<PyExpr> {
             expr.inner.clone(),
             Expr::Literal(Literal::Integer(window as i64)),
         ],
+        freq: None,
     };
     Ok(PyExpr {
         inner: ts_argmin_expr,
@@ -612,6 +621,7 @@ fn rank(expr: &PyExpr) -> PyResult<PyExpr> {
     let rank_expr = Expr::FunctionCall {
         name: "rank".to_string(),
         args: vec![expr.inner.clone()],
+        freq: None,
     };
     Ok(PyExpr { inner: rank_expr })
 }
@@ -626,6 +636,7 @@ fn ts_corr(expr1: &PyExpr, expr2: &PyExpr, window: usize) -> PyResult<PyExpr> {
             expr2.inner.clone(),
             Expr::Literal(Literal::Integer(window as i64)),
         ],
+        freq: None,
     };
     Ok(PyExpr {
         inner: ts_corr_expr,
@@ -642,6 +653,7 @@ fn ts_cov(expr1: &PyExpr, expr2: &PyExpr, window: usize) -> PyResult<PyExpr> {
             expr2.inner.clone(),
             Expr::Literal(Literal::Integer(window as i64)),
         ],
+        freq: None,
     };
     Ok(PyExpr { inner: ts_cov_expr })
 }
@@ -655,6 +667,7 @@ fn scale(expr: &PyExpr, window: usize) -> PyResult<PyExpr> {
             expr.inner.clone(),
             Expr::Literal(Literal::Integer(window as i64)),
         ],
+        freq: None,
     };
     Ok(PyExpr { inner: scale_expr })
 }
@@ -668,6 +681,7 @@ fn decay_linear(expr: &PyExpr, periods: usize) -> PyResult<PyExpr> {
             expr.inner.clone(),
             Expr::Literal(Literal::Integer(periods as i64)),
         ],
+        freq: None,
     };
     Ok(PyExpr { inner: decay_expr })
 }
@@ -678,6 +692,7 @@ fn sign(expr: &PyExpr) -> PyResult<PyExpr> {
     let sign_expr = Expr::FunctionCall {
         name: "sign".to_string(),
         args: vec![expr.inner.clone()],
+        freq: None,
     };
     Ok(PyExpr { inner: sign_expr })
 }
@@ -688,6 +703,7 @@ fn power(expr: &PyExpr, exponent: f64) -> PyResult<PyExpr> {
     let power_expr = Expr::FunctionCall {
         name: "power".to_string(),
         args: vec![expr.inner.clone(), Expr::Literal(Literal::Float(exponent))],
+        freq: None,
     };
     Ok(PyExpr { inner: power_expr })
 }
@@ -702,6 +718,7 @@ fn ts_sum(expr: &PyExpr, window: usize) -> PyResult<PyExpr> {
             expr.inner.clone(),
             Expr::Literal(Literal::Integer(window as i64)),
         ],
+        freq: None,
     };
     Ok(PyExpr { inner: ts_sum_expr })
 }
@@ -716,6 +733,7 @@ fn ts_count(expr: &PyExpr, window: usize) -> PyResult<PyExpr> {
             expr.inner.clone(),
             Expr::Literal(Literal::Integer(window as i64)),
         ],
+        freq: None,
     };
     Ok(PyExpr {
         inner: ts_count_expr,
@@ -731,6 +749,7 @@ fn ts_max(expr: &PyExpr, window: usize) -> PyResult<PyExpr> {
             expr.inner.clone(),
             Expr::Literal(Literal::Integer(window as i64)),
         ],
+        freq: None,
     };
     Ok(PyExpr { inner: ts_max_expr })
 }
@@ -744,6 +763,7 @@ fn ts_min(expr: &PyExpr, window: usize) -> PyResult<PyExpr> {
             expr.inner.clone(),
             Expr::Literal(Literal::Integer(window as i64)),
         ],
+        freq: None,
     };
     Ok(PyExpr { inner: ts_min_expr })
 }
@@ -1029,6 +1049,12 @@ struct PyBacktestResult {
     #[pyo3(get)]
     long_short_cum_return: f64,
     #[pyo3(get)]
+    long_short_cum_returns: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    long_cum_returns: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    short_cum_returns: Py<PyArray1<f64>>,
+    #[pyo3(get)]
     ic_series: Py<PyArray1<f64>>,
     #[pyo3(get)]
     ic_mean: f64,
@@ -1064,6 +1090,9 @@ impl From<BacktestResult> for PyBacktestResult {
             group_cum_returns: result.group_cum_returns.into_pyarray(py).into(),
             long_short_returns: result.long_short_returns.into_pyarray(py).into(),
             long_short_cum_return: result.long_short_cum_return,
+            long_short_cum_returns: result.long_short_cum_returns.into_pyarray(py).into(),
+            long_cum_returns: result.long_cum_returns.into_pyarray(py).into(),
+            short_cum_returns: result.short_cum_returns.into_pyarray(py).into(),
             ic_series: result.ic_series.into_pyarray(py).into(),
             ic_mean: result.ic_mean,
             ic_ir: result.ic_ir,

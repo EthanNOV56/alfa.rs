@@ -10,6 +10,7 @@ use ndarray::{Array1, Array2};
 use rayon::prelude::*;
 use std::f64::NAN;
 
+use crate::data::layer::PriceMatrix;
 use crate::WeightMethod;
 
 /// Return type for automatic return computation
@@ -142,8 +143,14 @@ pub struct BacktestResult {
     pub group_cum_returns: Array2<f64>,
     /// Long-short daily returns
     pub long_short_returns: Array1<f64>,
-    /// Long-short cumulative return
+    /// Long-short cumulative return (final scalar)
     pub long_short_cum_return: f64,
+    /// Long-short cumulative NAV curve [n_days-1], starts at 1.0
+    pub long_short_cum_returns: Array1<f64>,
+    /// Long leg cumulative NAV curve [n_days-1]
+    pub long_cum_returns: Array1<f64>,
+    /// Short leg cumulative NAV curve [n_days-1]
+    pub short_cum_returns: Array1<f64>,
     /// IC series
     pub ic_series: Array1<f64>,
     /// IC mean
@@ -164,6 +171,51 @@ pub struct BacktestResult {
     pub long_returns: Array1<f64>,
     /// Short-only returns
     pub short_returns: Array1<f64>,
+}
+
+impl BacktestResult {
+    /// Write group NAV curves to CSV, matching Python `get_nvs_eq_weights` output format.
+    ///
+    /// Produces `date,nv,group` rows with cumulative NAV starting from 1.0.
+    pub fn write_nav_csv<W: std::io::Write>(
+        &self,
+        wtr: &mut csv::Writer<W>,
+        dates: &[i64],
+    ) -> csv::Result<()> {
+        let fmt_date = |d: i64| -> String {
+            let yr = d / 10000;
+            let mo = (d % 10000) / 100;
+            let dy = d % 100;
+            format!("{:04}-{:02}-{:02}", yr, mo, dy)
+        };
+        for g in 0..self.group_returns.ncols() {
+            wtr.write_record(&[&fmt_date(dates[0]), "1.0", &g.to_string()])?;
+            for t in 0..self.group_returns.nrows() {
+                let nv = 1.0 + self.group_cum_returns[[t, g]];
+                let date_idx = t + 1;
+                if date_idx < dates.len() {
+                    wtr.write_record(&[
+                        &fmt_date(dates[date_idx]),
+                        &nv.to_string(),
+                        &g.to_string(),
+                    ])?;
+                }
+            }
+        }
+        // Write long-short NAV curve
+        wtr.write_record(&[&fmt_date(dates[0]), "1.0", "long_short"])?;
+        for t in 0..self.long_short_cum_returns.len() {
+            let date_idx = t + 1;
+            if date_idx < dates.len() {
+                wtr.write_record(&[
+                    &fmt_date(dates[date_idx]),
+                    &self.long_short_cum_returns[t].to_string(),
+                    "long_short",
+                ])?;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Backtest engine with enhanced features
@@ -270,61 +322,96 @@ impl BacktestEngine {
             self.config.weight_method,
         );
 
-        // Compute group returns by calling compute_portfolio_return for each group
+        // Compute group returns matching Python get_nvs_eq_weights:
+        // - Lagged signal: yesterday's factor → today's positions
+        // - Intraday return: positions entered at open, marked at close
+        // - Share-based NAV tracking with fee on share deltas
         let mut group_returns = Array2::<f64>::zeros((n_days - 1, quantiles));
+        let fee_rate = self.config.fee_config.commission_rate
+            + self.config.fee_config.slippage.normal_slippage_rate;
 
         for group in 0..quantiles {
-            // Extract weights for this specific group
-            let subgroup_weights =
-                Self::compute_subgroup_weights(&group_weights, &group_labels, group);
+            let mut nv = 1.0f64; // cumulative NAV, starts at 1.0
+            let mut prev_shares: Vec<f64> = vec![0.0f64; n_assets];
 
-            // Compute returns for this group using adjusted prices
-            let group_portfolio_returns = Self::compute_portfolio_return(
-                &subgroup_weights,
-                &close,
-                &open,
-                &vwap,
-                &adj_factor,
-                self.config.fee_config.commission_rate,
-                self.config.fee_config.slippage.normal_slippage_rate,
-                &tradable,
-            );
-
-            // Extract returns (skip first day which is always 0)
             for day in 1..n_days {
-                group_returns[[day - 1, group]] = group_portfolio_returns[[day, 0]];
+                // Pool: stocks in this group YESTERDAY (lagged signal) AND tradable today
+                let mut pool_count = 0usize;
+                let mut in_pool = vec![false; n_assets];
+                for a in 0..n_assets {
+                    if group_labels[[day - 1, a]] == group + 1
+                        && tradable[[day, a]] > 0.5
+                    {
+                        in_pool[a] = true;
+                        pool_count += 1;
+                    }
+                }
+
+                if pool_count == 0 {
+                    group_returns[[day - 1, group]] = 0.0;
+                    continue;
+                }
+
+                // Value of previous positions at today's open
+                let mut asset = 0.0f64;
+                for a in 0..n_assets {
+                    if tradable[[day, a]] > 0.5 {
+                        let s = prev_shares[a];
+                        if s.is_finite() && s != 0.0 {
+                            asset += s * open[[day, a]];
+                        }
+                    }
+                }
+                if asset <= 0.0 {
+                    asset = nv;
+                }
+
+                // Equal dollar allocation per pool stock
+                let per_stock = asset / pool_count as f64;
+
+                // New shares: enter at open
+                let mut new_shares: Vec<f64> = vec![0.0f64; n_assets];
+                let mut asset_close = 0.0f64;
+                let mut fee_dollars = 0.0f64;
+
+                for a in 0..n_assets {
+                    if in_pool[a] {
+                        let op = open[[day, a]];
+                        if op.is_finite() && op > 0.0 {
+                            new_shares[a] = per_stock / op;
+                            let cl = close[[day, a]];
+                            if cl.is_finite() {
+                                asset_close += new_shares[a] * cl;
+                            }
+                        }
+                    } else if tradable[[day, a]] <= 0.5 {
+                        // Not tradable: carry forward
+                        new_shares[a] = prev_shares[a];
+                        let cl = close[[day, a]];
+                        if cl.is_finite() {
+                            asset_close += new_shares[a] * cl;
+                        }
+                    }
+                    // else: tradable but not in pool → sell (shares = 0)
+
+                    let delta = new_shares[a] - prev_shares[a];
+                    let vp = vwap[[day, a]];
+                    if delta.abs() > 1e-15 && vp.is_finite() && vp > 0.0 {
+                        fee_dollars += delta.abs() * fee_rate * vp;
+                    }
+                }
+
+                let new_nv = (asset_close - fee_dollars).max(0.0);
+                group_returns[[day - 1, group]] = new_nv / nv - 1.0;
+                nv = new_nv;
+                prev_shares = new_shares;
             }
         }
 
-        // Compute long/short weights using the new function
-        let long_short_weights = Self::compute_long_short_weights(
-            &group_weights,
-            &group_labels,
-            quantiles,
-            self.config.long_top_n,
-            self.config.short_top_n,
-            &self.config.position_config,
-        );
-
-        // Compute long/short returns using adjusted prices
-        let long_short_portfolio_returns = Self::compute_portfolio_return(
-            &long_short_weights,
-            &close,
-            &open,
-            &vwap,
-            &adj_factor,
-            self.config.fee_config.commission_rate,
-            self.config.fee_config.slippage.normal_slippage_rate,
-            &tradable,
-        );
-
-        // Extract long/short returns
+        // Compute long/short returns directly from per-group returns
         let mut long_short_returns = Array1::<f64>::zeros(n_days - 1);
-        for day in 1..n_days {
-            long_short_returns[day - 1] = long_short_portfolio_returns[[day, 0]];
-        }
 
-        // Compute long returns (top quantiles)
+        // Long returns (top quantiles)
         let mut long_returns = Array1::<f64>::zeros(n_days - 1);
         let long_groups: Vec<usize> = (quantiles - self.config.long_top_n..quantiles).collect();
         for day in 0..(n_days - 1) {
@@ -336,7 +423,7 @@ impl BacktestEngine {
                 sum / self.config.long_top_n as f64 * self.config.position_config.long_ratio;
         }
 
-        // Compute short returns (bottom quantiles)
+        // Short returns (bottom quantiles)
         let mut short_returns = Array1::<f64>::zeros(n_days - 1);
         let short_groups: Vec<usize> = (0..self.config.short_top_n).collect();
         for day in 0..(n_days - 1) {
@@ -348,10 +435,20 @@ impl BacktestEngine {
                 -sum / self.config.short_top_n as f64 * self.config.position_config.short_ratio;
         }
 
+        // Long-short = long + short
+        for day in 0..(n_days - 1) {
+            long_short_returns[day] = long_returns[day] + short_returns[day];
+        }
+
         // Compute IC series
         let (ic_series, ic_mean, ic_ir) = Self::compute_ic_series(&factor, &returns)?;
 
-        // Compute cumulative returns
+        // Compute cumulative NAV curves from daily returns
+        let long_short_cum_returns = Self::cumulative_nav_curve(&long_short_returns);
+        let long_cum_returns = Self::cumulative_nav_curve(&long_returns);
+        let short_cum_returns = Self::cumulative_nav_curve(&short_returns);
+
+        // Compute final cumulative return (log method for numerical stability)
         let long_short_cum_return = Self::compute_total_return_log(&long_short_returns);
 
         // Compute additional metrics
@@ -369,6 +466,9 @@ impl BacktestEngine {
             group_cum_returns,
             long_short_returns,
             long_short_cum_return,
+            long_short_cum_returns,
+            long_cum_returns,
+            short_cum_returns,
             ic_series,
             ic_mean,
             ic_ir,
@@ -380,6 +480,28 @@ impl BacktestEngine {
             long_returns,
             short_returns,
         })
+    }
+
+    /// Run backtest with a `PriceMatrix` instead of individual arrays.
+    ///
+    /// `adj_factor` is set to all-1.0 because `query_price_matrix()` already
+    /// forward-adjusts prices.
+    pub fn run_with_prices(
+        &self,
+        factor: Array2<f64>,
+        prices: &PriceMatrix,
+    ) -> Result<BacktestResult, String> {
+        let (n_dates, n_syms) = factor.dim();
+        let adj_factor = Array2::<f64>::from_elem((n_dates, n_syms), 1.0);
+        self.run(
+            factor,
+            prices.returns.clone(),
+            adj_factor,
+            prices.close.clone(),
+            prices.open.clone(),
+            prices.vwap.clone(),
+            prices.tradable.clone(),
+        )
     }
 
     // /// Compute weight matrix from factor using quantile-based approach
@@ -481,12 +603,28 @@ impl BacktestEngine {
 
             valid_data.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
 
-            let n_valid = valid_data.len();
-            let group_size = n_valid / quantiles;
+            let n_valid = valid_data.len() as f64;
+            let bins = quantiles as f64;
 
-            for (group_idx, &(asset_idx, _)) in valid_data.iter().enumerate() {
-                let quantile = (group_idx / group_size).min(quantiles - 1) + 1;
-                groups[[day, asset_idx]] = quantile;
+            // Use average-rank tie-breaking, matching Python:
+            //   rank = cap_neued.rank(method="average")
+            //   qcut = floor((rank - 1) * bins / n_valid).clip(0, bins-1)
+            let mut i = 0usize;
+            while i < valid_data.len() {
+                // Find range of tied values
+                let mut j = i + 1;
+                while j < valid_data.len() && valid_data[j].1 == valid_data[i].1 {
+                    j += 1;
+                }
+                // Average 1-based rank for tied values: (first + last) / 2
+                let avg_rank = (i + 1 + j) as f64 / 2.0;
+                let q = ((avg_rank - 1.0) * bins / n_valid).floor() as usize;
+                let q = q.min(quantiles - 1) + 1; // 1-based group label
+                for k in i..j {
+                    let (asset_idx, _) = valid_data[k];
+                    groups[[day, asset_idx]] = q;
+                }
+                i = j;
             }
         }
 
@@ -912,6 +1050,24 @@ impl BacktestEngine {
         max_drawdown
     }
 
+    /// Build cumulative NAV curve from daily returns.
+    ///
+    /// Each element at index `t` equals the cumulative product of `(1 + r)` from
+    /// day 0 to day `t`, starting at 1.0. NaN/infinite returns are skipped (NAV
+    /// stays flat for that day).
+    fn cumulative_nav_curve(returns: &Array1<f64>) -> Array1<f64> {
+        let n = returns.len();
+        let mut curve = Array1::zeros(n);
+        let mut cum = 1.0;
+        for (i, &r) in returns.iter().enumerate() {
+            if r.is_finite() {
+                cum *= 1.0 + r;
+            }
+            curve[i] = cum;
+        }
+        curve
+    }
+
     /// Compute total return using log returns for numerical stability
     fn compute_total_return_log(returns: &Array1<f64>) -> f64 {
         let mut log_sum = 0.0;
@@ -1110,7 +1266,7 @@ impl BacktestEngine {
             if w != 0.0 && tradable_0[symbol] > 0.5 {
                 let shares = w / adj_open_0[symbol];
                 asset_0 += shares * adj_close_0[symbol];
-                fee_0 += w.abs() * adj_vwap_0[symbol] * total_cost;
+                fee_0 += w.abs() * total_cost;
             }
         }
         let nav_0 = if asset_0 > 0.0 { asset_0 - fee_0 } else { 1.0 };
@@ -1182,8 +1338,7 @@ impl BacktestEngine {
                         } else {
                             (fee + slippage)  // Sell: same rates
                         };
-                        // delta * rate gives dollar change, multiplied by vwap gives actual fee
-                        fee += weight_change.abs() * fee_rate * cv;
+                        fee += weight_change.abs() * fee_rate;
                     }
                 }
 

@@ -606,11 +606,17 @@ class BacktestResult:
         turnover: float = 0.0,
         long_returns: np.ndarray = None,
         short_returns: np.ndarray = None,
+        long_short_cum_returns: np.ndarray = None,
+        long_cum_returns: np.ndarray = None,
+        short_cum_returns: np.ndarray = None,
     ):
         self.group_returns = group_returns
         self.group_cum_returns = group_cum_returns
         self.long_short_returns = long_short_returns
         self.long_short_cum_return = long_short_cum_return
+        self.long_short_cum_returns = long_short_cum_returns if long_short_cum_returns is not None else np.array([])
+        self.long_cum_returns = long_cum_returns if long_cum_returns is not None else np.array([])
+        self.short_cum_returns = short_cum_returns if short_cum_returns is not None else np.array([])
         self.ic_series = ic_series
         self.ic_mean = ic_mean
         self.ic_ir = ic_ir
@@ -642,6 +648,9 @@ class BacktestResult:
             turnover=getattr(rust_result, "turnover", 0.0),
             long_returns=getattr(rust_result, "long_returns", np.array([])),
             short_returns=getattr(rust_result, "short_returns", np.array([])),
+            long_short_cum_returns=getattr(rust_result, "long_short_cum_returns", np.array([])),
+            long_cum_returns=getattr(rust_result, "long_cum_returns", np.array([])),
+            short_cum_returns=getattr(rust_result, "short_cum_returns", np.array([])),
         )
 
     def to_dict(self) -> Dict[str, Union[np.ndarray, float]]:
@@ -651,6 +660,9 @@ class BacktestResult:
             "group_cum_returns": self.group_cum_returns,
             "long_short_returns": self.long_short_returns,
             "long_short_cum_return": self.long_short_cum_return,
+            "long_short_cum_returns": self.long_short_cum_returns,
+            "long_cum_returns": self.long_cum_returns,
+            "short_cum_returns": self.short_cum_returns,
             "ic_series": self.ic_series,
             "ic_mean": self.ic_mean,
             "ic_ir": self.ic_ir,
@@ -830,11 +842,13 @@ def quantile_backtest(
             weights,
         )
 
-    # Create arrays for adj_factor, close, vwap if not provided (default to ones)
+    # Create arrays for adj_factor, close, open, vwap, tradable if not provided (default to ones)
     n_days, n_assets = factor.shape
     adj_factor = np.ones((n_days, n_assets))
     close = np.ones((n_days, n_assets))
+    open_arr = np.ones((n_days, n_assets))
     vwap = np.ones((n_days, n_assets))
+    tradable = np.ones((n_days, n_assets))
 
     rust_result = _quantile_backtest(
         factor,
@@ -846,7 +860,9 @@ def quantile_backtest(
         commission_rate,
         adj_factor,
         close,
+        open_arr,
         vwap,
+        tradable,
     )
     return BacktestResult.from_rust_result(rust_result)
 

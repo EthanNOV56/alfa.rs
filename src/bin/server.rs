@@ -744,7 +744,7 @@ async fn run_backtest(
             }
 
             // Compute factor using vectorized batch computation
-            let results = registry.compute_batch_vectorized(&["factor"], &data_array1, true)
+            let results = registry.compute_batch_for_freq(&["factor"], &data_array1, true, false)
                 .map_err(|e| {
                     (
                         StatusCode::BAD_REQUEST,
@@ -1070,15 +1070,8 @@ fn convert_to_nav_data(
         quantiles_nav.push(nav);
     }
 
-    // Long-short NAV
-    let long_short_nav: Vec<f64> = result
-        .long_short_returns
-        .iter()
-        .scan(1.0f64, |nav, &r| {
-            *nav = *nav * (1.0 + r);
-            Some(*nav)
-        })
-        .collect();
+    // Long-short NAV (pre-computed curve)
+    let long_short_nav: Vec<f64> = result.long_short_cum_returns.to_vec();
 
     // Benchmark NAV (equal-weighted market)
     // This is a simplification - in real use would need the original returns
@@ -1252,7 +1245,7 @@ async fn compute_factor(
         }
 
         // Compute the factor using vectorized batch computation
-        match registry.compute_batch_vectorized(&[factor_name], &data_array1, true) {
+        match registry.compute_batch_for_freq(&[factor_name], &data_array1, true, false) {
             Ok(results) => {
                 // Extract the result for our factor
                 let result = results.get(factor_name).ok_or_else(|| {
