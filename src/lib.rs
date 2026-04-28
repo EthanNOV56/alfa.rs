@@ -1018,6 +1018,8 @@ impl PyBacktestEngine {
 #[pyclass]
 struct PyBacktestResult {
     #[pyo3(get)]
+    dates: Vec<i64>,
+    #[pyo3(get)]
     group_returns: Py<PyArray2<f64>>,
     #[pyo3(get)]
     group_cum_returns: Py<PyArray2<f64>>,
@@ -1063,6 +1065,7 @@ struct PyBacktestResult {
 impl From<BacktestResult> for PyBacktestResult {
     fn from(result: BacktestResult) -> Self {
         pyo3::Python::try_attach(|py| Self {
+            dates: result.dates,
             group_returns: result.group_returns.into_pyarray(py).into(),
             group_cum_returns: result.group_cum_returns.into_pyarray(py).into(),
             long_short_returns: result.long_short_returns.into_pyarray(py).into(),

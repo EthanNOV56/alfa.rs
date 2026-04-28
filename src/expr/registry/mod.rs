@@ -742,45 +742,33 @@ impl FactorRegistry {
 
     /// Compute all registered factors across a year range.
     ///
-    /// Uses `par_iter` internally for parallel year computation.
-    /// Each year gets its own DataLayer clone with the same base filter.
+    /// Processes years sequentially to avoid OOM from parallel 5m data loads.
+    /// Results can be streamed to CSV via `AlfarsLab::run()`.
     pub fn calc(
         &self,
         dl: &DataLayer,
         start_year: i32,
         end_year: i32,
     ) -> Result<FactorPanel, String> {
-        use rayon::prelude::*;
-
-        let years: Vec<i32> = (start_year..=end_year).collect();
         let base_filter = dl.pre_filter().to_string();
-
-        let panels: Vec<FactorPanel> = years
-            .par_iter()
-            .map(|&year| {
-                let start = format!("{}-01-01", year);
-                let end = format!("{}-01-01", year + 1);
-                let pre_filter = format!("{}:{} {}", start, end, base_filter);
-
-                let mut year_dl = DataLayer::new(dl.source().clone());
-                year_dl.set_pre_filter(&pre_filter);
-
-                let slices: Vec<FactorSlice> = self
-                    .compute_cs_pipeline(&mut year_dl)?
-                    .into_values()
-                    .collect();
-
-                Ok::<_, String>(FactorPanel {
-                    factor_names: self.list(),
-                    slices,
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-
         let mut all_slices = Vec::new();
-        for p in panels {
-            all_slices.extend(p.slices);
+
+        for year in start_year..=end_year {
+            let start = format!("{}-01-01", year);
+            let end = format!("{}-01-01", year + 1);
+            let pre_filter = format!("{}:{} {}", start, end, base_filter);
+
+            let mut year_dl = DataLayer::new(dl.source().clone());
+            year_dl.set_pre_filter(&pre_filter);
+
+            let slices: Vec<FactorSlice> = self
+                .compute_cs_pipeline(&mut year_dl)?
+                .into_values()
+                .collect();
+
+            all_slices.extend(slices);
         }
+
         Ok(FactorPanel {
             factor_names: self.list(),
             slices: all_slices,

@@ -236,6 +236,48 @@ pub struct PriceMatrix {
 }
 
 impl PriceMatrix {
+    /// Build a qcut matrix (Option<i32>) aligned with this PriceMatrix from FactorSlices.
+    ///
+    /// Returns `(n_dates, n_symbols)` where each cell is the qcut group (0..9) or `-1`
+    /// (encoded as i32, -1 = None) for symbols with no data.
+    pub fn build_qcut_matrix(
+        &self,
+        slices: &[FactorSlice],
+    ) -> Array2<i32> {
+        let n_dates = self.dates.len();
+        let n_syms = self.symbols.len();
+
+        let mut sym_to_idx: std::collections::HashMap<&str, usize> =
+            std::collections::HashMap::new();
+        for (i, s) in self.symbols.iter().enumerate() {
+            sym_to_idx.insert(s.as_str(), i);
+        }
+
+        let mut date_to_idx: std::collections::HashMap<i64, usize> =
+            std::collections::HashMap::new();
+        for (i, &d) in self.dates.iter().enumerate() {
+            date_to_idx.insert(d, i);
+        }
+
+        let mut mat = Array2::<i32>::from_elem((n_dates, n_syms), -1i32);
+
+        for s in slices {
+            for i in 0..s.groups.len() {
+                let (date, sym_idx) = s.groups[i];
+                if (sym_idx as usize) < s.symbols.len() {
+                    let sym_str = &s.symbols[sym_idx as usize];
+                    if let (Some(&di), Some(&si)) =
+                        (date_to_idx.get(&date), sym_to_idx.get(sym_str.as_str()))
+                    {
+                        mat[[di, si]] = s.qcut[i].unwrap_or(-1i32);
+                    }
+                }
+            }
+        }
+
+        mat
+    }
+
     /// Build a factor matrix aligned with this price matrix from FactorSlices.
     ///
     /// Each `FactorSlice` carries its own symbol list. The returned `Array2<f64>`

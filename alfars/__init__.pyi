@@ -682,6 +682,7 @@ class PyBacktestEngine:
 class PyBacktestResult:
     """Backtest result from Rust engine."""
 
+    dates: List[int]
     group_returns: npt.NDArray[np.float64]
     group_cum_returns: npt.NDArray[np.float64]
     long_short_returns: npt.NDArray[np.float64]

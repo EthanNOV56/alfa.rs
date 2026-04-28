@@ -63,10 +63,79 @@ impl AlfarsLab {
         self.registry.calc(&self.dl, start_year, end_year)
     }
 
+    /// Compute + write CSV + backtest in one pass.
+    ///
+    /// Streams CSV per-year (avoids OOM), then runs backtest.
+    pub fn run(
+        &mut self,
+        start_year: i32,
+        end_year: i32,
+        csv_path: &str,
+    ) -> Result<BacktestResult, String> {
+        use crate::expr::registry::config::FactorSlice;
+        use std::time::Instant;
+
+        let base_filter = self.dl.pre_filter().to_string();
+        let mut all_slices: Vec<FactorSlice> = Vec::new();
+
+        // Open CSV writer, write header once
+        let mut wtr = csv::Writer::from_path(csv_path)
+            .map_err(|e| format!("CSV: {}", e))?;
+        FactorSlice::write_header(&mut wtr);
+
+        let t0 = Instant::now();
+        for year in start_year..=end_year {
+            let start = format!("{}-01-01", year);
+            let end = format!("{}-01-01", year + 1);
+            let pre_filter = format!("{}:{} {}", start, end, base_filter);
+
+            let mut year_dl = DataLayer::new(self.source.clone());
+            year_dl.set_pre_filter(&pre_filter);
+
+            let results = self.registry.compute_cs_pipeline(&mut year_dl)
+                .map_err(|e| format!("Year {}: {}", year, e))?;
+
+            for (_name, slice) in &results {
+                slice.write_to(&mut wtr)
+                    .map_err(|e| format!("Year {} CSV: {}", year, e))?;
+            }
+
+            all_slices.extend(results.into_values());
+        }
+        wtr.flush().map_err(|e| format!("CSV flush: {}", e))?;
+        let compute_secs = t0.elapsed().as_secs_f64();
+
+        eprintln!("Compute: {:.1}s over {} years", compute_secs, end_year - start_year + 1);
+
+        // Backtest — set full date range on dl first
+        let start_full = format!("{}-01-01", start_year);
+        let end_full = format!("{}-01-01", end_year + 1);
+        self.dl.set_pre_filter(&format!("{}:{} {}", start_full, end_full, base_filter));
+
+        let t1 = Instant::now();
+        let prices = self.dl.query_price_matrix()
+            .map_err(|e| format!("Price query: {:?}", e))?;
+        let panel = FactorPanel {
+            factor_names: self.registry.list(),
+            slices: all_slices,
+        };
+        let factor_mat = panel.build_factor_matrix(&prices);
+        let qcut_mat = prices.build_qcut_matrix(&panel.slices);
+        let result = BacktestEngine::with_config(self.backtest_config.clone())
+            .run_with_qcut(factor_mat, &qcut_mat, &prices)?;
+        let bt_secs = t1.elapsed().as_secs_f64();
+
+        eprintln!(
+            "Backtest: {:.1}s (price query + factor build + engine)",
+            bt_secs
+        );
+        eprintln!("Total: {:.1}s", compute_secs + bt_secs);
+        Ok(result)
+    }
+
     /// Run backtest on a computed panel.
     ///
-    /// Queries prices internally via DataLayer, builds the factor matrix,
-    /// and runs the backtest engine.
+    /// The DataLayer filter MUST already include the date range before calling.
     pub fn backtest(&mut self, panel: &FactorPanel) -> Result<BacktestResult, String> {
         let prices = self
             .dl

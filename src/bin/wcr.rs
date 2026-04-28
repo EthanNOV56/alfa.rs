@@ -1,6 +1,4 @@
 //! WCR (Weighted Close Rate) factor — pipeline + backtest binary.
-//!
-//! register → calc → backtest — no glue code.
 
 use alfars::WeightMethod;
 use alfars::backtest::{BacktestConfig, FeeConfig};
@@ -33,14 +31,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
 
     lab.register("wcr", WCR_EXPR)?;
-    let panel = lab.calc(start_year, end_year)?;
-    panel.to_csv(".tests/wcr_output.csv")?;
 
-    let result = lab.backtest(&panel)?;
+    let result = lab.run(start_year, end_year, ".tests/wcr_output.csv")?;
+    result.to_csv(".tests/backtest_nav_rs.csv")?;
+
     println!(
-        "IC mean: {:.6}  Sharpe: {:.4}  Turnover: {:.4}",
-        result.ic_mean, result.sharpe_ratio, result.turnover
+        "IC mean: {:.6}  IC IR: {:.4}  Sharpe: {:.4}  MaxDD: {:.4}  Turnover: {:.4}",
+        result.ic_mean, result.ic_ir, result.sharpe_ratio, result.max_drawdown, result.turnover
     );
-
     Ok(())
 }

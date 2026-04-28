@@ -137,6 +137,8 @@ impl Default for BacktestConfig {
 /// Enhanced backtest result
 #[derive(Debug, Clone)]
 pub struct BacktestResult {
+    /// Trading dates (YYYYMMDD), length n_days
+    pub dates: Vec<i64>,
     /// Group returns (quantile-based)
     pub group_returns: Array2<f64>,
     /// Group cumulative returns
@@ -174,14 +176,19 @@ pub struct BacktestResult {
 }
 
 impl BacktestResult {
-    /// Write group NAV curves to CSV, matching Python `get_nvs_eq_weights` output format.
-    ///
-    /// Produces `date,nv,group` rows with cumulative NAV starting from 1.0.
+    /// Write NAV curves to CSV file (date,nv,group).
+    pub fn to_csv<P: AsRef<std::path::Path>>(&self, path: P) -> csv::Result<()> {
+        let mut wtr = csv::Writer::from_path(&path)?;
+        self.write_nav_csv(&mut wtr)
+    }
+
+    /// Write group NAV curves to CSV writer.
     pub fn write_nav_csv<W: std::io::Write>(
         &self,
         wtr: &mut csv::Writer<W>,
-        dates: &[i64],
     ) -> csv::Result<()> {
+        let dates = &self.dates;
+        wtr.write_record(&["date", "nv", "group"])?;
         let fmt_date = |d: i64| -> String {
             let yr = d / 10000;
             let mo = (d % 10000) / 100;
@@ -316,97 +323,15 @@ impl BacktestEngine {
 
         // Compute group weights based on factor values
         let group_weights = Self::compute_group_weights(
-            &factor,
-            &group_labels,
-            quantiles,
-            self.config.weight_method,
+            &factor, &group_labels, quantiles, self.config.weight_method,
         );
 
-        // Compute group returns matching Python get_nvs_eq_weights:
-        // - Lagged signal: yesterday's factor → today's positions
-        // - Intraday return: positions entered at open, marked at close
-        // - Share-based NAV tracking with fee on share deltas
-        let mut group_returns = Array2::<f64>::zeros((n_days - 1, quantiles));
         let fee_rate = self.config.fee_config.commission_rate
             + self.config.fee_config.slippage.normal_slippage_rate;
-
-        for group in 0..quantiles {
-            let mut nv = 1.0f64; // cumulative NAV, starts at 1.0
-            let mut prev_shares: Vec<f64> = vec![0.0f64; n_assets];
-
-            for day in 1..n_days {
-                // Pool: stocks in this group YESTERDAY (lagged signal) AND tradable today
-                let mut pool_count = 0usize;
-                let mut in_pool = vec![false; n_assets];
-                for a in 0..n_assets {
-                    if group_labels[[day - 1, a]] == group + 1
-                        && tradable[[day, a]] > 0.5
-                    {
-                        in_pool[a] = true;
-                        pool_count += 1;
-                    }
-                }
-
-                if pool_count == 0 {
-                    group_returns[[day - 1, group]] = 0.0;
-                    continue;
-                }
-
-                // Value of previous positions at today's open
-                let mut asset = 0.0f64;
-                for a in 0..n_assets {
-                    if tradable[[day, a]] > 0.5 {
-                        let s = prev_shares[a];
-                        if s.is_finite() && s != 0.0 {
-                            asset += s * open[[day, a]];
-                        }
-                    }
-                }
-                if asset <= 0.0 {
-                    asset = nv;
-                }
-
-                // Equal dollar allocation per pool stock
-                let per_stock = asset / pool_count as f64;
-
-                // New shares: enter at open
-                let mut new_shares: Vec<f64> = vec![0.0f64; n_assets];
-                let mut asset_close = 0.0f64;
-                let mut fee_dollars = 0.0f64;
-
-                for a in 0..n_assets {
-                    if in_pool[a] {
-                        let op = open[[day, a]];
-                        if op.is_finite() && op > 0.0 {
-                            new_shares[a] = per_stock / op;
-                            let cl = close[[day, a]];
-                            if cl.is_finite() {
-                                asset_close += new_shares[a] * cl;
-                            }
-                        }
-                    } else if tradable[[day, a]] <= 0.5 {
-                        // Not tradable: carry forward
-                        new_shares[a] = prev_shares[a];
-                        let cl = close[[day, a]];
-                        if cl.is_finite() {
-                            asset_close += new_shares[a] * cl;
-                        }
-                    }
-                    // else: tradable but not in pool → sell (shares = 0)
-
-                    let delta = new_shares[a] - prev_shares[a];
-                    let vp = vwap[[day, a]];
-                    if delta.abs() > 1e-15 && vp.is_finite() && vp > 0.0 {
-                        fee_dollars += delta.abs() * fee_rate * vp;
-                    }
-                }
-
-                let new_nv = (asset_close - fee_dollars).max(0.0);
-                group_returns[[day - 1, group]] = new_nv / nv - 1.0;
-                nv = new_nv;
-                prev_shares = new_shares;
-            }
-        }
+        let group_returns = Self::simulate_groups(
+            &group_labels, quantiles, n_days, n_assets,
+            &tradable, &open, &close, &vwap, fee_rate,
+        )?;
 
         // Compute long/short returns directly from per-group returns
         let mut long_short_returns = Array1::<f64>::zeros(n_days - 1);
@@ -462,6 +387,7 @@ impl BacktestEngine {
         let group_cum_returns = Self::compute_cumulative_returns(&group_returns);
 
         Ok(BacktestResult {
+            dates: vec![],
             group_returns,
             group_cum_returns,
             long_short_returns,
@@ -482,6 +408,39 @@ impl BacktestEngine {
         })
     }
 
+    /// Run backtest with a `PriceMatrix` and pre-computed qcut matrix.
+    ///
+    /// Uses the qcut values directly instead of recomputing quantile groups.
+    /// qcut[d][s] = group (0..quantiles-1) or -1 for NaN/unassigned.
+    pub fn run_with_qcut(
+        &self,
+        factor: Array2<f64>,
+        qcut: &Array2<i32>,
+        prices: &PriceMatrix,
+    ) -> Result<BacktestResult, String> {
+        let (n_days, n_assets) = factor.dim();
+        let quantiles = self.config.quantiles;
+
+        // Build group_labels from qcut (1-indexed, 0 for -1/no-group)
+        let mut group_labels = Array2::<usize>::zeros((n_days, n_assets));
+        for d in 0..n_days {
+            for a in 0..n_assets {
+                let g = qcut[[d, a]];
+                if g >= 0 {
+                    group_labels[[d, a]] = g as usize + 1; // 1-indexed
+                }
+            }
+        }
+
+        let adj_factor = Array2::<f64>::from_elem((n_days, n_assets), 1.0);
+        self.run_with_labels(
+            factor, prices, &group_labels, quantiles,
+            &prices.returns, &adj_factor,
+            &prices.close, &prices.open,
+            &prices.vwap, &prices.tradable,
+        )
+    }
+
     /// Run backtest with a `PriceMatrix` instead of individual arrays.
     ///
     /// `adj_factor` is set to all-1.0 because `query_price_matrix()` already
@@ -493,7 +452,7 @@ impl BacktestEngine {
     ) -> Result<BacktestResult, String> {
         let (n_dates, n_syms) = factor.dim();
         let adj_factor = Array2::<f64>::from_elem((n_dates, n_syms), 1.0);
-        self.run(
+        let mut result = self.run(
             factor,
             prices.returns.clone(),
             adj_factor,
@@ -501,7 +460,9 @@ impl BacktestEngine {
             prices.open.clone(),
             prices.vwap.clone(),
             prices.tradable.clone(),
-        )
+        )?;
+        result.dates = prices.dates.clone();
+        Ok(result)
     }
 
     /// Multi-factor equal-weight combination backtest.
@@ -558,7 +519,7 @@ impl BacktestEngine {
         }
         let (n_dates, n_syms) = factors[0].dim();
         let adj_factor = Array2::<f64>::from_elem((n_dates, n_syms), 1.0);
-        self.run_multi(
+        let mut result = self.run_multi(
             factors,
             prices.returns.clone(),
             adj_factor,
@@ -566,7 +527,9 @@ impl BacktestEngine {
             prices.open.clone(),
             prices.vwap.clone(),
             prices.tradable.clone(),
-        )
+        )?;
+        result.dates = prices.dates.clone();
+        Ok(result)
     }
 
     // /// Compute weight matrix from factor using quantile-based approach
@@ -694,6 +657,202 @@ impl BacktestEngine {
         }
 
         Ok(groups)
+    }
+
+    /// Simulate per-group NAV using pre-computed group labels.
+    ///
+    /// Shared between `run()` (auto-computed labels) and `run_with_labels()`
+    /// (pre-computed qcut).
+    fn simulate_groups(
+        group_labels: &Array2<usize>,
+        quantiles: usize,
+        n_days: usize,
+        n_assets: usize,
+        tradable: &Array2<f64>,
+        open: &Array2<f64>,
+        close: &Array2<f64>,
+        vwap: &Array2<f64>,
+        fee_rate: f64,
+    ) -> Result<Array2<f64>, String> {
+        let mut group_returns = Array2::<f64>::zeros((n_days - 1, quantiles));
+
+        for group in 0..quantiles {
+            let mut nv = 1.0f64;
+            let mut prev_shares: Vec<f64> = vec![0.0f64; n_assets];
+
+            for day in 1..n_days {
+                if day == 1 && group == 0 {
+                    let mut cnt = 0;
+                    for a in 0..n_assets {
+                        if group_labels[[0,a]] == 1 {
+                            cnt += 1;
+                            if cnt <= 3 {
+                                eprintln!("[DEBUG] sym[{}] in g0: tradable={} open={:.4} vwap={:.4} close={:.4}",
+                                    a, tradable[[1,a]], open[[1,a]], vwap[[1,a]], close[[1,a]]);
+                            }
+                        }
+                    }
+                    eprintln!("[DEBUG] Day1 g0 pool_count={}", cnt);
+                }
+                let mut pool_count = 0usize;
+                let mut in_pool = vec![false; n_assets];
+                for a in 0..n_assets {
+                    if group_labels[[day - 1, a]] == group + 1
+                        && tradable[[day, a]] > 0.5
+                    {
+                        in_pool[a] = true;
+                        pool_count += 1;
+                    }
+                }
+
+                // Compute asset from previous positions at today's open
+                let mut asset = 0.0f64;
+                for a in 0..n_assets {
+                    if tradable[[day, a]] > 0.5 {
+                        let s = prev_shares[a];
+                        if s.is_finite() && s != 0.0 {
+                            asset += s * open[[day, a]];
+                        }
+                    }
+                }
+                if asset <= 0.0 {
+                    asset = nv;
+                }
+
+                if pool_count == 0 {
+                    // No pool: carry forward ALL positions, compute close value
+                    let mut asset_close = 0.0f64;
+                    for a in 0..n_assets {
+                        let cl = close[[day, a]];
+                        if cl.is_finite() && prev_shares[a].is_finite() {
+                            asset_close += prev_shares[a] * cl;
+                        }
+                    }
+                    let new_nv = asset_close.max(0.0);
+                    group_returns[[day - 1, group]] = new_nv / nv - 1.0;
+                    nv = new_nv;
+                    continue;
+                }
+
+                let per_stock = asset / pool_count as f64;
+
+                let mut new_shares: Vec<f64> = vec![0.0f64; n_assets];
+                let mut asset_close = 0.0f64;
+                let mut fee_dollars = 0.0f64;
+
+                for a in 0..n_assets {
+                    if in_pool[a] {
+                        let op = open[[day, a]];
+                        if op.is_finite() && op > 0.0 {
+                            new_shares[a] = per_stock / op;
+                            let cl = close[[day, a]];
+                            if cl.is_finite() {
+                                asset_close += new_shares[a] * cl;
+                            }
+                        }
+                    } else if tradable[[day, a]] <= 0.5 {
+                        new_shares[a] = prev_shares[a];
+                        let cl = close[[day, a]];
+                        if cl.is_finite() {
+                            asset_close += new_shares[a] * cl;
+                        }
+                    }
+
+                    let delta = new_shares[a] - prev_shares[a];
+                    let vp = vwap[[day, a]];
+                    if delta.abs() > 1e-15 && vp.is_finite() && vp > 0.0 {
+                        fee_dollars += delta.abs() * fee_rate * vp;
+                    }
+                }
+
+                let new_nv = (asset_close - fee_dollars).max(0.0);
+                group_returns[[day - 1, group]] = new_nv / nv - 1.0;
+                nv = new_nv;
+                prev_shares = new_shares;
+            }
+        }
+
+        Ok(group_returns)
+    }
+
+    /// Run with pre-computed group_labels (from qcut pipeline).
+    fn run_with_labels(
+        &self,
+        factor: Array2<f64>,
+        prices: &PriceMatrix,
+        group_labels: &Array2<usize>,
+        quantiles: usize,
+        returns: &Array2<f64>,
+        adj_factor: &Array2<f64>,
+        close: &Array2<f64>,
+        open: &Array2<f64>,
+        vwap: &Array2<f64>,
+        tradable: &Array2<f64>,
+    ) -> Result<BacktestResult, String> {
+        let (n_days, n_assets) = factor.dim();
+        let fee_rate = self.config.fee_config.commission_rate
+            + self.config.fee_config.slippage.normal_slippage_rate;
+
+        let group_returns = Self::simulate_groups(
+            group_labels, quantiles, n_days, n_assets,
+            tradable, open, close, vwap, fee_rate,
+        )?;
+
+        let mut long_short_returns = Array1::<f64>::zeros(n_days - 1);
+        let mut long_returns = Array1::<f64>::zeros(n_days - 1);
+        let long_groups: Vec<usize> = (quantiles - self.config.long_top_n..quantiles).collect();
+        for day in 0..(n_days - 1) {
+            let mut sum = 0.0;
+            for &g in &long_groups { sum += group_returns[[day, g]]; }
+            long_returns[day] = sum / self.config.long_top_n as f64 * self.config.position_config.long_ratio;
+        }
+
+        let mut short_returns = Array1::<f64>::zeros(n_days - 1);
+        let short_groups: Vec<usize> = (0..self.config.short_top_n).collect();
+        for day in 0..(n_days - 1) {
+            let mut sum = 0.0;
+            for &g in &short_groups { sum += group_returns[[day, g]]; }
+            short_returns[day] = -sum / self.config.short_top_n as f64 * self.config.position_config.short_ratio;
+        }
+
+        for day in 0..(n_days - 1) {
+            long_short_returns[day] = long_returns[day] + short_returns[day];
+        }
+
+        let (ic_series, ic_mean, ic_ir) = Self::compute_ic_series(&factor, returns)?;
+        let long_short_cum_returns = Self::cumulative_nav_curve(&long_short_returns);
+        let long_cum_returns = Self::cumulative_nav_curve(&long_returns);
+        let short_cum_returns = Self::cumulative_nav_curve(&short_returns);
+        let long_short_cum_return = Self::compute_total_return_log(&long_short_returns);
+        let total_return = long_short_cum_return;
+        let annualized_return = Self::compute_annualized_return(total_return, n_days);
+        let sharpe_ratio = Self::compute_sharpe_ratio(&long_short_returns, n_days);
+        let max_drawdown = Self::compute_max_drawdown(&long_short_returns);
+        let turnover = Self::compute_turnover(group_labels);
+        let group_cum_returns = Self::compute_cumulative_returns(&group_returns);
+
+        let mut result = BacktestResult {
+            dates: prices.dates.clone(),
+            group_returns,
+            group_cum_returns,
+            long_short_returns,
+            long_short_cum_return,
+            long_short_cum_returns,
+            long_cum_returns,
+            short_cum_returns,
+            ic_series,
+            ic_mean,
+            ic_ir,
+            total_return,
+            annualized_return,
+            sharpe_ratio,
+            max_drawdown,
+            turnover,
+            long_returns,
+            short_returns,
+        };
+
+        Ok(result)
     }
 
     /// Compute group weights based on factor values
