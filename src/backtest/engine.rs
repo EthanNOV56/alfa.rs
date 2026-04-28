@@ -681,19 +681,6 @@ impl BacktestEngine {
             let mut prev_shares: Vec<f64> = vec![0.0f64; n_assets];
 
             for day in 1..n_days {
-                if day == 1 && group == 0 {
-                    let mut cnt = 0;
-                    for a in 0..n_assets {
-                        if group_labels[[0,a]] == 1 {
-                            cnt += 1;
-                            if cnt <= 3 {
-                                eprintln!("[DEBUG] sym[{}] in g0: tradable={} open={:.4} vwap={:.4} close={:.4}",
-                                    a, tradable[[1,a]], open[[1,a]], vwap[[1,a]], close[[1,a]]);
-                            }
-                        }
-                    }
-                    eprintln!("[DEBUG] Day1 g0 pool_count={}", cnt);
-                }
                 let mut pool_count = 0usize;
                 let mut in_pool = vec![false; n_assets];
                 for a in 0..n_assets {
