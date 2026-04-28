@@ -5,7 +5,7 @@
 use crate::data::clickhouse::ClickHouseSource;
 use crate::data::source::{DataError, QueryFilter};
 use crate::expr::ast::Frequency;
-use crate::expr::registry::config::CsResult;
+use crate::expr::registry::config::FactorSlice;
 use arrow::array::{
     Array, Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, Int8Array,
     PrimitiveArray, StringArray, UInt16Array, UInt32Array, UInt64Array, UInt8Array,
@@ -236,15 +236,13 @@ pub struct PriceMatrix {
 }
 
 impl PriceMatrix {
-    /// Build a factor matrix aligned with this price matrix from CsResults.
+    /// Build a factor matrix aligned with this price matrix from FactorSlices.
     ///
-    /// Each `CsResult` was computed with a year-specific symbol list; `year_syms`
-    /// provides the symbol → index mapping used to encode `CsResult.groups`.
-    /// The returned `Array2<f64>` has shape `[n_dates, n_symbols]` with `f64::NAN`
-    /// where no factor value is available.
+    /// Each `FactorSlice` carries its own symbol list. The returned `Array2<f64>`
+    /// has shape `[n_dates, n_symbols]` with `f64::NAN` where no factor value is available.
     pub fn build_factor_matrix(
         &self,
-        cs_results: &[(CsResult, &[String])],
+        slices: &[FactorSlice],
     ) -> Array2<f64> {
         let n_dates = self.dates.len();
         let n_syms = self.symbols.len();
@@ -263,15 +261,15 @@ impl PriceMatrix {
 
         let mut mat = Array2::<f64>::from_elem((n_dates, n_syms), f64::NAN);
 
-        for (cs, year_syms) in cs_results {
-            for i in 0..cs.groups.len() {
-                let (date, sym_idx) = cs.groups[i];
-                if (sym_idx as usize) < year_syms.len() {
-                    let sym_str = &year_syms[sym_idx as usize];
+        for s in slices {
+            for i in 0..s.groups.len() {
+                let (date, sym_idx) = s.groups[i];
+                if (sym_idx as usize) < s.symbols.len() {
+                    let sym_str = &s.symbols[sym_idx as usize];
                     if let (Some(&di), Some(&si)) =
                         (date_to_idx.get(&date), sym_to_idx.get(sym_str.as_str()))
                     {
-                        mat[[di, si]] = cs.cap_neued[i];
+                        mat[[di, si]] = s.cap_neued[i];
                     }
                 }
             }
@@ -293,6 +291,11 @@ pub struct DataLayer {
 }
 
 impl DataLayer {
+    /// Get a reference to the underlying ClickHouse source.
+    pub fn source(&self) -> &ClickHouseSource {
+        &self.source
+    }
+
     /// Create a new DataLayer from ClickHouseSource
     pub fn new(source: ClickHouseSource) -> Self {
         Self {
@@ -312,6 +315,11 @@ impl DataLayer {
     /// Set the pre_filter string
     pub fn set_pre_filter(&mut self, filter: &str) {
         self.pre_filter = filter.to_string();
+    }
+
+    /// Get the current pre_filter string.
+    pub fn pre_filter(&self) -> &str {
+        &self.pre_filter
     }
 
     /// Clear the internal cache to free memory

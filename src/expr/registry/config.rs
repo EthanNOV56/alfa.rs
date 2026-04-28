@@ -116,15 +116,17 @@ impl FactorResult {
     }
 }
 
-/// Cross-sectional pipeline result for one factor.
-/// All vecs are parallel — same index maps to the same (date, symbol) in `groups`.
+/// Cross-sectional result for one factor × one year.
 ///
-/// Intermediate stages (`raw`, `winsored`, `zscored`, `cap_neued`) are only
-/// available in debug builds.
+/// Self-contained: carries its own name and symbol list.
+/// All vecs are parallel — same index → same (date, symbol) in `groups`.
 #[derive(Debug, Clone)]
-pub struct CsResult {
+pub struct FactorSlice {
+    pub factor_name: String,
     /// (date_int, symbol_idx) keys, sorted by date then symbol
     pub groups: Vec<(i64, i64)>,
+    /// Symbol strings at each index position
+    pub symbols: Vec<String>,
     #[cfg(debug_assertions)]
     pub raw: Vec<f64>,
     #[cfg(debug_assertions)]
@@ -136,52 +138,39 @@ pub struct CsResult {
     pub qcut: Vec<Option<i32>>,
 }
 
-impl CsResult {
+impl FactorSlice {
     /// Write to a CSV file. Overwrites if exists.
-    /// In debug builds, includes all intermediate stages; in release, only `qcut`.
-    pub fn write_csv<P: AsRef<std::path::Path>>(
-        &self,
-        path: P,
-        symbol_list: &[String],
-    ) -> csv::Result<usize> {
+    pub fn write_csv<P: AsRef<std::path::Path>>(&self, path: P) -> csv::Result<()> {
         let mut wtr = csv::Writer::from_path(&path)?;
         Self::write_header(&mut wtr);
-        self.write_rows(&mut wtr, symbol_list)
+        self.write_rows(&mut wtr)?;
+        wtr.flush().map_err(csv::Error::from)
     }
 
-    /// Write to an existing CSV writer (for appending/streaming).
-    /// Does not write a header — call `write_header` first if needed.
-    pub fn write_to<W: std::io::Write>(
-        &self,
-        wtr: &mut csv::Writer<W>,
-        symbol_list: &[String],
-    ) -> csv::Result<usize> {
-        self.write_rows(wtr, symbol_list)
+    /// Write to an existing CSV writer (for appending).
+    pub fn write_to<W: std::io::Write>(&self, wtr: &mut csv::Writer<W>) -> csv::Result<usize> {
+        self.write_rows(wtr)
     }
 
     /// Write the CSV header row to a writer.
     pub fn write_header<W: std::io::Write>(wtr: &mut csv::Writer<W>) {
         #[cfg(debug_assertions)]
         wtr.write_record(&[
-            "symbol", "trading_date", "raw", "winsored", "zscored", "cap_neued", "qcut",
+            "factor", "symbol", "date", "raw", "winsored", "zscored", "cap_neued", "qcut",
         ])
         .ok();
         #[cfg(not(debug_assertions))]
-        wtr.write_record(&["symbol", "trading_date", "cap_neued", "qcut"]).ok();
+        wtr.write_record(&["factor", "symbol", "date", "cap_neued", "qcut"]).ok();
     }
 
-    fn write_rows<W: std::io::Write>(
-        &self,
-        wtr: &mut csv::Writer<W>,
-        symbol_list: &[String],
-    ) -> csv::Result<usize> {
+    fn write_rows<W: std::io::Write>(&self, wtr: &mut csv::Writer<W>) -> csv::Result<usize> {
         for i in 0..self.groups.len() {
             let (date, sym_idx) = self.groups[i];
             let yr = date / 10000;
             let mo = (date % 10000) / 100;
             let dy = date % 100;
             let date_str = format!("{:04}-{:02}-{:02}", yr, mo, dy);
-            let sym = symbol_list
+            let sym = self.symbols
                 .get(sym_idx as usize)
                 .map(|s| s.as_str())
                 .unwrap_or("");
@@ -189,6 +178,7 @@ impl CsResult {
 
             #[cfg(debug_assertions)]
             wtr.write_record(&[
+                &self.factor_name,
                 sym,
                 &date_str,
                 &self.raw[i].to_string(),
@@ -200,11 +190,41 @@ impl CsResult {
 
             #[cfg(not(debug_assertions))]
             wtr.write_record(&[
-                sym, &date_str, &self.cap_neued[i].to_string(), &q,
+                &self.factor_name, sym, &date_str,
+                &self.cap_neued[i].to_string(), &q,
             ])?;
         }
         wtr.flush()?;
         Ok(self.groups.len())
+    }
+}
+
+/// Multi-factor × multi-year panel data, ready for backtest or CSV output.
+///
+/// Returned by `FactorRegistry::calc()`.
+pub struct FactorPanel {
+    pub slices: Vec<FactorSlice>,
+    pub factor_names: Vec<String>,
+}
+
+impl FactorPanel {
+    /// Write all factor values (cap_neued + qcut) to CSV.
+    pub fn to_csv<P: AsRef<std::path::Path>>(&self, path: P) -> csv::Result<()> {
+        let mut wtr = csv::Writer::from_path(&path)?;
+        FactorSlice::write_header(&mut wtr);
+        for s in &self.slices {
+            s.write_to(&mut wtr)?;
+        }
+        wtr.flush().map_err(csv::Error::from)
+    }
+
+    /// Build a (n_dates × n_symbols) factor matrix aligned to the given PriceMatrix.
+    pub fn build_factor_matrix(&self, prices: &crate::data::layer::PriceMatrix) -> ndarray::Array2<f64> {
+        prices.build_factor_matrix(&self.slices)
+    }
+
+    pub fn total_records(&self) -> usize {
+        self.slices.iter().map(|s| s.groups.len()).sum()
     }
 }
 

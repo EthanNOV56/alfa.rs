@@ -7,6 +7,7 @@ pub mod backtest;
 pub mod data;
 pub mod expr;
 pub mod gp;
+pub mod lab;
 pub mod persistence;
 
 use ndarray::Array2;
@@ -40,7 +41,7 @@ fn set_num_threads(n_threads: usize) -> PyResult<()> {
 use crate::backtest::{BacktestEngine, BacktestResult, FeeConfig, PositionConfig, SlippageConfig};
 use crate::data::clickhouse::ClickHouseSource;
 use crate::data::layer::{DataLayer, PriceMatrix};
-use crate::expr::registry::config::CsResult;
+use crate::expr::registry::config::FactorSlice;
 use crate::expr::{BinaryOp, Expr, Literal, UnaryOp};
 
 /// Weight allocation method
@@ -725,11 +726,11 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMetaLearningAnalyzer>()?;
     m.add_class::<PyGpRecommendations>()?;
 
-    // Data source + pipeline (ClickHouse → DataLayer → CsResult → PriceMatrix)
+    // Data source + pipeline (ClickHouse → DataLayer → FactorSlice → PriceMatrix)
     m.add_class::<PyClickHouseSource>()?;
     m.add_class::<PyDataLayer>()?;
     m.add_class::<PyPriceMatrix>()?;
-    m.add_class::<PyCsResult>()?;
+    m.add_class::<PyFactorSlice>()?;
 
     // Factor → Position abstraction + multi-factor combination
     m.add_class::<PyFactorCombiner>()?;
@@ -2189,7 +2190,7 @@ impl PyFactorRegistry {
     /// Compute all registered factors via the cross-sectional pipeline.
     ///
     /// Takes a &mut DataLayer, queries 5m data automatically, computes factors,
-    /// applies winsor→zscore→cap_neu→qcut per date, and returns CsResult
+    /// applies winsor→zscore→cap_neu→qcut per date, and returns FactorSlice
     /// for each registered factor.
     fn compute_cs_pipeline(
         &self,
@@ -2203,7 +2204,7 @@ impl PyFactorRegistry {
 
         let result_dict = PyDict::new(py);
         for (name, cs) in results {
-            result_dict.set_item(name, PyCsResult { inner: cs })?;
+            result_dict.set_item(name, PyFactorSlice { inner: cs })?;
         }
         Ok(result_dict.into())
     }
@@ -2620,22 +2621,17 @@ impl PyPriceMatrix {
         self.inner.symbols.len()
     }
 
-    /// Build a factor matrix from CsResults, aligned to this PriceMatrix.
+    /// Build a factor matrix from FactorSlices, aligned to this PriceMatrix.
     fn build_factor_matrix(
         &self,
         py: Python<'_>,
-        cs_results: Vec<(Py<PyCsResult>, Vec<String>)>,
+        slices: Vec<Py<PyFactorSlice>>,
     ) -> PyResult<Py<PyArray2<f64>>> {
-        let mut results = Vec::new();
-        for (py_cs, syms) in cs_results {
-            let cs = py_cs.borrow(py);
-            results.push((cs.inner.clone(), syms));
-        }
-        let refs: Vec<(CsResult, &[String])> = results
+        let rust_slices: Vec<FactorSlice> = slices
             .iter()
-            .map(|(cs, syms)| (cs.clone(), syms.as_slice()))
+            .map(|s| s.borrow(py).inner.clone())
             .collect();
-        let mat = self.inner.build_factor_matrix(&refs);
+        let mat = self.inner.build_factor_matrix(&rust_slices);
         Ok(mat.into_pyarray(py).into())
     }
 
@@ -2649,20 +2645,30 @@ impl PyPriceMatrix {
 }
 
 // ============================================================================
-// CsResult Python Bindings
+// FactorSlice Python Bindings
 // ============================================================================
 
-#[pyclass(name = "CsResult", from_py_object)]
+#[pyclass(name = "FactorSlice", from_py_object)]
 #[derive(Clone)]
-pub struct PyCsResult {
-    inner: CsResult,
+pub struct PyFactorSlice {
+    inner: FactorSlice,
 }
 
 #[pymethods]
-impl PyCsResult {
+impl PyFactorSlice {
+    #[getter]
+    fn factor_name(&self) -> String {
+        self.inner.factor_name.clone()
+    }
+
     #[getter]
     fn groups(&self) -> Vec<(i64, i64)> {
         self.inner.groups.clone()
+    }
+
+    #[getter]
+    fn symbols(&self) -> Vec<String> {
+        self.inner.symbols.clone()
     }
 
     #[getter]
@@ -2676,7 +2682,7 @@ impl PyCsResult {
     }
 
     fn __repr__(&self) -> String {
-        format!("CsResult(n={})", self.inner.groups.len())
+        format!("FactorSlice({}, n={})", self.inner.factor_name, self.inner.groups.len())
     }
 }
 

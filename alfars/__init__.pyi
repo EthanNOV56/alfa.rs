@@ -400,12 +400,12 @@ class FactorRegistry:
     ) -> Dict[str, FactorResult]: ...
     def compute_cs_pipeline(
         self, data_layer: DataLayer
-    ) -> Dict[str, CsResult]:
+    ) -> Dict[str, FactorSlice]:
         """
         Compute all registered factors via the cross-sectional pipeline.
 
         Queries 5m data via DataLayer, computes factors, applies
-        winsor→zscore→cap_neu→qcut per date. Returns CsResult per factor.
+        winsor→zscore→cap_neu→qcut per date. Returns FactorSlice per factor.
         """
         ...
     def compute_factor_matrices_1d(
@@ -552,21 +552,29 @@ class PriceMatrix:
     def tradable(self) -> npt.NDArray[np.float64]: ...
 
     def build_factor_matrix(
-        self, cs_results: List[Tuple[CsResult, List[str]]]
+        self, slices: List[FactorSlice]
     ) -> npt.NDArray[np.float64]:
         """
-        Build a (n_dates × n_symbols) factor matrix from CsResults.
+        Build a (n_dates × n_symbols) factor matrix from FactorSlices.
 
-        Each tuple is (CsResult, symbol_list).
+        Each tuple is (FactorSlice, symbol_list).
         """
         ...
 
-class CsResult:
-    """Cross-sectional pipeline result for one factor."""
+class FactorSlice:
+    """Cross-sectional result for one factor × one year."""
 
+    @property
+    def factor_name(self) -> str:
+        """Which factor this slice belongs to."""
+        ...
     @property
     def groups(self) -> List[Tuple[int, int]]:
         """(date_int, symbol_idx) keys for each value."""
+        ...
+    @property
+    def symbols(self) -> List[str]:
+        """Symbol strings at each index position."""
         ...
     @property
     def cap_neued(self) -> List[float]:

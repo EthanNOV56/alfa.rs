@@ -31,7 +31,7 @@ __author__ = "EthanNOV56"
 try:
     from ._core import (
         ClickHouseSource,
-        CsResult,
+        FactorSlice,
         DataLayer,
         # Expression system
         Expr,
@@ -98,7 +98,7 @@ except ImportError:
     FactorMetadata = GPHistoryRecord = _Stub
     MetaLearningAnalyzer = GPRecommendations = _Stub
     FactorRegistry = FactorInfo = FactorResult = _Stub
-    ClickHouseSource = DataLayer = PriceMatrix = CsResult = _Stub
+    ClickHouseSource = DataLayer = PriceMatrix = FactorSlice = _Stub
     FactorCombiner = PositionBuilder = _Stub
     PyBacktestEngine = PyFeeConfig = PyPositionConfig = PySlippageConfig = _Stub
 
@@ -114,7 +114,7 @@ except ImportError:
 __all__ = [
     # Data layer (ClickHouse → DataLayer → PriceMatrix pipeline)
     "ClickHouseSource",
-    "CsResult",
+    "FactorSlice",
     "DataLayer",
     "PriceMatrix",
     # Multi-factor combination + position building

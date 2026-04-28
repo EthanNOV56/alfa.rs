@@ -9,7 +9,9 @@ pub mod functions;
 pub mod parser;
 pub mod timeseries;
 
-pub use config::{ColumnMeta, ComputeConfig, CsResult, FactorInfo, FactorResult};
+pub use config::{
+    ColumnMeta, ComputeConfig, FactorInfo, FactorPanel, FactorResult, FactorSlice,
+};
 pub use parser::parse_expression;
 
 use crate::data::layer::DataLayer;
@@ -625,19 +627,16 @@ impl FactorRegistry {
     /// One-stop compute: factor evaluation + cross-sectional pipeline.
     ///
     /// Queries 5m data, computes factors (compact mode), builds free_float_cap map,
-    /// and applies winsor → zscore → cap_neu → qcut per date. Returns `CsResult`
-    /// for each registered factor.
+    /// and applies winsor → zscore → cap_neu → qcut per date.
     pub fn compute_cs_pipeline(
         &self,
         data_layer: &mut DataLayer,
-    ) -> Result<HashMap<String, CsResult>, String> {
+    ) -> Result<HashMap<String, FactorSlice>, String> {
         use crate::expr::registry::timeseries::{cap_neu, qcut, winsor, zscore};
 
-        // Determine required columns from registered expressions
         let mut cols_5m: Vec<String> = Vec::new();
         for info in self.factors.values() {
-            let expr = info.parsed_expr.clone();
-            for col in extract_columns(&expr) {
+            for col in extract_columns(&info.parsed_expr) {
                 if let Some(stripped) = col.strip_prefix("5m:") {
                     let c = stripped.to_string();
                     if !cols_5m.contains(&c) {
@@ -647,7 +646,6 @@ impl FactorRegistry {
             }
         }
 
-        // Query 5m data
         let mut query_fields = vec!["5m:trading_date".to_string(), "5m:symbol".to_string()];
         for c in &cols_5m {
             query_fields.push(format!("5m:{}", c));
@@ -656,19 +654,16 @@ impl FactorRegistry {
             .query(query_fields)
             .map_err(|e| format!("DataLayer query error: {:?}", e))?;
 
-        // Compute factors (compact mode)
         let factor_names: Vec<&str> = self.factors.keys().map(|s| s.as_str()).collect();
         let results = self.compute_batch_for_freq(&factor_names, &data, false, true)?;
 
-        // Build market cap map
         let mktcap_map = data_layer
             .build_free_float_cap_map()
             .map_err(|e| format!("build_free_float_cap_map: {:?}", e))?;
 
-        let symbol_list = data_layer.get_symbols_5m();
+        let symbol_list = data_layer.get_symbols_5m().to_vec();
 
-        // Apply cs_ pipeline per factor
-        let mut cs_results: HashMap<String, CsResult> = HashMap::new();
+        let mut cs_results: HashMap<String, FactorSlice> = HashMap::new();
 
         for (name, _info) in &self.factors {
             let result = results
@@ -677,8 +672,10 @@ impl FactorRegistry {
             let groups = result.groups.as_ref().ok_or("Group keys missing")?;
             let values = &result.values;
 
-            let mut cs = CsResult {
+            let mut slice = FactorSlice {
+                factor_name: name.clone(),
                 groups: groups.clone(),
+                symbols: symbol_list.clone(),
                 #[cfg(debug_assertions)]
                 raw: Vec::with_capacity(values.len()),
                 #[cfg(debug_assertions)]
@@ -702,12 +699,12 @@ impl FactorRegistry {
                     for k in start..end {
                         #[cfg(debug_assertions)]
                         {
-                            cs.raw.push(values[k]);
-                            cs.winsored.push(f64::NAN);
-                            cs.zscored.push(f64::NAN);
+                            slice.raw.push(values[k]);
+                            slice.winsored.push(f64::NAN);
+                            slice.zscored.push(f64::NAN);
                         }
-                        cs.cap_neued.push(f64::NAN);
-                        cs.qcut.push(None);
+                        slice.cap_neued.push(f64::NAN);
+                        slice.qcut.push(None);
                     }
                     continue;
                 }
@@ -728,19 +725,66 @@ impl FactorRegistry {
                 for j in 0..n {
                     #[cfg(debug_assertions)]
                     {
-                        cs.raw.push(vals[j]);
-                        cs.winsored.push(winsored[j]);
-                        cs.zscored.push(zscored[j]);
+                        slice.raw.push(vals[j]);
+                        slice.winsored.push(winsored[j]);
+                        slice.zscored.push(zscored[j]);
                     }
-                    cs.cap_neued.push(capped[j]);
-                    cs.qcut.push(qcut_vals[j]);
+                    slice.cap_neued.push(capped[j]);
+                    slice.qcut.push(qcut_vals[j]);
                 }
             }
 
-            cs_results.insert(name.clone(), cs);
+            cs_results.insert(name.clone(), slice);
         }
 
         Ok(cs_results)
+    }
+
+    /// Compute all registered factors across a year range.
+    ///
+    /// Uses `par_iter` internally for parallel year computation.
+    /// Each year gets its own DataLayer clone with the same base filter.
+    pub fn calc(
+        &self,
+        dl: &DataLayer,
+        start_year: i32,
+        end_year: i32,
+    ) -> Result<FactorPanel, String> {
+        use rayon::prelude::*;
+
+        let years: Vec<i32> = (start_year..=end_year).collect();
+        let base_filter = dl.pre_filter().to_string();
+
+        let panels: Vec<FactorPanel> = years
+            .par_iter()
+            .map(|&year| {
+                let start = format!("{}-01-01", year);
+                let end = format!("{}-01-01", year + 1);
+                let pre_filter = format!("{}:{} {}", start, end, base_filter);
+
+                let mut year_dl = DataLayer::new(dl.source().clone());
+                year_dl.set_pre_filter(&pre_filter);
+
+                let slices: Vec<FactorSlice> = self
+                    .compute_cs_pipeline(&mut year_dl)?
+                    .into_values()
+                    .collect();
+
+                Ok::<_, String>(FactorPanel {
+                    factor_names: self.list(),
+                    slices,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut all_slices = Vec::new();
+        for p in panels {
+            all_slices.extend(p.slices);
+        }
+        Ok(FactorPanel {
+            factor_names: self.list(),
+            slices: all_slices,
+        })
     }
 
     /// Get factor information by name
