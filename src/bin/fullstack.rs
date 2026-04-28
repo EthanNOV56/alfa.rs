@@ -295,7 +295,7 @@ fn main() {
 
         // Compute factor
         let compute_start = std::time::Instant::now();
-        let results = match registry.compute_batch_vectorized(&["factor"], &data_array1, true) {
+        let results = match registry.compute_batch_for_freq(&["factor"], &data_array1, true, false) {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("  Failed to compute: {}", e);

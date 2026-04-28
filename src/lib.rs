@@ -7,9 +7,7 @@ pub mod backtest;
 pub mod data;
 pub mod expr;
 pub mod gp;
-pub mod lazy;
 pub mod persistence;
-pub mod types;
 
 use ndarray::Array2;
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyArrayMethods, PyUntypedArrayMethods};
@@ -40,9 +38,10 @@ fn set_num_threads(n_threads: usize) -> PyResult<()> {
 
 // Re-exports for internal use
 use crate::backtest::{BacktestEngine, BacktestResult, FeeConfig, PositionConfig, SlippageConfig};
+use crate::data::clickhouse::ClickHouseSource;
+use crate::data::layer::{DataLayer, PriceMatrix};
+use crate::expr::registry::config::CsResult;
 use crate::expr::{BinaryOp, Expr, Literal, UnaryOp};
-use crate::lazy::{DataSource, JoinType, LazyFrame};
-use crate::types::{DataFrame, Series, evaluate_expr_on_dataframe};
 
 /// Weight allocation method
 #[derive(Debug, Clone, Copy)]
@@ -282,116 +281,6 @@ impl PyExpr {
     }
 }
 
-/// Python-exposed Series for vectorized operations
-#[pyclass(name = "Series", from_py_object)]
-#[derive(Clone)]
-pub struct PySeries {
-    inner: Series,
-}
-
-#[pymethods]
-impl PySeries {
-    #[new]
-    fn new(data: Vec<f64>) -> Self {
-        PySeries {
-            inner: Series::new(data),
-        }
-    }
-
-    /// Get length
-    fn len(&self) -> usize {
-        self.inner.len()
-    }
-
-    /// Check if empty
-    fn is_empty(&self) -> bool {
-        self.inner.len() == 0
-    }
-
-    /// Get data as Python list
-    fn to_list(&self) -> Vec<f64> {
-        self.inner.data().to_vec()
-    }
-
-    fn __repr__(&self) -> String {
-        format!("Series(len={})", self.len())
-    }
-
-    fn __str__(&self) -> String {
-        self.__repr__()
-    }
-}
-
-/// Python-exposed DataFrame
-#[pyclass(name = "DataFrame")]
-pub struct PyDataFrame {
-    inner: DataFrame,
-}
-
-#[pymethods]
-impl PyDataFrame {
-    #[new]
-    fn new(_py: Python<'_>, columns: Option<Bound<'_, PyDict>>) -> PyResult<Self> {
-        if let Some(cols) = columns {
-            let mut inner_columns = std::collections::HashMap::new();
-
-            for (key, value) in cols.iter() {
-                let col_name: String = key.extract()?;
-
-                if let Ok(py_series) = value.extract::<PySeries>() {
-                    inner_columns.insert(col_name, py_series.inner.clone());
-                } else if let Ok(list) = value.extract::<Vec<f64>>() {
-                    inner_columns.insert(col_name, Series::new(list));
-                } else {
-                    return Err(PyValueError::new_err(format!(
-                        "Column '{}' must be a Series or list of floats",
-                        col_name
-                    )));
-                }
-            }
-
-            // Use from_series_map which returns Result
-            match DataFrame::from_series_map(inner_columns) {
-                Ok(df) => Ok(PyDataFrame { inner: df }),
-                Err(e) => Err(PyValueError::new_err(e)),
-            }
-        } else {
-            Ok(PyDataFrame {
-                inner: DataFrame::new(), // Empty dataframe
-            })
-        }
-    }
-
-    /// Get number of rows
-    fn n_rows(&self) -> usize {
-        self.inner.n_rows()
-    }
-
-    /// Get number of columns
-    fn n_cols(&self) -> usize {
-        self.inner.n_cols()
-    }
-
-    /// Get column names
-    fn column_names(&self) -> Vec<String> {
-        self.inner.column_names()
-    }
-
-    /// Evaluate an expression on this DataFrame
-    fn evaluate(&self, expr: &PyExpr) -> PyResult<PySeries> {
-        evaluate_expr_on_dataframe(&expr.inner, &self.inner)
-            .map(|series| PySeries { inner: series })
-            .map_err(|e| PyValueError::new_err(e))
-    }
-
-    fn __repr__(&self) -> String {
-        format!("DataFrame(rows={}, cols={})", self.n_rows(), self.n_cols())
-    }
-
-    fn __str__(&self) -> String {
-        self.__repr__()
-    }
-}
 
 /// Parse expression string into Expr AST
 #[pyfunction]
@@ -403,7 +292,6 @@ fn parse_expression(expression: &str) -> PyResult<PyExpr> {
 }
 
 /// Evaluate expression on multi-asset data (returns factor matrix)
-#[allow(unused_imports)]
 #[pyfunction]
 fn evaluate_expression(
     py: Python<'_>,
@@ -449,27 +337,36 @@ fn evaluate_expression(
     let column_arrays_clone = column_arrays.clone();
     let expr_inner = expr.inner.clone();
 
-    // Process assets in parallel and collect results
+    // Process assets in parallel, using eval_expr_vectorized directly on Array1<f64>
     let asset_results: Vec<_> = (0..n_assets)
         .into_par_iter()
         .map(|asset_idx| {
-            // Create DataFrame for this asset
-            let mut columns = std::collections::HashMap::new();
+            use crate::expr::registry::functions::eval_expr_vectorized;
+            use ndarray::Array1;
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+
+            let mut columns: std::collections::HashMap<String, Array1<f64>> =
+                std::collections::HashMap::new();
 
             for (col_name, array) in &column_arrays_clone {
                 let column_data = array.column(asset_idx).to_owned();
-                columns.insert(col_name.clone(), Series::new(column_data.to_vec()));
+                columns.insert(col_name.clone(), column_data);
             }
 
-            // Evaluate expression for this asset
-            if let Ok(df) = DataFrame::from_series_map(columns) {
-                if let Ok(series) = evaluate_expr_on_dataframe(&expr_inner, &df) {
-                    return series.data().to_vec();
-                }
+            // Pre-populate cache with column hashes
+            let mut cache = std::collections::HashMap::new();
+            for (name, arr) in &columns {
+                let mut hasher = DefaultHasher::new();
+                0u8.hash(&mut hasher);
+                name.hash(&mut hasher);
+                cache.insert(hasher.finish(), arr.clone());
             }
 
-            // Return NaN-filled vector if evaluation failed
-            vec![f64::NAN; n_days]
+            match eval_expr_vectorized(&expr_inner, &columns, &mut cache) {
+                Ok(arr) => arr.to_vec(),
+                Err(_) => vec![f64::NAN; n_days],
+            }
         })
         .collect();
 
@@ -787,8 +684,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Expression system
     m.add_class::<PyExpr>()?;
-    m.add_class::<PySeries>()?;
-    m.add_class::<PyDataFrame>()?;
 
     // Expression evaluation functions
     m.add_function(wrap_pyfunction!(parse_expression, m)?)?;
@@ -816,11 +711,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(ts_max, m)?)?;
     m.add_function(wrap_pyfunction!(ts_min, m)?)?;
 
-    // Lazy evaluation system
-    m.add_class::<PyLazyFrame>()?;
-    m.add_function(wrap_pyfunction!(rolling_window, m)?)?;
-    m.add_function(wrap_pyfunction!(expanding_window, m)?)?;
-
     // Genetic Programming system
     m.add_class::<PyGpEngine>()?;
 
@@ -834,6 +724,16 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Meta-learning system
     m.add_class::<PyMetaLearningAnalyzer>()?;
     m.add_class::<PyGpRecommendations>()?;
+
+    // Data source + pipeline (ClickHouse → DataLayer → CsResult → PriceMatrix)
+    m.add_class::<PyClickHouseSource>()?;
+    m.add_class::<PyDataLayer>()?;
+    m.add_class::<PyPriceMatrix>()?;
+    m.add_class::<PyCsResult>()?;
+
+    // Factor → Position abstraction + multi-factor combination
+    m.add_class::<PyFactorCombiner>()?;
+    m.add_class::<PyPositionBuilder>()?;
 
     // Factor Registry
     m.add_class::<PyFactorRegistry>()?;
@@ -1035,6 +935,82 @@ impl PyBacktestEngine {
             Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(e)),
         }
     }
+
+    /// Multi-factor equal-weight combination backtest.
+    ///
+    /// Takes a list of factor arrays (all same shape), averages them
+    /// element-wise with equal weight, then runs the standard backtest.
+    fn run_multi(
+        &self,
+        factors: Vec<Bound<'_, PyArray2<f64>>>,
+        returns: Bound<'_, PyArray2<f64>>,
+        adj_factor: Bound<'_, PyArray2<f64>>,
+        close: Bound<'_, PyArray2<f64>>,
+        open: Bound<'_, PyArray2<f64>>,
+        vwap: Bound<'_, PyArray2<f64>>,
+        tradable: Bound<'_, PyArray2<f64>>,
+    ) -> PyResult<PyBacktestResult> {
+        let factor_arrays: Vec<Array2<f64>> = factors
+            .iter()
+            .map(|f| f.readonly().as_array().to_owned())
+            .collect();
+        let returns_array = returns.readonly().as_array().to_owned();
+        let adj_factor_array = adj_factor.readonly().as_array().to_owned();
+        let close_array = close.readonly().as_array().to_owned();
+        let open_array = open.readonly().as_array().to_owned();
+        let vwap_array = vwap.readonly().as_array().to_owned();
+        let tradable_array = tradable.readonly().as_array().to_owned();
+
+        let engine = BacktestEngine::with_config(self.config.clone());
+
+        match engine.run_multi(
+            &factor_arrays,
+            returns_array,
+            adj_factor_array,
+            close_array,
+            open_array,
+            vwap_array,
+            tradable_array,
+        ) {
+            Ok(result) => Ok(PyBacktestResult::from(result)),
+            Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(e)),
+        }
+    }
+
+    /// Run backtest with a PriceMatrix (single-factor).
+    ///
+    /// Prices in the PriceMatrix are already forward-adjusted, so adj_factor = 1.0.
+    fn run_with_prices(
+        &self,
+        factor: Bound<'_, PyArray2<f64>>,
+        prices: &PyPriceMatrix,
+    ) -> PyResult<PyBacktestResult> {
+        let factor_array = factor.readonly().as_array().to_owned();
+        let engine = BacktestEngine::with_config(self.config.clone());
+        match engine.run_with_prices(factor_array, &prices.inner) {
+            Ok(result) => Ok(PyBacktestResult::from(result)),
+            Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(e)),
+        }
+    }
+
+    /// Run multi-factor equal-weight backtest with a PriceMatrix.
+    ///
+    /// Prices in the PriceMatrix are already forward-adjusted.
+    fn run_multi_with_prices(
+        &self,
+        factors: Vec<Bound<'_, PyArray2<f64>>>,
+        prices: &PyPriceMatrix,
+    ) -> PyResult<PyBacktestResult> {
+        let factor_arrays: Vec<Array2<f64>> = factors
+            .iter()
+            .map(|f| f.readonly().as_array().to_owned())
+            .collect();
+        let engine = BacktestEngine::with_config(self.config.clone());
+        match engine.run_multi_with_prices(&factor_arrays, &prices.inner) {
+            Ok(result) => Ok(PyBacktestResult::from(result)),
+            Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(e)),
+        }
+    }
 }
 
 /// Python-exposed backtest result
@@ -1229,171 +1205,6 @@ fn compute_pearson(x: &[f64], y: &[f64]) -> f64 {
     } else {
         numerator / denominator
     }
-}
-
-// ============================================================================
-// Lazy Module Python Bindings
-// ============================================================================
-
-/// Python-exposed LazyFrame for lazy evaluation
-#[pyclass(name = "LazyFrame")]
-pub struct PyLazyFrame {
-    inner: Option<LazyFrame>,
-}
-
-#[pymethods]
-impl PyLazyFrame {
-    /// Create a new LazyFrame from numpy arrays
-    #[staticmethod]
-    fn scan(_py: Python<'_>, data: Bound<'_, PyDict>) -> PyResult<Self> {
-        use numpy::PyArray2;
-
-        let mut arrays = std::collections::HashMap::new();
-
-        for (key, value) in data.iter() {
-            let col_name: String = key.extract()?;
-
-            if let Ok(arr) = value.extract::<Bound<'_, PyArray2<f64>>>() {
-                let array = arr.readonly().as_array().to_owned();
-                arrays.insert(col_name, array);
-            } else {
-                return Err(PyValueError::new_err(format!(
-                    "Column '{}' must be a 2D numpy array",
-                    col_name
-                )));
-            }
-        }
-
-        let source = DataSource::NumpyArrays(arrays);
-        let lazy_frame = LazyFrame::scan(source);
-
-        Ok(PyLazyFrame {
-            inner: Some(lazy_frame),
-        })
-    }
-
-    /// Add new columns to the LazyFrame
-    fn with_columns(&self, _py: Python<'_>, exprs: Bound<'_, PyList>) -> PyResult<Self> {
-        let Some(ref inner) = self.inner else {
-            return Err(PyValueError::new_err("LazyFrame is already consumed"));
-        };
-
-        // Convert Python expressions to Rust expressions
-        let mut rust_exprs = Vec::new();
-        for item in exprs.iter() {
-            let tuple = item.cast::<PyTuple>()?;
-            let name: String = tuple.get_item(0)?.extract()?;
-            let py_expr: PyExpr = tuple.get_item(1)?.extract()?;
-            rust_exprs.push((name, py_expr.inner));
-        }
-
-        // Create new LazyFrame with columns added
-        let new_lazy_frame = inner.clone().with_columns(rust_exprs);
-
-        Ok(PyLazyFrame {
-            inner: Some(new_lazy_frame),
-        })
-    }
-
-    /// Join with another LazyFrame
-    fn join(&self, other: &PyLazyFrame, on: Vec<String>, how: &str) -> PyResult<Self> {
-        let Some(ref inner) = self.inner else {
-            return Err(PyValueError::new_err("LazyFrame is already consumed"));
-        };
-
-        let Some(ref other_inner) = other.inner else {
-            return Err(PyValueError::new_err("Other LazyFrame is already consumed"));
-        };
-
-        // Convert string join type to JoinType enum
-        let join_type = match how.to_lowercase().as_str() {
-            "inner" => JoinType::Inner,
-            "left" => JoinType::Left,
-            "right" => JoinType::Right,
-            "outer" => JoinType::Outer,
-            _ => {
-                return Err(PyValueError::new_err(
-                    "Join type must be 'inner', 'left', 'right', or 'outer'",
-                ));
-            }
-        };
-
-        // Create new LazyFrame with join
-        let new_lazy_frame = inner.clone().join(other_inner.clone(), on, join_type);
-
-        Ok(PyLazyFrame {
-            inner: Some(new_lazy_frame),
-        })
-    }
-
-    /// Collect (execute) the lazy computation
-    fn collect(&mut self) -> PyResult<Py<PyDict>> {
-        let Some(lazy_frame) = self.inner.take() else {
-            return Err(PyValueError::new_err("LazyFrame is already consumed"));
-        };
-
-        pyo3::Python::try_attach(|py| match lazy_frame.collect() {
-            Ok(result) => {
-                let dict = PyDict::new(py);
-                for (key, array) in result {
-                    let py_array = array.into_pyarray(py);
-                    dict.set_item(key, py_array)?;
-                }
-                Ok(dict.into())
-            }
-            Err(e) => Err(PyValueError::new_err(e)),
-        })
-        .ok_or_else(|| PyRuntimeError::new_err("Failed to attach to Python"))?
-    }
-
-    /// Explain the logical plan
-    fn explain(&self, optimized: bool) -> PyResult<String> {
-        let Some(ref inner) = self.inner else {
-            return Err(PyValueError::new_err("LazyFrame is already consumed"));
-        };
-
-        Ok(inner.explain(optimized))
-    }
-
-    /// Get string representation
-    fn __repr__(&self) -> String {
-        if self.inner.is_some() {
-            "LazyFrame(active)".to_string()
-        } else {
-            "LazyFrame(consumed)".to_string()
-        }
-    }
-
-    fn __str__(&self) -> String {
-        self.__repr__()
-    }
-}
-
-/// Create a rolling window specification for lazy evaluation
-#[pyfunction]
-fn rolling_window(size: usize, min_periods: Option<usize>) -> PyResult<Py<PyDict>> {
-    pyo3::Python::try_attach(|py| {
-        let _window_spec = crate::lazy::rolling_window(size, min_periods);
-        let dict = PyDict::new(py);
-        dict.set_item("kind", "rolling")?;
-        dict.set_item("size", size)?;
-        dict.set_item("min_periods", min_periods.unwrap_or(1))?;
-        Ok(dict.into())
-    })
-    .ok_or_else(|| PyRuntimeError::new_err("Failed to attach to Python"))?
-}
-
-/// Create an expanding window specification for lazy evaluation
-#[pyfunction]
-fn expanding_window(min_periods: Option<usize>) -> PyResult<Py<PyDict>> {
-    pyo3::Python::try_attach(|py| {
-        let _window_spec = crate::lazy::expanding_window(min_periods);
-        let dict = PyDict::new(py);
-        dict.set_item("kind", "expanding")?;
-        dict.set_item("min_periods", min_periods.unwrap_or(1))?;
-        Ok(dict.into())
-    })
-    .ok_or_else(|| PyRuntimeError::new_err("Failed to attach to Python"))?
 }
 
 // ============================================================================
@@ -2375,6 +2186,139 @@ impl PyFactorRegistry {
         Ok(result_dict.into())
     }
 
+    /// Compute all registered factors via the cross-sectional pipeline.
+    ///
+    /// Takes a &mut DataLayer, queries 5m data automatically, computes factors,
+    /// applies winsor→zscore→cap_neu→qcut per date, and returns CsResult
+    /// for each registered factor.
+    fn compute_cs_pipeline(
+        &self,
+        py: Python<'_>,
+        data_layer: &mut PyDataLayer,
+    ) -> PyResult<Py<PyDict>> {
+        let results = self
+            .inner
+            .compute_cs_pipeline(&mut data_layer.inner)
+            .map_err(|e| PyRuntimeError::new_err(e))?;
+
+        let result_dict = PyDict::new(py);
+        for (name, cs) in results {
+            result_dict.set_item(name, PyCsResult { inner: cs })?;
+        }
+        Ok(result_dict.into())
+    }
+
+    /// Compute factors on 1d data and return 2D matrices aligned with PriceMatrix.
+    ///
+    /// Queries 1d data via DataLayer, computes all registered factors, reshapes
+    /// to (n_dates × n_symbols) 2D arrays using the PriceMatrix alignment.
+    /// Returns (factor_matrices_dict, price_matrix).
+    fn compute_factor_matrices_1d(
+        &self,
+        py: Python<'_>,
+        data_layer: &mut PyDataLayer,
+    ) -> PyResult<(Py<PyDict>, PyPriceMatrix)> {
+        // 1. Use FactorRegistry's built-in required_columns()
+        let col_set = self.inner.required_columns();
+        let names = self.inner.list();
+
+        // 2. Build query fields with 1d: prefix
+        let mut query_fields = vec![
+            "1d:trading_date".to_string(),
+            "1d:symbol".to_string(),
+        ];
+        for c in col_set {
+            query_fields.push(format!("1d:{}", c));
+        }
+
+        // 3. Query data
+        let raw_data = data_layer
+            .inner
+            .query(query_fields)
+            .map_err(|e| PyRuntimeError::new_err(format!("{:?}", e)))?;
+
+        // 4. Strip 1d: prefix from keys for expression evaluation
+        let mut data: std::collections::HashMap<String, ndarray::Array1<f64>> =
+            std::collections::HashMap::new();
+        for (key, arr) in &raw_data {
+            if let Some(stripped) = key.strip_prefix("1d:") {
+                data.insert(stripped.to_string(), arr.clone());
+            } else {
+                data.insert(key.clone(), arr.clone());
+            }
+        }
+
+        // 5. Get date and symbol arrays for later 2D mapping
+        let dates_arr = raw_data
+            .get("1d:trading_date")
+            .ok_or_else(|| PyRuntimeError::new_err("trading_date missing"))?;
+        let syms_arr = raw_data
+            .get("1d:symbol")
+            .ok_or_else(|| PyRuntimeError::new_err("symbol missing"))?;
+
+        // 6. Compute factors (non-compact for dense 1d data)
+        let factor_names: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+        let results = self
+            .inner
+            .compute_batch_for_freq(&factor_names, &data, false, false)
+            .map_err(|e| PyRuntimeError::new_err(e))?;
+
+        // 7. Build PriceMatrix for alignment
+        let pm = data_layer
+            .inner
+            .query_price_matrix()
+            .map_err(|e| PyRuntimeError::new_err(format!("{:?}", e)))?;
+
+        let n_dates = pm.dates.len();
+        let n_symbols = pm.symbols.len();
+
+        // Build symbol → index map
+        let symbol_list = data_layer.inner.get_symbols_5m();
+        let mut sym_to_idx: std::collections::HashMap<usize, usize> =
+            std::collections::HashMap::new();
+        for (i, s) in symbol_list.iter().enumerate() {
+            if let Some(pos) = pm.symbols.iter().position(|ps| ps == s) {
+                sym_to_idx.insert(i, pos);
+            }
+        }
+
+        // Build date → index map
+        let mut date_to_idx: std::collections::HashMap<i64, usize> =
+            std::collections::HashMap::new();
+        for (i, &d) in pm.dates.iter().enumerate() {
+            date_to_idx.insert(d, i);
+        }
+
+        // 8. Reshape each factor result to 2D
+        let result_dict = PyDict::new(py);
+        for (name, fr) in &results {
+            let mut mat =
+                Array2::<f64>::from_elem((n_dates, n_symbols), f64::NAN);
+
+            for i in 0..fr.values.len() {
+                if i >= dates_arr.len() || i >= syms_arr.len() {
+                    break;
+                }
+                let d = dates_arr[i] as i64;
+                let s = syms_arr[i] as usize;
+
+                if d < 19000101 {
+                    continue;
+                }
+
+                if let (Some(&di), Some(&si)) =
+                    (date_to_idx.get(&d), sym_to_idx.get(&s))
+                {
+                    mat[[di, si]] = fr.values[i];
+                }
+            }
+
+            result_dict.set_item(name.clone(), mat.into_pyarray(py))?;
+        }
+
+        Ok((result_dict.into(), PyPriceMatrix { inner: pm }))
+    }
+
     /// List all registered factor names
     fn list(&self) -> Vec<String> {
         self.inner.list()
@@ -2505,5 +2449,471 @@ impl PyFactorResult {
             "FactorResult(name={}, n_rows={}, time_ms={})",
             self.name, self.n_rows, self.compute_time_ms
         )
+    }
+}
+
+// ============================================================================
+// ClickHouseSource Python Bindings
+// ============================================================================
+
+#[pyclass(name = "ClickHouseSource", skip_from_py_object)]
+#[derive(Clone)]
+pub struct PyClickHouseSource {
+    inner: ClickHouseSource,
+}
+
+#[pymethods]
+impl PyClickHouseSource {
+    #[staticmethod]
+    fn from_env() -> Self {
+        Self {
+            inner: ClickHouseSource::from_env(),
+        }
+    }
+
+    #[new]
+    #[pyo3(signature = (host, port, database, username, password=None))]
+    fn new(host: &str, port: u16, database: &str, username: &str, password: Option<String>) -> Self {
+        Self {
+            inner: ClickHouseSource::with_units(host, port, database, username, 100, 1000),
+        }
+    }
+
+    #[getter]
+    fn host(&self) -> &str {
+        self.inner.host()
+    }
+
+    #[getter]
+    fn port(&self) -> u16 {
+        self.inner.port()
+    }
+
+    #[getter]
+    fn database(&self) -> &str {
+        self.inner.database()
+    }
+
+    #[getter]
+    fn username(&self) -> &str {
+        self.inner.username()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ClickHouseSource(host={}:{}, database={})",
+            self.inner.host(),
+            self.inner.port(),
+            self.inner.database()
+        )
+    }
+}
+
+// ============================================================================
+// DataLayer Python Bindings
+// ============================================================================
+
+#[pyclass(name = "DataLayer")]
+pub struct PyDataLayer {
+    inner: DataLayer,
+}
+
+#[pymethods]
+impl PyDataLayer {
+    #[new]
+    fn new(source: &PyClickHouseSource) -> Self {
+        Self {
+            inner: DataLayer::new(source.inner.clone()),
+        }
+    }
+
+    fn set_pre_filter(&mut self, filter: &str) {
+        self.inner.set_pre_filter(filter);
+    }
+
+    fn clear_cache(&mut self) {
+        self.inner.clear_cache();
+    }
+
+    #[getter]
+    fn symbols_5m(&self) -> Vec<String> {
+        self.inner.get_symbols_5m().to_vec()
+    }
+
+    /// Query 1d price data for backtest. Returns PriceMatrix with all OHLCV fields.
+    fn query_price_matrix(&mut self) -> PyResult<PyPriceMatrix> {
+        self.inner
+            .query_price_matrix()
+            .map(|pm| PyPriceMatrix { inner: pm })
+            .map_err(|e| PyRuntimeError::new_err(format!("{:?}", e)))
+    }
+
+    fn __repr__(&self) -> String {
+        format!("DataLayer(pre_filter={})", "...")
+    }
+}
+
+// ============================================================================
+// PriceMatrix Python Bindings
+// ============================================================================
+
+#[pyclass(name = "PriceMatrix", skip_from_py_object)]
+#[derive(Clone)]
+pub struct PyPriceMatrix {
+    inner: PriceMatrix,
+}
+
+#[pymethods]
+impl PyPriceMatrix {
+    #[getter]
+    fn dates(&self) -> Vec<i64> {
+        self.inner.dates.clone()
+    }
+
+    #[getter]
+    fn symbols(&self) -> Vec<String> {
+        self.inner.symbols.clone()
+    }
+
+    #[getter]
+    fn close<'py>(&self, py: Python<'py>) -> Py<PyArray2<f64>> {
+        self.inner.close.clone().into_pyarray(py).into()
+    }
+
+    #[getter]
+    fn open<'py>(&self, py: Python<'py>) -> Py<PyArray2<f64>> {
+        self.inner.open.clone().into_pyarray(py).into()
+    }
+
+    #[getter]
+    fn high<'py>(&self, py: Python<'py>) -> Py<PyArray2<f64>> {
+        self.inner.high.clone().into_pyarray(py).into()
+    }
+
+    #[getter]
+    fn low<'py>(&self, py: Python<'py>) -> Py<PyArray2<f64>> {
+        self.inner.low.clone().into_pyarray(py).into()
+    }
+
+    #[getter]
+    fn vwap<'py>(&self, py: Python<'py>) -> Py<PyArray2<f64>> {
+        self.inner.vwap.clone().into_pyarray(py).into()
+    }
+
+    #[getter]
+    fn returns<'py>(&self, py: Python<'py>) -> Py<PyArray2<f64>> {
+        self.inner.returns.clone().into_pyarray(py).into()
+    }
+
+    #[getter]
+    fn tradable<'py>(&self, py: Python<'py>) -> Py<PyArray2<f64>> {
+        self.inner.tradable.clone().into_pyarray(py).into()
+    }
+
+    #[getter]
+    fn n_dates(&self) -> usize {
+        self.inner.dates.len()
+    }
+
+    #[getter]
+    fn n_symbols(&self) -> usize {
+        self.inner.symbols.len()
+    }
+
+    /// Build a factor matrix from CsResults, aligned to this PriceMatrix.
+    fn build_factor_matrix(
+        &self,
+        py: Python<'_>,
+        cs_results: Vec<(Py<PyCsResult>, Vec<String>)>,
+    ) -> PyResult<Py<PyArray2<f64>>> {
+        let mut results = Vec::new();
+        for (py_cs, syms) in cs_results {
+            let cs = py_cs.borrow(py);
+            results.push((cs.inner.clone(), syms));
+        }
+        let refs: Vec<(CsResult, &[String])> = results
+            .iter()
+            .map(|(cs, syms)| (cs.clone(), syms.as_slice()))
+            .collect();
+        let mat = self.inner.build_factor_matrix(&refs);
+        Ok(mat.into_pyarray(py).into())
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PriceMatrix(dates={}, symbols={})",
+            self.inner.dates.len(),
+            self.inner.symbols.len()
+        )
+    }
+}
+
+// ============================================================================
+// CsResult Python Bindings
+// ============================================================================
+
+#[pyclass(name = "CsResult", from_py_object)]
+#[derive(Clone)]
+pub struct PyCsResult {
+    inner: CsResult,
+}
+
+#[pymethods]
+impl PyCsResult {
+    #[getter]
+    fn groups(&self) -> Vec<(i64, i64)> {
+        self.inner.groups.clone()
+    }
+
+    #[getter]
+    fn cap_neued(&self) -> Vec<f64> {
+        self.inner.cap_neued.clone()
+    }
+
+    #[getter]
+    fn qcut(&self) -> Vec<Option<i32>> {
+        self.inner.qcut.clone()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("CsResult(n={})", self.inner.groups.len())
+    }
+}
+
+// ============================================================================
+// Factor → Position Matrix Abstraction
+// ============================================================================
+
+/// Methods for combining multiple factor matrices into one.
+#[pyclass(name = "FactorCombiner")]
+pub struct PyFactorCombiner;
+
+/// Methods for building position/weight matrices from factor values.
+#[pyclass(name = "PositionBuilder")]
+pub struct PyPositionBuilder;
+
+#[pymethods]
+impl PyFactorCombiner {
+    #[staticmethod]
+    /// Equal-weight average of multiple factor matrices.
+    /// NaN values are excluded from the average per cell.
+    fn equal_weight(
+        py: Python<'_>,
+        factors: Vec<Bound<'_, PyArray2<f64>>>,
+    ) -> PyResult<Py<PyArray2<f64>>> {
+        if factors.is_empty() {
+            return Err(PyValueError::new_err("Empty factor list"));
+        }
+        let arrays: Vec<Array2<f64>> = factors
+            .iter()
+            .map(|f| f.readonly().as_array().to_owned())
+            .collect();
+        let shape = arrays[0].dim();
+        for a in arrays.iter().skip(1) {
+            if a.dim() != shape {
+                return Err(PyValueError::new_err(format!(
+                    "Shape mismatch: expected {:?}, got {:?}",
+                    shape,
+                    a.dim()
+                )));
+            }
+        }
+        let n = arrays.len() as f64;
+        let mut combined = Array2::<f64>::zeros(shape);
+        for i in 0..shape.0 {
+            for j in 0..shape.1 {
+                let mut sum = 0.0f64;
+                let mut count = 0u32;
+                for a in &arrays {
+                    let v = a[[i, j]];
+                    if v.is_finite() {
+                        sum += v;
+                        count += 1;
+                    }
+                }
+                combined[[i, j]] = if count > 0 { sum / count as f64 } else { f64::NAN };
+            }
+        }
+        Ok(combined.into_pyarray(py).into())
+    }
+
+    #[staticmethod]
+    /// Rank-average combination: convert each factor to CS rank, then average.
+    fn rank_average(
+        py: Python<'_>,
+        factors: Vec<Bound<'_, PyArray2<f64>>>,
+    ) -> PyResult<Py<PyArray2<f64>>> {
+        if factors.is_empty() {
+            return Err(PyValueError::new_err("Empty factor list"));
+        }
+        let arrays: Vec<Array2<f64>> = factors
+            .iter()
+            .map(|f| f.readonly().as_array().to_owned())
+            .collect();
+        let shape = arrays[0].dim();
+        let n_factors = arrays.len() as f64;
+        let mut combined = Array2::<f64>::zeros(shape);
+
+        for i in 0..shape.0 {
+            for factor_idx in 0..arrays.len() {
+                let row = arrays[factor_idx].row(i);
+                let mut valid: Vec<(usize, f64)> = row
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, v)| v.is_finite())
+                    .map(|(j, &v)| (j, v))
+                    .collect();
+                if valid.len() < 2 {
+                    continue;
+                }
+                valid.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+                let n = valid.len() as f64;
+                // Average-rank tie-breaking
+                let mut k = 0;
+                while k < valid.len() {
+                    let mut end = k + 1;
+                    while end < valid.len() && valid[end].1 == valid[k].1 {
+                        end += 1;
+                    }
+                    let avg_rank = (k + end + 1) as f64 / 2.0;
+                    let norm = (avg_rank - 1.0) / (n - 1.0);
+                    for m in k..end {
+                        combined[[i, valid[m].0]] += (norm - 0.5) / n_factors;
+                    }
+                    k = end;
+                }
+            }
+        }
+        Ok(combined.into_pyarray(py).into())
+    }
+
+    #[staticmethod]
+    /// Signal-weighted combination: weight each factor by the absolute
+    /// magnitude of its z-scored signal, then sum.
+    fn signal_weighted(
+        py: Python<'_>,
+        factors: Vec<Bound<'_, PyArray2<f64>>>,
+    ) -> PyResult<Py<PyArray2<f64>>> {
+        if factors.is_empty() {
+            return Err(PyValueError::new_err("Empty factor list"));
+        }
+        let arrays: Vec<Array2<f64>> = factors
+            .iter()
+            .map(|f| f.readonly().as_array().to_owned())
+            .collect();
+        let shape = arrays[0].dim();
+        let mut combined = Array2::<f64>::zeros(shape);
+
+        for i in 0..shape.0 {
+            let mut total_weight = vec![0.0f64; shape.1];
+            let mut weighted_sum = vec![0.0f64; shape.1];
+            for arr in &arrays {
+                let row = arr.row(i);
+                let mut valid: Vec<(usize, f64)> = row
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, v)| v.is_finite())
+                    .map(|(j, &v)| (j, v))
+                    .collect();
+                if valid.is_empty() {
+                    continue;
+                }
+                let mean = valid.iter().map(|(_, v)| *v).sum::<f64>() / valid.len() as f64;
+                let std = (valid
+                    .iter()
+                    .map(|(_, v)| (*v - mean).powi(2))
+                    .sum::<f64>()
+                    / valid.len() as f64)
+                    .sqrt();
+                if std < 1e-12 {
+                    continue;
+                }
+                for (j, v) in &valid {
+                    let z = (*v - mean) / std;
+                    let w = z.abs();
+                    total_weight[*j] += w;
+                    weighted_sum[*j] += z * w;
+                }
+            }
+            for j in 0..shape.1 {
+                if total_weight[j] > 0.0 {
+                    combined[[i, j]] = weighted_sum[j] / total_weight[j];
+                } else {
+                    combined[[i, j]] = f64::NAN;
+                }
+            }
+        }
+        Ok(combined.into_pyarray(py).into())
+    }
+}
+
+#[pymethods]
+impl PyPositionBuilder {
+    #[staticmethod]
+    /// Convert a factor matrix to a long-short position matrix.
+    ///
+    /// Positions are 1 for top N quantiles, -1 for bottom N quantiles,
+    /// 0 otherwise. All positions within a group are equal-weighted.
+    fn from_factor(
+        py: Python<'_>,
+        factor: Bound<'_, PyArray2<f64>>,
+        quantiles: usize,
+        long_top_n: usize,
+        short_top_n: usize,
+    ) -> PyResult<Py<PyArray2<f64>>> {
+        let factor_arr = factor.readonly().as_array().to_owned();
+        let (n_dates, n_assets) = factor_arr.dim();
+        let mut positions = Array2::<f64>::zeros((n_dates, n_assets));
+
+        for d in 0..n_dates {
+            let row = factor_arr.row(d);
+            let mut valid: Vec<(usize, f64)> = row
+                .iter()
+                .enumerate()
+                .filter(|(_, v)| v.is_finite())
+                .map(|(j, &v)| (j, v))
+                .collect();
+
+            if valid.len() < quantiles {
+                continue;
+            }
+
+            valid.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+            let n = valid.len() as f64;
+            let bins = quantiles as f64;
+
+            // Average-rank tie-breaking
+            let mut k = 0;
+            while k < valid.len() {
+                let mut end = k + 1;
+                while end < valid.len() && valid[end].1 == valid[k].1 {
+                    end += 1;
+                }
+                let avg_rank = (k + end + 1) as f64 / 2.0;
+                let q = ((avg_rank - 1.0) * bins / n).floor() as usize;
+                let q = q.min(quantiles - 1);
+                for m in k..end {
+                    let j = valid[m].0;
+                    if q >= quantiles - long_top_n {
+                        positions[[d, j]] = 1.0;
+                    } else if q < short_top_n {
+                        positions[[d, j]] = -1.0;
+                    }
+                }
+                k = end;
+            }
+        }
+
+        Ok(positions.into_pyarray(py).into())
+    }
+
+    fn __repr__(&self) -> String {
+        "PositionBuilder()".to_string()
+    }
+}
+
+impl PyFactorCombiner {
+    fn __repr__(&self) -> String {
+        "FactorCombiner()".to_string()
     }
 }

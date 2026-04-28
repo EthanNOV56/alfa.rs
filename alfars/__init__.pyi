@@ -102,13 +102,6 @@ def power(expr: Expr, exponent: float) -> Expr: ...
 def decay_linear(expr: Expr, periods: int) -> Expr: ...
 def cumsum(expr: Expr) -> Expr: ...
 def cumprod(expr: Expr) -> Expr: ...
-def rolling_window(
-    size: int,
-    min_periods: Optional[int] = None,
-) -> Any: ...
-def expanding_window(
-    min_periods: Optional[int] = None,
-) -> Any: ...
 
 # =============================================================================
 # Expr Class
@@ -204,57 +197,6 @@ class BacktestResult:
         """Create BacktestResult from Rust result."""
         ...
 
-# =============================================================================
-# DataFrame and Series Classes
-# =============================================================================
-
-class Series:
-    """Series data structure for expression evaluation."""
-
-    def __init__(self, data: npt.NDArray) -> None: ...
-    def len(self) -> int: ...
-    def is_empty(self) -> bool: ...
-    def to_list(self) -> List[float]: ...
-
-class DataFrame:
-    """DataFrame structure for expression evaluation."""
-
-    def __init__(self, columns: Dict[str, npt.NDArray]) -> None: ...
-    def n_rows(self) -> int: ...
-    def n_cols(self) -> int: ...
-    def column_names(self) -> List[str]: ...
-    def evaluate(self, expr: Expr) -> npt.NDArray: ...
-
-class LazyFrame:
-    """Lazy evaluation frame for query optimization."""
-
-    @staticmethod
-    def scan(data: Dict[str, npt.NDArray]) -> LazyFrame:
-        """Create a LazyFrame from a dictionary of data."""
-        ...
-
-    def with_columns(self, columns: List[Tuple[str, Expr]]) -> LazyFrame:
-        """Add new columns to the LazyFrame."""
-        ...
-
-    def join(
-        self,
-        other: LazyFrame,
-        on: List[str],
-        how: Literal["inner", "left", "right", "outer"] = "inner",
-    ) -> LazyFrame:
-        """Join with another LazyFrame."""
-        ...
-
-    def collect(self) -> DataFrame:
-        """Execute the lazy computation and return DataFrame."""
-        ...
-
-    def explain(self, optimized: bool = False) -> str:
-        """Return the query plan."""
-        ...
-
-# =============================================================================
 # Genetic Programming Classes
 # =============================================================================
 
@@ -444,89 +386,43 @@ class FactorRegistry:
         Register a factor expression.
 
         The backend automatically parses the expression and generates a compute plan.
-
-        Parameters
-        ----------
-        name : str
-            Factor name
-        expression : str
-            Factor expression (e.g., 'rank(ts_mean(close, 20))')
-
-        Returns
-        -------
-        str
-            Factor name
         """
         ...
 
     def compute(
         self, name: str, data: Dict[str, Union[npt.NDArray, List[float]]]
-    ) -> FactorResult:
-        """
-        Compute factor values with provided data.
-
-        Parameters
-        ----------
-        name : str
-            Factor name
-        data : dict
-            Dictionary of column_name -> numpy array or list
-
-        Returns
-        -------
-        FactorResult
-            Factor computation result with values array
-        """
-        ...
-
+    ) -> FactorResult: ...
     def compute_batch(
         self,
         names: List[str],
         data: Dict[str, Union[npt.NDArray, List[float]]],
         parallel: bool = False,
-    ) -> Dict[str, FactorResult]:
+    ) -> Dict[str, FactorResult]: ...
+    def compute_cs_pipeline(
+        self, data_layer: DataLayer
+    ) -> Dict[str, CsResult]:
         """
-        Batch compute multiple factors with shared subexpression optimization.
+        Compute all registered factors via the cross-sectional pipeline.
 
-        This method is more efficient than computing factors individually because
-        it caches and reuses intermediate results (e.g., ts_mean(close, 20) is
-        computed only once even if used by multiple factors).
+        Queries 5m data via DataLayer, computes factors, applies
+        winsor→zscore→cap_neu→qcut per date. Returns CsResult per factor.
+        """
+        ...
+    def compute_factor_matrices_1d(
+        self, data_layer: DataLayer
+    ) -> Tuple[Dict[str, npt.NDArray[np.float64]], PriceMatrix]:
+        """
+        Compute factors on 1d data and return 2D matrices aligned with PriceMatrix.
 
-        Parameters
-        ----------
-        names : list of str
-            List of factor names to compute
-        data : dict
-            Dictionary of column_name -> numpy array or list
-        parallel : bool
-            Whether to use parallel computation (default: False)
-
-        Returns
-        -------
-        dict
-            Dictionary mapping factor name -> FactorResult
+        Returns (factor_matrices_dict, price_matrix).
         """
         ...
 
-    def list(self) -> List[str]:
-        """List all registered factor names."""
-        ...
-
-    def get(self, name: str) -> Optional[FactorInfo]:
-        """Get factor information by name."""
-        ...
-
-    def unregister(self, name: str) -> bool:
-        """Unregister a factor by name."""
-        ...
-
-    def clear(self) -> None:
-        """Clear all registered factors."""
-        ...
-
-    def get_config(self) -> Dict[str, Any]:
-        """Get compute configuration."""
-        ...
+    def list(self) -> List[str]: ...
+    def get(self, name: str) -> Optional[FactorInfo]: ...
+    def unregister(self, name: str) -> bool: ...
+    def clear(self) -> None: ...
+    def get_config(self) -> Dict[str, Any]: ...
 
 class FactorInfo:
     """
@@ -584,6 +480,240 @@ class Dimension:
     def infer(expr: Expr) -> Dimension: ...
     @staticmethod
     def is_valid_factor(expr: Expr) -> bool: ...
+
+# =============================================================================
+# Data Pipeline Classes
+# =============================================================================
+
+class ClickHouseSource:
+    """ClickHouse data source configured from environment variables."""
+
+    @staticmethod
+    def from_env() -> ClickHouseSource:
+        """Create from CLICKHOUSE_* or CH_* environment variables."""
+        ...
+    def __init__(
+        self,
+        host: str = "localhost",
+        port: int = 8123,
+        database: str = "default",
+        username: str = "default",
+        password: Optional[str] = None,
+    ) -> None: ...
+    @property
+    def host(self) -> str: ...
+    @property
+    def port(self) -> int: ...
+    @property
+    def database(self) -> str: ...
+    @property
+    def username(self) -> str: ...
+
+class DataLayer:
+    """Intelligent data fetching layer backed by ClickHouse."""
+
+    def __init__(self, source: ClickHouseSource) -> None: ...
+    def set_pre_filter(self, filter: str) -> None:
+        """Set date/symbol filter (e.g., '2024-01-01:2025-01-01 symbols not like \'%BJ\'')."""
+        ...
+    def query_price_matrix(self) -> PriceMatrix:
+        """Query 1d OHLCV data as aligned 2D matrices."""
+        ...
+    def clear_cache(self) -> None: ...
+    @property
+    def symbols_5m(self) -> List[str]:
+        """Cached symbol list from last query."""
+        ...
+
+class PriceMatrix:
+    """2D price data matrices (n_dates × n_symbols), forward-adjusted."""
+
+    @property
+    def dates(self) -> List[int]: ...
+    @property
+    def symbols(self) -> List[str]: ...
+    @property
+    def n_dates(self) -> int: ...
+    @property
+    def n_symbols(self) -> int: ...
+    @property
+    def close(self) -> npt.NDArray[np.float64]: ...
+    @property
+    def open(self) -> npt.NDArray[np.float64]: ...
+    @property
+    def high(self) -> npt.NDArray[np.float64]: ...
+    @property
+    def low(self) -> npt.NDArray[np.float64]: ...
+    @property
+    def vwap(self) -> npt.NDArray[np.float64]: ...
+    @property
+    def returns(self) -> npt.NDArray[np.float64]: ...
+    @property
+    def tradable(self) -> npt.NDArray[np.float64]: ...
+
+    def build_factor_matrix(
+        self, cs_results: List[Tuple[CsResult, List[str]]]
+    ) -> npt.NDArray[np.float64]:
+        """
+        Build a (n_dates × n_symbols) factor matrix from CsResults.
+
+        Each tuple is (CsResult, symbol_list).
+        """
+        ...
+
+class CsResult:
+    """Cross-sectional pipeline result for one factor."""
+
+    @property
+    def groups(self) -> List[Tuple[int, int]]:
+        """(date_int, symbol_idx) keys for each value."""
+        ...
+    @property
+    def cap_neued(self) -> List[float]:
+        """Market-cap neutralized factor values."""
+        ...
+    @property
+    def qcut(self) -> List[Optional[int]]:
+        """Quantile group assignments (0..9 or None)."""
+        ...
+
+# =============================================================================
+# Factor Combination + Position Building
+# =============================================================================
+
+class FactorCombiner:
+    """Multi-factor combination methods."""
+
+    @staticmethod
+    def equal_weight(
+        factors: List[npt.NDArray[np.float64]],
+    ) -> npt.NDArray[np.float64]:
+        """Equal-weight average, NaN-aware per cell."""
+        ...
+    @staticmethod
+    def rank_average(
+        factors: List[npt.NDArray[np.float64]],
+    ) -> npt.NDArray[np.float64]:
+        """Average of cross-sectional normalized ranks."""
+        ...
+    @staticmethod
+    def signal_weighted(
+        factors: List[npt.NDArray[np.float64]],
+    ) -> npt.NDArray[np.float64]:
+        """Weight each factor by z-scored signal magnitude, then sum."""
+        ...
+
+class PositionBuilder:
+    """Factor value → position/weight matrix conversion."""
+
+    @staticmethod
+    def from_factor(
+        factor: npt.NDArray[np.float64],
+        quantiles: int,
+        long_top_n: int,
+        short_top_n: int,
+    ) -> npt.NDArray[np.float64]:
+        """
+        Convert factor matrix to long-short position matrix.
+        Positions: 1 (long), -1 (short), 0 (neutral).
+        """
+        ...
+
+# =============================================================================
+# Rust-Backed Backtest Engine
+# =============================================================================
+
+class PyBacktestEngine:
+    """Rust backtest engine with configurable parameters."""
+
+    def __init__(
+        self,
+        quantiles: int = 10,
+        weight_method: Literal["equal", "weighted"] = "equal",
+        long_top_n: int = 1,
+        short_top_n: int = 1,
+        commission_rate: float = 0.0,
+    ) -> None: ...
+    def run(
+        self,
+        factor: npt.NDArray[np.float64],
+        returns: npt.NDArray[np.float64],
+        adj_factor: npt.NDArray[np.float64],
+        close: npt.NDArray[np.float64],
+        open: npt.NDArray[np.float64],
+        vwap: npt.NDArray[np.float64],
+        tradable: npt.NDArray[np.float64],
+    ) -> PyBacktestResult: ...
+    def run_multi(
+        self,
+        factors: List[npt.NDArray[np.float64]],
+        returns: npt.NDArray[np.float64],
+        adj_factor: npt.NDArray[np.float64],
+        close: npt.NDArray[np.float64],
+        open: npt.NDArray[np.float64],
+        vwap: npt.NDArray[np.float64],
+        tradable: npt.NDArray[np.float64],
+    ) -> PyBacktestResult:
+        """Multi-factor equal-weight backtest."""
+        ...
+    def run_with_prices(
+        self,
+        factor: npt.NDArray[np.float64],
+        prices: PriceMatrix,
+    ) -> PyBacktestResult:
+        """Single-factor backtest with PriceMatrix (auto-aligned)."""
+        ...
+    def run_multi_with_prices(
+        self,
+        factors: List[npt.NDArray[np.float64]],
+        prices: PriceMatrix,
+    ) -> PyBacktestResult:
+        """Multi-factor equal-weight backtest with PriceMatrix."""
+        ...
+
+class PyBacktestResult:
+    """Backtest result from Rust engine."""
+
+    group_returns: npt.NDArray[np.float64]
+    group_cum_returns: npt.NDArray[np.float64]
+    long_short_returns: npt.NDArray[np.float64]
+    long_short_cum_return: float
+    long_short_cum_returns: npt.NDArray[np.float64]
+    long_cum_returns: npt.NDArray[np.float64]
+    short_cum_returns: npt.NDArray[np.float64]
+    ic_series: npt.NDArray[np.float64]
+    ic_mean: float
+    ic_ir: float
+    total_return: float
+    annualized_return: float
+    sharpe_ratio: float
+    max_drawdown: float
+    turnover: float
+    long_returns: npt.NDArray[np.float64]
+    short_returns: npt.NDArray[np.float64]
+
+class PyFeeConfig:
+    """Fee configuration for backtest."""
+
+    commission_rate: float
+
+class PyPositionConfig:
+    """Position sizing configuration."""
+
+    long_ratio: float
+    short_ratio: float
+    market_neutral: bool
+
+class PySlippageConfig:
+    """Volume-based slippage configuration."""
+
+    large_volume_threshold: float
+    large_slippage_rate: float
+
+# Python-side aliases for backtest config
+FeeConfig = PyFeeConfig
+PositionConfig = PyPositionConfig
+SlippageConfig = PySlippageConfig
 
 # =============================================================================
 # Module-level attributes

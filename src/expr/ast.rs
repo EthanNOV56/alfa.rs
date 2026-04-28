@@ -16,8 +16,80 @@ pub enum DataType {
     // TODO: Add more types as needed
 }
 
+/// Frequency for time series data and resampling
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Frequency {
+    /// 1 minute frequency
+    Minute1,
+    /// 5 minute frequency
+    Minute5,
+    /// 15 minute frequency
+    Minute15,
+    /// 30 minute frequency
+    Minute30,
+    /// 1 hour frequency
+    Hour1,
+    /// Daily frequency
+    Daily,
+    /// Weekly frequency
+    Weekly,
+    /// Monthly frequency
+    Monthly,
+}
+
+impl Frequency {
+    /// Parse a frequency from string (e.g., "1m", "5m", "1d")
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "1m" | "1min" => Some(Frequency::Minute1),
+            "5m" | "5min" => Some(Frequency::Minute5),
+            "15m" | "15min" => Some(Frequency::Minute15),
+            "30m" | "30min" => Some(Frequency::Minute30),
+            "1h" | "1hour" => Some(Frequency::Hour1),
+            "1d" | "daily" => Some(Frequency::Daily),
+            "1w" | "weekly" => Some(Frequency::Weekly),
+            "1mo" | "monthly" => Some(Frequency::Monthly),
+            _ => None,
+        }
+    }
+
+    /// Convert frequency to string representation
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Frequency::Minute1 => "1m",
+            Frequency::Minute5 => "5m",
+            Frequency::Minute15 => "15m",
+            Frequency::Minute30 => "30m",
+            Frequency::Hour1 => "1h",
+            Frequency::Daily => "1d",
+            Frequency::Weekly => "1w",
+            Frequency::Monthly => "1mo",
+        }
+    }
+
+    /// Get the period in days (for comparing fineness of frequencies)
+    /// Smaller values = finer granularity
+    pub fn period_days(&self) -> f64 {
+        match self {
+            Frequency::Minute1 => 1.0 / (24.0 * 60.0),    // ~0.00069 days
+            Frequency::Minute5 => 5.0 / (24.0 * 60.0),     // ~0.00347 days
+            Frequency::Minute15 => 15.0 / (24.0 * 60.0),  // ~0.0104 days
+            Frequency::Minute30 => 30.0 / (24.0 * 60.0),  // ~0.0208 days
+            Frequency::Hour1 => 1.0 / 24.0,                // ~0.0417 days
+            Frequency::Daily => 1.0,                       // 1 day
+            Frequency::Weekly => 7.0,                       // 7 days
+            Frequency::Monthly => 30.0,                     // ~30 days
+        }
+    }
+}
+
+impl Default for Frequency {
+    fn default() -> Self {
+        Frequency::Daily
+    }
+}
+
 /// Dimension types for financial expressions (for GP factor mining)
-/// Used to prevent generating invalid expressions like unnormalized price/volume
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Dimension {
     /// Price dimension (close, open, high, low)
@@ -200,8 +272,14 @@ pub enum Expr {
     },
     /// Unary operation on an expression
     UnaryExpr { op: UnaryOp, expr: Arc<Expr> },
-    /// Function call with arguments
-    FunctionCall { name: String, args: Vec<Expr> },
+    /// Function call with arguments and optional frequency (for group operations)
+    /// If freq is Some, this is a group-by-frequency operation (e.g., 1d:sum(...))
+    /// If freq is None, this is a time-series rolling operation (e.g., ts_sum(...))
+    FunctionCall {
+        name: String,
+        args: Vec<Expr>,
+        freq: Option<Frequency>,
+    },
     /// Aggregate expression (e.g., sum, mean)
     Aggregate {
         op: AggregateOp,
@@ -443,6 +521,7 @@ impl Expr {
         Expr::FunctionCall {
             name: name.into(),
             args,
+            freq: None,
         }
     }
 
@@ -492,8 +571,12 @@ impl fmt::Debug for Expr {
                 write!(f, "({:?} {:?} {:?})", left, op, right)
             }
             Expr::UnaryExpr { op, expr } => write!(f, "({:?} {:?})", op, expr),
-            Expr::FunctionCall { name, args } => {
-                write!(f, "{}({:?})", name, args)
+            Expr::FunctionCall { name, args, freq } => {
+                if let Some(freq_val) = freq {
+                    write!(f, "{}:{}({:?})", freq_val.as_str(), name, args)
+                } else {
+                    write!(f, "{}({:?})", name, args)
+                }
             }
             Expr::Aggregate { op, expr, distinct } => {
                 if *distinct {

@@ -12,7 +12,7 @@
 use crate::WeightMethod;
 use crate::backtest::{BacktestConfig, BacktestEngine, BacktestResult, FeeConfig, PositionConfig};
 use crate::expr::{BinaryOp, Expr, Literal, UnaryOp};
-use crate::types::{DataFrame, Series, evaluate_expr_on_dataframe};
+use crate::expr::registry::functions::eval_expr_vectorized;
 use lru::LruCache;
 use ndarray::Array2;
 use rand::Rng;
@@ -648,7 +648,7 @@ pub mod tree_ops {
                     None
                 }
             }
-            Expr::FunctionCall { name, args } => {
+            Expr::FunctionCall { name, args, freq } => {
                 let mut new_args = args;
                 if idx < new_args.len() {
                     let new_arg = replace_node_at_path(new_args[idx].clone(), rest, new)?;
@@ -656,6 +656,7 @@ pub mod tree_ops {
                     Some(Expr::FunctionCall {
                         name,
                         args: new_args,
+                        freq,
                     })
                 } else {
                     None
@@ -1088,6 +1089,10 @@ impl RealBacktestFitnessEvaluator {
 
     /// Evaluate expression to get factor matrix
     fn evaluate_expression(&self, expr: &Expr) -> Option<Array2<f64>> {
+        use ndarray::Array1;
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
         let n_days = self.returns.shape()[0];
         let n_assets = self.returns.shape()[1];
 
@@ -1095,21 +1100,26 @@ impl RealBacktestFitnessEvaluator {
         let results: Vec<Vec<f64>> = (0..n_assets)
             .into_par_iter()
             .map(|asset_idx| {
-                // Create DataFrame for this asset
-                let mut columns = HashMap::new();
+                let mut columns: HashMap<String, Array1<f64>> = HashMap::new();
 
                 for (col_name, array) in &self.data {
-                    let column_data = array.column(asset_idx).to_vec();
-                    columns.insert(col_name.clone(), Series::new(column_data));
+                    let column_data = array.column(asset_idx).to_owned();
+                    columns.insert(col_name.clone(), column_data);
                 }
 
-                // Evaluate expression
-                if let Ok(df) = DataFrame::from_series_map(columns) {
-                    if let Ok(series) = evaluate_expr_on_dataframe(expr, &df) {
-                        return series.data().to_vec();
-                    }
+                // Pre-populate cache with column hashes
+                let mut cache: HashMap<u64, Array1<f64>> = HashMap::new();
+                for (name, arr) in &columns {
+                    let mut hasher = DefaultHasher::new();
+                    0u8.hash(&mut hasher);
+                    name.hash(&mut hasher);
+                    cache.insert(hasher.finish(), arr.clone());
                 }
-                vec![f64::NAN; n_days]
+
+                match eval_expr_vectorized(expr, &columns, &mut cache) {
+                    Ok(arr) => arr.to_vec(),
+                    Err(_) => vec![f64::NAN; n_days],
+                }
             })
             .collect();
 

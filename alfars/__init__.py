@@ -30,57 +30,55 @@ __author__ = "EthanNOV56"
 
 try:
     from ._core import (
-        DataFrame,
+        ClickHouseSource,
+        CsResult,
+        DataLayer,
         # Expression system
         Expr,
-        FactorMetadata,
+        FactorCombiner,
         FactorInfo,
-        FactorResult,
+        FactorMetadata,
         # Factor registry
         FactorRegistry,
+        FactorResult,
         # Genetic Programming
         GpEngine,
         GPHistoryRecord,
         GPRecommendations,
-        # Lazy evaluation
-        LazyFrame,
         # Meta-learning system
         MetaLearningAnalyzer,
         # Persistence system
         PersistenceManager,
+        PositionBuilder,
+        PriceMatrix,
         # Backtest configuration
         PyBacktestEngine,
         PyFeeConfig,
         PyPositionConfig,
         PySlippageConfig,
-        Series,
         compute_ic,
         cumprod,
         cumsum,
         decay_linear,
         diff,
         evaluate_expression,
-        expanding_window,
         # Expression functions
         lag,
         power,
         quantile_backtest,
         rank,
         rolling_mean,
-        rolling_window,
         scale,
         sign,
         ts_argmax,
         ts_argmin,
         ts_corr,
-        ts_count,
         ts_cov,
         ts_max,
         ts_min,
         # Alpha101 functions
         ts_rank,
         ts_sum,
-        ts_count,
     )
 
     HAS_RUST_EXT = True
@@ -89,123 +87,43 @@ try:
     _compute_ic = compute_ic
 except ImportError:
     HAS_RUST_EXT = False
-    print("Warning: Rust extension not found. Using pure Python fallback.")
-    from ._fallback import (
-        PyBacktestEngine,
-        PyBacktestResult,
-    )
-    from ._fallback import (
-        compute_ic as _compute_ic,
-    )
-    from ._fallback import (
-        quantile_backtest as _quantile_backtest,
-    )
+    print("Warning: Rust extension not found. Run: maturin develop")
 
-    # Create simple stubs for new functionality when Rust extension is missing
-    class Expr:
-        """Stub Expr class for fallback mode."""
-
+    class _Stub:
         pass
 
-    class Series:
-        """Stub Series class for fallback mode."""
+    Expr = _Stub
+    GpEngine = _Stub
+    PersistenceManager = _Stub
+    FactorMetadata = GPHistoryRecord = _Stub
+    MetaLearningAnalyzer = GPRecommendations = _Stub
+    FactorRegistry = FactorInfo = FactorResult = _Stub
+    ClickHouseSource = DataLayer = PriceMatrix = CsResult = _Stub
+    FactorCombiner = PositionBuilder = _Stub
+    PyBacktestEngine = PyFeeConfig = PyPositionConfig = PySlippageConfig = _Stub
 
-        pass
+    def _stub_fn(*args, **kwargs):
+        return None
 
-    class DataFrame:
-        """Stub DataFrame class for fallback mode."""
-
-        pass
-
-    class LazyFrame:
-        """Stub LazyFrame class for fallback mode."""
-
-        pass
-
-    # GP system stubs
-    class GpEngine:
-        """Stub GpEngine class for fallback mode."""
-
-        pass
-
-    class PersistenceManager:
-        """Stub PersistenceManager class for fallback mode."""
-
-        pass
-
-    class FactorMetadata:
-        """Stub FactorMetadata class for fallback mode."""
-
-        pass
-
-    class GPHistoryRecord:
-        """Stub GPHistoryRecord class for fallback mode."""
-
-        pass
-
-    class MetaLearningAnalyzer:
-        """Stub MetaLearningAnalyzer class for fallback mode."""
-
-        pass
-
-    class GPRecommendations:
-        """Stub GPRecommendations class for fallback mode."""
-
-        pass
-
-    # Factor registry stubs
-    class FactorRegistry:
-        """Stub FactorRegistry class for fallback mode."""
-
-        pass
-
-    class FactorInfo:
-        """Stub FactorInfo class for fallback mode."""
-
-        pass
-
-    class FactorResult:
-        """Stub FactorResult class for fallback mode."""
-
-        pass
-
-    def rolling_window(*args, **kwargs):
-        """Stub function for fallback mode."""
-        return {}
-
-    def expanding_window(*args, **kwargs):
-        """Stub function for fallback mode."""
-        return {}
-
-    def lag(*args, **kwargs):
-        """Stub function for fallback mode."""
-        return Expr()
-
-    def diff(*args, **kwargs):
-        """Stub function for fallback mode."""
-        return Expr()
-
-    def rolling_mean(*args, **kwargs):
-        """Stub function for fallback mode."""
-        return Expr()
-
-    def cumsum(*args, **kwargs):
-        """Stub function for fallback mode."""
-        return Expr()
-
-    def cumprod(*args, **kwargs):
-        """Stub function for fallback mode."""
-        return Expr()
-
-    def evaluate_expression(*args, **kwargs):
-        """Stub function for fallback mode."""
-        return np.array([])
+    lag = diff = rolling_mean = _stub_fn
+    cumsum = cumprod = evaluate_expression = _stub_fn
+    quantile_backtest = compute_ic = _stub_fn
+    _quantile_backtest = _compute_ic = _stub_fn
 
 
 __all__ = [
+    # Data layer (ClickHouse → DataLayer → PriceMatrix pipeline)
+    "ClickHouseSource",
+    "CsResult",
+    "DataLayer",
+    "PriceMatrix",
+    # Multi-factor combination + position building
+    "FactorCombiner",
+    "PositionBuilder",
     # Core backtesting
     "factor_returns",
     "quantile_backtest",
+    "quantile_backtest_multi",
     "create_factor_tear_sheet",
     "BacktestEngine",
     "BacktestResult",
@@ -216,15 +134,9 @@ __all__ = [
     "SlippageConfig",
     # Expression system
     "Expr",
-    "Series",
-    "DataFrame",
     "evaluate_expression",
     "parse_expression",
     "optimize_expression",
-    # Lazy evaluation
-    "LazyFrame",
-    "rolling_window",
-    "expanding_window",
     # Expression functions
     "lag",
     "diff",
@@ -614,9 +526,17 @@ class BacktestResult:
         self.group_cum_returns = group_cum_returns
         self.long_short_returns = long_short_returns
         self.long_short_cum_return = long_short_cum_return
-        self.long_short_cum_returns = long_short_cum_returns if long_short_cum_returns is not None else np.array([])
-        self.long_cum_returns = long_cum_returns if long_cum_returns is not None else np.array([])
-        self.short_cum_returns = short_cum_returns if short_cum_returns is not None else np.array([])
+        self.long_short_cum_returns = (
+            long_short_cum_returns
+            if long_short_cum_returns is not None
+            else np.array([])
+        )
+        self.long_cum_returns = (
+            long_cum_returns if long_cum_returns is not None else np.array([])
+        )
+        self.short_cum_returns = (
+            short_cum_returns if short_cum_returns is not None else np.array([])
+        )
         self.ic_series = ic_series
         self.ic_mean = ic_mean
         self.ic_ir = ic_ir
@@ -648,7 +568,9 @@ class BacktestResult:
             turnover=getattr(rust_result, "turnover", 0.0),
             long_returns=getattr(rust_result, "long_returns", np.array([])),
             short_returns=getattr(rust_result, "short_returns", np.array([])),
-            long_short_cum_returns=getattr(rust_result, "long_short_cum_returns", np.array([])),
+            long_short_cum_returns=getattr(
+                rust_result, "long_short_cum_returns", np.array([])
+            ),
             long_cum_returns=getattr(rust_result, "long_cum_returns", np.array([])),
             short_cum_returns=getattr(rust_result, "short_cum_returns", np.array([])),
         )
@@ -858,6 +780,72 @@ def quantile_backtest(
         long_top_n,
         short_top_n,
         commission_rate,
+        adj_factor,
+        close,
+        open_arr,
+        vwap,
+        tradable,
+    )
+    return BacktestResult.from_rust_result(rust_result)
+
+
+def quantile_backtest_multi(
+    factors: list[np.ndarray],
+    returns: np.ndarray,
+    quantiles: int = 10,
+    weight_method: str = "equal",
+    long_top_n: int = 1,
+    short_top_n: int = 1,
+    commission_rate: float = 0.0,
+) -> BacktestResult:
+    """
+    Multi-factor equal-weight combination backtest.
+
+    Parameters
+    ----------
+    factors : list of np.ndarray
+        Factor arrays, each shape (n_days, n_assets)
+    returns : np.ndarray
+        Forward returns, shape (n_days, n_assets)
+    quantiles : int, default 10
+        Number of quantile groups
+    weight_method : str, default "equal"
+        "equal" or "weighted"
+    long_top_n : int, default 1
+        Number of top groups to long
+    short_top_n : int, default 1
+        Number of bottom groups to short
+    commission_rate : float, default 0.0
+        One-way commission rate
+
+    Returns
+    -------
+    BacktestResult
+        Backtest results
+    """
+    if not HAS_RUST_EXT:
+        raise RuntimeError("Multi-backtest requires Rust extension")
+
+    if not factors:
+        raise ValueError("factors list is empty")
+
+    n_days, n_assets = returns.shape
+    adj_factor = np.ones((n_days, n_assets))
+    close = np.ones((n_days, n_assets))
+    open_arr = np.ones((n_days, n_assets))
+    vwap = np.ones((n_days, n_assets))
+    tradable = np.ones((n_days, n_assets))
+
+    engine = PyBacktestEngine(
+        quantiles,
+        weight_method,
+        long_top_n,
+        short_top_n,
+        commission_rate,
+    )
+    rust_result = engine.run_multi(
+        factors,
+        returns,
         adj_factor,
         close,
         open_arr,

@@ -9,11 +9,11 @@ pub mod functions;
 pub mod parser;
 pub mod timeseries;
 
-pub use config::{ColumnMeta, ComputeConfig, FactorInfo, FactorResult};
+pub use config::{ColumnMeta, ComputeConfig, CsResult, FactorInfo, FactorResult};
 pub use parser::parse_expression;
 
-use crate::expr::ast::{BinaryOp, Expr, Literal, UnaryOp};
-use crate::lazy::LogicalPlan;
+use crate::data::layer::DataLayer;
+use crate::expr::ast::{Expr, Frequency};
 use ndarray::Array1;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
@@ -21,7 +21,7 @@ use std::hash::{Hash, Hasher};
 use std::time::Instant;
 
 pub use functions::{
-    collect_unique_subexpressions, eval_expr_memoized, eval_expr_vectorized,
+    collect_frequencies, collect_unique_subexpressions, eval_expr_memoized, eval_expr_vectorized,
     eval_function_memoized, eval_function_vectorized, eval_ts_function_memoized,
     eval_ts_function_vectorized, expr_hash, extract_columns,
 };
@@ -85,13 +85,10 @@ impl FactorRegistry {
             self.required_columns.insert(col.clone());
         }
 
-        let plan = functions::expr_to_logical_plan(&expr, name)?;
-
         let info = FactorInfo {
             name: name.to_string(),
             expression: expression.to_string(),
             parsed_expr: expr,
-            plan,
             description: None,
             category: None,
         };
@@ -116,7 +113,17 @@ impl FactorRegistry {
         }
 
         let start = Instant::now();
-        let result = self.execute_plan(&info.plan, data, n_rows)?;
+
+        // Pre-populate cache with data columns
+        let mut cache: HashMap<u64, Vec<f64>> = HashMap::new();
+        for (col_name, vals) in data {
+            let mut hasher = DefaultHasher::new();
+            0u8.hash(&mut hasher);
+            col_name.hash(&mut hasher);
+            cache.insert(hasher.finish(), vals.clone());
+        }
+
+        let result = functions::eval_expr_memoized(&info.parsed_expr, data, n_rows, &mut cache)?;
         let elapsed = start.elapsed().as_millis() as u64;
 
         Ok(FactorResult {
@@ -125,6 +132,7 @@ impl FactorRegistry {
             n_rows,
             n_cols: 1,
             compute_time_ms: elapsed,
+            groups: None,
         })
     }
 
@@ -163,17 +171,7 @@ impl FactorRegistry {
                 }
             };
 
-            // Extract the expression from plan (unwrap from Projection)
-            let expr = match &info.plan {
-                LogicalPlan::Projection { exprs, .. } => exprs
-                    .first()
-                    .map(|(_, e)| e.clone())
-                    .ok_or("Empty expression")?,
-                _ => {
-                    skipped_names.push(name.to_string());
-                    continue;
-                }
-            };
+            let expr = info.parsed_expr.clone();
 
             // Collect subexpressions
             collect_unique_subexpressions(&expr, &mut unique_exprs, &mut expr_hash_set);
@@ -240,6 +238,7 @@ impl FactorRegistry {
                                 n_rows,
                                 n_cols: 1,
                                 compute_time_ms: 0,
+                                groups: None,
                             },
                         )),
                         Err(e) => {
@@ -283,6 +282,7 @@ impl FactorRegistry {
                                 n_rows,
                                 n_cols: 1,
                                 compute_time_ms: 0,
+                                groups: None,
                             },
                         );
                     }
@@ -315,25 +315,185 @@ impl FactorRegistry {
     /// Batch compute multiple factors with vectorized (SIMD) evaluation
     ///
     /// This method uses ndarray::Array1 for SIMD-optimized operations.
-    /// It builds a computation graph and computes each unique subexpression only once.
+    /// It automatically fetches data based on the frequency prefix in factor names.
+    ///
+    /// # Arguments
+    /// * `data_layer` - DataLayer for fetching data
+    /// * `parallel` - Whether to use parallel computation
+    ///
+    /// # Returns
+    /// HashMap from factor name to (FactorResult, Frequency) tuple
     pub fn compute_batch_vectorized(
+        &self,
+        data_layer: &mut DataLayer,
+        parallel: bool,
+    ) -> Result<HashMap<String, (FactorResult, Frequency)>, String> {
+        // Step 1: Get all registered factor names
+        let factor_names: Vec<String> = self.factors.keys().cloned().collect();
+        if factor_names.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        // Step 2: Extract required fields from all expressions
+        let mut all_fields: Vec<String> = Vec::new();
+        let mut freq_per_factor: HashMap<String, Frequency> = HashMap::new();
+
+        for name in &factor_names {
+            let info = self
+                .factors
+                .get(name)
+                .ok_or_else(|| format!("Factor '{}' not found", name))?;
+            let expr = info.parsed_expr.clone();
+
+            let columns = extract_columns(&expr);
+            for col in &columns {
+                if !all_fields.contains(col) {
+                    all_fields.push(col.clone());
+                }
+            }
+
+            // Determine the finest frequency needed for this factor
+            let mut finest = Frequency::Daily;
+            for col in &columns {
+                if let Some(colon_pos) = col.find(':') {
+                    let freq_str = &col[..colon_pos];
+                    if let Some(freq) = Frequency::parse(freq_str) {
+                        if freq.period_days() < finest.period_days() {
+                            finest = freq;
+                        }
+                    }
+                }
+            }
+            freq_per_factor.insert(name.clone(), finest);
+        }
+
+        // Collect all group-by frequencies from FunctionCall nodes in all expressions,
+        // then add {finest_freq}:trading_date and {finest_freq}:symbol as grouping columns.
+        // Grouping columns must match the data granularity (finest frequency), not the
+        // output frequency, because the values being aggregated are at the finest level.
+        {
+            let mut all_group_freqs: Vec<Frequency> = Vec::new();
+            let mut finest_col_freq = Frequency::Daily;
+            for name in &factor_names {
+                let info = self.factors.get(name).unwrap();
+                let expr = info.parsed_expr.clone();
+                collect_frequencies(&expr, &mut all_group_freqs);
+
+                // Find finest column frequency
+                let cols = extract_columns(&expr);
+                for col in &cols {
+                    if let Some(colon_pos) = col.find(':') {
+                        let freq_str = &col[..colon_pos];
+                        if let Some(freq) = Frequency::parse(freq_str) {
+                            if freq.period_days() < finest_col_freq.period_days() {
+                                finest_col_freq = freq;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Use finest column frequency for grouping columns (aligns with data row count)
+            let prefix = finest_col_freq.as_str();
+            for meta_col in &["trading_date", "symbol"] {
+                let field = format!("{}:{}", prefix, meta_col);
+                if !all_fields.contains(&field) {
+                    all_fields.push(field);
+                }
+            }
+        }
+
+        // Step 3: Query data from DataLayer
+        let data = data_layer
+            .query(all_fields)
+            .map_err(|e| format!("DataLayer query error: {:?}", e))?;
+
+        let n_rows = data.values().next().map(|arr| arr.len()).unwrap_or(0);
+        if n_rows == 0 {
+            return Err("No data fetched".to_string());
+        }
+
+        // Step 4: Compute each factor
+        let mut results: HashMap<String, (FactorResult, Frequency)> = HashMap::new();
+
+        for name in &factor_names {
+            let info = self
+                .factors
+                .get(name)
+                .ok_or_else(|| format!("Factor '{}' not found", name))?;
+            let expr = info.parsed_expr.clone();
+
+            let freq = freq_per_factor
+                .get(name)
+                .cloned()
+                .unwrap_or(Frequency::Daily);
+
+            // Use the internal computation method
+            let result = self.compute_single_factor(&expr, &data, n_rows, parallel)?;
+
+            results.insert(
+                name.clone(),
+                (
+                    FactorResult {
+                        name: name.clone(),
+                        values: result,
+                        n_rows,
+                        n_cols: 1,
+                        compute_time_ms: 0,
+                        groups: None,
+                    },
+                    freq,
+                ),
+            );
+        }
+
+        Ok(results)
+    }
+
+    /// Build cache from data columns for expression evaluation
+    fn build_cache(data: &HashMap<String, Array1<f64>>) -> HashMap<u64, Array1<f64>> {
+        let mut cache = HashMap::with_capacity(data.len());
+        for name in data.keys() {
+            let mut hasher = DefaultHasher::new();
+            0u8.hash(&mut hasher);
+            name.hash(&mut hasher);
+            cache.insert(hasher.finish(), data[name].clone());
+        }
+        cache
+    }
+
+    /// Compute a single factor expression
+    fn compute_single_factor(
+        &self,
+        expr: &Expr,
+        data: &HashMap<String, Array1<f64>>,
+        _n_rows: usize,
+        _parallel: bool,
+    ) -> Result<Vec<f64>, String> {
+        use crate::expr::registry::functions::eval_expr_vectorized;
+
+        let mut cache = Self::build_cache(data);
+        let arr = eval_expr_vectorized(expr, data, &mut cache)?;
+        Ok(arr.to_vec())
+    }
+
+    /// Compute factors using pre-loaded data (no DataLayer dependency)
+    ///
+    /// When `compact` is true, group-aggregation expressions return per-group results
+    /// instead of expanding back to n_rows. FactorResult.groups will be populated with
+    /// (date_int, symbol_int) group keys, sorted by date then symbol.
+    ///
+    /// Suitable for callers that manage their own data loading (e.g., server binaries).
+    pub fn compute_batch_for_freq(
         &self,
         names: &[&str],
         data: &HashMap<String, Array1<f64>>,
         parallel: bool,
+        compact: bool,
     ) -> Result<HashMap<String, FactorResult>, String> {
-        if names.is_empty() {
-            return Ok(HashMap::new());
-        }
-
-        let n_rows = data.values().next().map(|arr| arr.len()).unwrap_or(0);
-        if n_rows == 0 {
-            return Err("Empty data".to_string());
-        }
-
         let start = Instant::now();
 
-        // Step 1: Build computation graph - collect all unique subexpressions
+        // Step 1: Build computation graph
         let mut unique_exprs: Vec<Expr> = Vec::new();
         let mut expr_hash_set: HashSet<u64> = HashSet::new();
         let mut factor_exprs_owned: Vec<Expr> = Vec::new();
@@ -345,92 +505,116 @@ impl FactorRegistry {
                 .get(*name)
                 .ok_or_else(|| format!("Factor '{}' not found", name))?;
 
-            // Extract the expression from plan (unwrap from Projection)
-            let expr = match &info.plan {
-                LogicalPlan::Projection { exprs, .. } => exprs
-                    .first()
-                    .map(|(_, e)| e.clone())
-                    .ok_or("Empty expression")?,
-                _ => continue,
-            };
+            let expr = info.parsed_expr.clone();
 
-            // Collect subexpressions
             collect_unique_subexpressions(&expr, &mut unique_exprs, &mut expr_hash_set);
             factor_exprs_owned.push(expr);
         }
 
-        // Build references after all owned expressions are created
         for (i, name) in names.iter().enumerate() {
             factor_exprs.push((name.to_string(), &factor_exprs_owned[i]));
         }
 
-        // Step 2: Build cache using memoization
-        let mut cache: HashMap<u64, Array1<f64>> = HashMap::new();
+        // Step 2: Build cache
+        let mut cache = Self::build_cache(data);
 
-        // Pre-populate cache with base columns
-        for (name, arr) in data {
-            let col_hash = {
-                let mut hasher = DefaultHasher::new();
-                0u8.hash(&mut hasher);
-                name.hash(&mut hasher);
-                hasher.finish()
-            };
-            cache.insert(col_hash, arr.clone());
-        }
-
-        // Step 3: Compute final factors using memoized vectorized evaluation
+        // Step 3: Compute factors
         let mut results: HashMap<String, FactorResult> = HashMap::new();
 
-        if parallel && factor_exprs.len() > 1 {
-            // Parallel computation using rayon
-            use rayon::prelude::*;
-
-            let results_vec: Vec<(String, FactorResult)> = factor_exprs
-                .par_iter()
-                .filter_map(|(name, expr)| {
-                    let mut thread_cache = cache.clone();
-                    match eval_expr_vectorized(expr, data, &mut thread_cache) {
-                        Ok(arr) => Some((
-                            name.clone(),
-                            FactorResult {
-                                name: name.clone(),
-                                values: arr.to_vec(),
-                                n_rows,
-                                n_cols: 1,
-                                compute_time_ms: 0,
-                            },
-                        )),
-                        Err(e) => {
-                            eprintln!("Error computing {}: {}", name, e);
-                            None
-                        }
-                    }
-                })
-                .collect();
-
-            for (name, result) in results_vec {
-                results.insert(name, result);
-            }
-        } else {
-            // Sequential computation
+        if compact {
+            use crate::expr::registry::functions::eval_expr_compact;
+            // Compact evaluation: returns per-group values + group keys
+            // No parallel path needed — compact results are small (n_groups << n_rows)
             for (name, expr) in factor_exprs {
-                let arr = eval_expr_vectorized(expr, data, &mut cache)?;
+                let (arr, groups) = eval_expr_compact(expr, data, &mut cache)?;
                 results.insert(
                     name.clone(),
                     FactorResult {
                         name,
                         values: arr.to_vec(),
-                        n_rows,
+                        n_rows: arr.len(),
                         n_cols: 1,
                         compute_time_ms: 0,
+                        groups: if groups.is_empty() {
+                            None
+                        } else {
+                            Some(groups)
+                        },
                     },
                 );
+            }
+        } else {
+            let n_rows = data.values().next().map(|arr| arr.len()).unwrap_or(0);
+
+            if parallel && factor_exprs.len() > 1 {
+                let use_parallel = n_rows < 1_000_000;
+
+                if use_parallel {
+                    use rayon::prelude::*;
+
+                    let results_vec: Vec<(String, FactorResult)> = factor_exprs
+                        .par_iter()
+                        .filter_map(|(name, expr)| {
+                            let mut thread_cache = cache.clone();
+                            match eval_expr_vectorized(expr, data, &mut thread_cache) {
+                                Ok(arr) => Some((
+                                    name.clone(),
+                                    FactorResult {
+                                        name: name.clone(),
+                                        values: arr.to_vec(),
+                                        n_rows,
+                                        n_cols: 1,
+                                        compute_time_ms: 0,
+                                        groups: None,
+                                    },
+                                )),
+                                Err(e) => {
+                                    eprintln!("Error computing {}: {}", name, e);
+                                    None
+                                }
+                            }
+                        })
+                        .collect();
+
+                    for (name, result) in results_vec {
+                        results.insert(name, result);
+                    }
+                } else {
+                    for (name, expr) in factor_exprs {
+                        let arr = eval_expr_vectorized(expr, data, &mut cache)?;
+                        results.insert(
+                            name.clone(),
+                            FactorResult {
+                                name,
+                                values: arr.to_vec(),
+                                n_rows,
+                                n_cols: 1,
+                                compute_time_ms: 0,
+                                groups: None,
+                            },
+                        );
+                    }
+                }
+            } else {
+                for (name, expr) in factor_exprs {
+                    let arr = eval_expr_vectorized(expr, data, &mut cache)?;
+                    results.insert(
+                        name.clone(),
+                        FactorResult {
+                            name,
+                            values: arr.to_vec(),
+                            n_rows,
+                            n_cols: 1,
+                            compute_time_ms: 0,
+                            groups: None,
+                        },
+                    );
+                }
             }
         }
 
         let elapsed = start.elapsed().as_millis() as u64;
 
-        // Update compute time
         for result in results.values_mut() {
             result.compute_time_ms = elapsed;
         }
@@ -438,304 +622,125 @@ impl FactorRegistry {
         Ok(results)
     }
 
-    // /// Evaluate expression with cached intermediate results
-    // #[allow(dead_code)]
-    // fn eval_expr_with_cache(
-    //     &self,
-    //     expr: &Expr,
-    //     data: &HashMap<String, Vec<f64>>,
-    //     n_rows: usize,
-    //     cache: &HashMap<u64, Vec<f64>>,
-    // ) -> Result<Vec<f64>, String> {
-    //     // Check cache first
-    //     let hash = expr_hash(expr);
-    //     if let Some(cached) = cache.get(&hash) {
-    //         return Ok(cached.clone());
-    //     }
-
-    //     let result = self.eval_expr_with_cache_inner(expr, data, n_rows, cache)?;
-
-    //     // Cache the result
-    //     // Note: We can't modify the cache here because it's immutable
-    //     // So we'll rely on the pre-computed cache from step 2
-    //     Ok(result)
-    // }
-
-    // /// Inner evaluation that actually computes the expression
-    // #[allow(dead_code)]
-    // fn eval_expr_with_cache_inner(
-    //     &self,
-    //     expr: &Expr,
-    //     data: &HashMap<String, Vec<f64>>,
-    //     n_rows: usize,
-    //     cache: &HashMap<u64, Vec<f64>>,
-    // ) -> Result<Vec<f64>, String> {
-    //     match expr {
-    //         Expr::Column(name) => data
-    //             .get(name)
-    //             .cloned()
-    //             .ok_or_else(|| format!("Column '{}' not found", name)),
-    //         Expr::Literal(lit) => {
-    //             let val = match lit {
-    //                 Literal::Float(f) => *f,
-    //                 Literal::Integer(i) => *i as f64,
-    //                 _ => 0.0,
-    //             };
-    //             Ok(vec![val; n_rows])
-    //         }
-    //         Expr::BinaryExpr { left, op, right } => {
-    //             let left_vals = self.eval_expr_with_cache(left, data, n_rows, cache)?;
-    //             let right_vals = self.eval_expr_with_cache(right, data, n_rows, cache)?;
-    //             let mut result = vec![0.0; n_rows];
-    //             for i in 0..n_rows {
-    //                 result[i] = match op {
-    //                     BinaryOp::Add => left_vals[i] + right_vals[i],
-    //                     BinaryOp::Subtract => left_vals[i] - right_vals[i],
-    //                     BinaryOp::Multiply => left_vals[i] * right_vals[i],
-    //                     BinaryOp::Divide => {
-    //                         if right_vals[i].abs() < 1e-10 {
-    //                             0.0
-    //                         } else {
-    //                             left_vals[i] / right_vals[i]
-    //                         }
-    //                     }
-    //                     _ => 0.0,
-    //                 };
-    //             }
-    //             Ok(result)
-    //         }
-    //         Expr::FunctionCall { name, args } => {
-    //             self.eval_function_with_cache(name, args, data, n_rows, cache)
-    //         }
-    //         Expr::UnaryExpr { op, expr: e } => {
-    //             let vals = self.eval_expr_with_cache(e, data, n_rows, cache)?;
-    //             Ok(vals
-    //                 .into_iter()
-    //                 .map(|v| match op {
-    //                     UnaryOp::Negate => -v,
-    //                     _ => v,
-    //                 })
-    //                 .collect())
-    //         }
-    //         _ => Err("Unsupported expr type".to_string()),
-    //     }
-    // }
-
-    // #[allow(dead_code)]
-    // fn eval_function_with_cache(
-    //     &self,
-    //     name: &str,
-    //     args: &[Expr],
-    //     data: &HashMap<String, Vec<f64>>,
-    //     n_rows: usize,
-    //     cache: &HashMap<u64, Vec<f64>>,
-    // ) -> Result<Vec<f64>, String> {
-    //     let name_lower = name.to_lowercase();
-
-    //     if name_lower.starts_with("ts_") {
-    //         return self.eval_ts_function_with_cache(&name_lower, args, data, n_rows, cache);
-    //     }
-
-    //     // First compute all args
-    //     let mut arg_values: Vec<Vec<f64>> = Vec::new();
-    //     for arg in args {
-    //         arg_values.push(self.eval_expr_with_cache(arg, data, n_rows, cache)?);
-    //     }
-
-    //     match name_lower.as_str() {
-    //         "rank" => Ok(timeseries::rank(&arg_values[0])),
-    //         "delay" => {
-    //             let periods = functions::get_literal_int(&args[1]).unwrap_or(1);
-    //             Ok(timeseries::delay(&arg_values[0], periods))
-    //         }
-    //         "scale" => Ok(timeseries::scale(&arg_values[0])),
-    //         "sign" => Ok(timeseries::sign(&arg_values[0])),
-    //         "abs" => Ok(arg_values[0].iter().map(|v| v.abs()).collect()),
-    //         // Element-wise min of two series
-    //         "min" => {
-    //             if arg_values.len() >= 2 {
-    //                 Ok(arg_values[0]
-    //                     .iter()
-    //                     .zip(arg_values[1].iter())
-    //                     .map(|(&a, &b)| a.min(b))
-    //                     .collect())
-    //             } else {
-    //                 Ok(arg_values[0].clone())
-    //             }
-    //         }
-    //         // Element-wise max of two series
-    //         "max" => {
-    //             if arg_values.len() >= 2 {
-    //                 Ok(arg_values[0]
-    //                     .iter()
-    //                     .zip(arg_values[1].iter())
-    //                     .map(|(&a, &b)| a.max(b))
-    //                     .collect())
-    //             } else {
-    //                 Ok(arg_values[0].clone())
-    //             }
-    //         }
-    //         // Sum of all elements in a series
-    //         "sum" => {
-    //             let total: f64 = arg_values[0].iter().sum();
-    //             Ok(arg_values[0].iter().map(|_| total).collect())
-    //         }
-    //         "log" => Ok(arg_values[0]
-    //             .iter()
-    //             .map(|v| if *v > 0.0 { v.ln() } else { f64::NAN })
-    //             .collect()),
-    //         "log10" => Ok(arg_values[0]
-    //             .iter()
-    //             .map(|v| if *v > 0.0 { v.log10() } else { f64::NAN })
-    //             .collect()),
-    //         "sqrt" => Ok(arg_values[0].iter().map(|v| v.sqrt()).collect()),
-    //         "power" => {
-    //             let exponent = functions::get_literal_int(&args[1])
-    //                 .map(|e| e as f64)
-    //                 .unwrap_or(2.0);
-    //             Ok(arg_values[0].iter().map(|v| v.powf(exponent)).collect())
-    //         }
-    //         "decay_linear" | "decay" => {
-    //             let periods = functions::get_literal_int(&args[1]).unwrap_or(10);
-    //             Ok(timeseries::decay_linear(&arg_values[0], periods))
-    //         }
-    //         "delta" => {
-    //             let periods = functions::get_literal_int(&args[1]).unwrap_or(1);
-    //             Ok(timeseries::ts_delta(&arg_values[0], periods))
-    //         }
-    //         "if" => {
-    //             if args.len() != 3 {
-    //                 return Err("IF requires 3 arguments".to_string());
-    //             }
-    //             let result: Vec<f64> = arg_values[0]
-    //                 .iter()
-    //                 .zip(arg_values[1].iter())
-    //                 .zip(arg_values[2].iter())
-    //                 .map(|((&c, &t), &f)| if c > 0.0 { t } else { f })
-    //                 .collect();
-    //             Ok(result)
-    //         }
-    //         "gt" | "greater" => Ok(arg_values[0]
-    //             .iter()
-    //             .zip(arg_values[1].iter())
-    //             .map(|(&x, &y)| if x > y { 1.0 } else { 0.0 })
-    //             .collect()),
-    //         "lt" | "less" => Ok(arg_values[0]
-    //             .iter()
-    //             .zip(arg_values[1].iter())
-    //             .map(|(&x, &y)| if x < y { 1.0 } else { 0.0 })
-    //             .collect()),
-    //         "ge" | "greater_equal" | "gte" => Ok(arg_values[0]
-    //             .iter()
-    //             .zip(arg_values[1].iter())
-    //             .map(|(&x, &y)| if x >= y { 1.0 } else { 0.0 })
-    //             .collect()),
-    //         "le" | "less_equal" | "lte" => Ok(arg_values[0]
-    //             .iter()
-    //             .zip(arg_values[1].iter())
-    //             .map(|(&x, &y)| if x <= y { 1.0 } else { 0.0 })
-    //             .collect()),
-    //         "eq" | "equal" => Ok(arg_values[0]
-    //             .iter()
-    //             .zip(arg_values[1].iter())
-    //             .map(|(&x, &y)| if (x - y).abs() < 1e-10 { 1.0 } else { 0.0 })
-    //             .collect()),
-    //         "ne" | "not_equal" => Ok(arg_values[0]
-    //             .iter()
-    //             .zip(arg_values[1].iter())
-    //             .map(|(&x, &y)| if (x - y).abs() >= 1e-10 { 1.0 } else { 0.0 })
-    //             .collect()),
-    //         _ => Err(format!("Unknown function: {}", name)),
-    //     }
-    // }
-
-    // #[allow(dead_code)]
-    // fn eval_ts_function_with_cache(
-    //     &self,
-    //     name: &str,
-    //     args: &[Expr],
-    //     data: &HashMap<String, Vec<f64>>,
-    //     n_rows: usize,
-    //     cache: &HashMap<u64, Vec<f64>>,
-    // ) -> Result<Vec<f64>, String> {
-    //     let vals = self.eval_expr_with_cache(&args[0], data, n_rows, cache)?;
-    //     let window = args
-    //         .get(1)
-    //         .and_then(|a| functions::get_literal_int(a))
-    //         .unwrap_or(20);
-
-    //     match name {
-    //         "ts_mean" => Ok(timeseries::ts_mean(&vals, window)),
-    //         "ts_sum" => Ok(timeseries::ts_sum(&vals, window)),
-    //         "ts_count" => Ok(timeseries::ts_count(&vals, window)),
-    //         "ts_std" => Ok(timeseries::ts_std(&vals, window)),
-    //         "ts_max" => Ok(timeseries::ts_max(&vals, window)),
-    //         "ts_min" => Ok(timeseries::ts_min(&vals, window)),
-    //         "ts_rank" => Ok(timeseries::ts_rank(&vals, window)),
-    //         "ts_argmax" => Ok(timeseries::ts_argmax(&vals, window)),
-    //         "ts_argmin" => Ok(timeseries::ts_argmin(&vals, window)),
-    //         "ts_delta" => Ok(timeseries::ts_delta(&vals, window)),
-    //         "ts_product" => Ok(timeseries::ts_product(&vals, window)),
-    //         "ts_correlation" => {
-    //             let vals2 = self.eval_expr_with_cache(&args[1], data, n_rows, cache)?;
-    //             Ok(timeseries::ts_correlation(&vals, &vals2, window))
-    //         }
-    //         "ts_cov" | "ts_covariance" => {
-    //             let vals2 = self.eval_expr_with_cache(&args[1], data, n_rows, cache)?;
-    //             Ok(timeseries::ts_cov(&vals, &vals2, window))
-    //         }
-    //         "sma" => {
-    //             let n = window;
-    //             let m = args
-    //                 .get(2)
-    //                 .and_then(|a| functions::get_literal_int(a))
-    //                 .unwrap_or(2);
-    //             let alpha = m as f64 / n as f64;
-    //             let alpha = if alpha > 0.0 && alpha <= 1.0 {
-    //                 alpha
-    //             } else {
-    //                 0.5
-    //             };
-    //             Ok(timeseries::sma(&vals, alpha))
-    //         }
-    //         "lowday" => Ok(timeseries::lowday(&vals, window)),
-    //         "highday" => Ok(timeseries::highday(&vals, window)),
-    //         "wma" => Ok(timeseries::wma(&vals, window)),
-    //         "min" => Ok(timeseries::ts_min(&vals, window)),
-    //         "max" => Ok(timeseries::ts_max(&vals, window)),
-    //         "sum" => Ok(timeseries::ts_sum(&vals, window)),
-    //         _ => Err(format!("Unknown ts function: {}", name)),
-    //     }
-    // }
-
-    /// Execute the logical plan to compute factor values
-    fn execute_plan(
+    /// One-stop compute: factor evaluation + cross-sectional pipeline.
+    ///
+    /// Queries 5m data, computes factors (compact mode), builds free_float_cap map,
+    /// and applies winsor → zscore → cap_neu → qcut per date. Returns `CsResult`
+    /// for each registered factor.
+    pub fn compute_cs_pipeline(
         &self,
-        plan: &LogicalPlan,
-        data: &HashMap<String, Vec<f64>>,
-        n_rows: usize,
-    ) -> Result<Vec<f64>, String> {
-        match plan {
-            LogicalPlan::Projection { exprs, .. } => {
-                if let Some((_, expr)) = exprs.first() {
-                    let mut cache: HashMap<u64, Vec<f64>> = HashMap::new();
-                    // Pre-populate with data columns
-                    for (name, vals) in data {
-                        let col_hash = {
-                            let mut hasher = DefaultHasher::new();
-                            0u8.hash(&mut hasher);
-                            name.hash(&mut hasher);
-                            hasher.finish()
-                        };
-                        cache.insert(col_hash, vals.clone());
+        data_layer: &mut DataLayer,
+    ) -> Result<HashMap<String, CsResult>, String> {
+        use crate::expr::registry::timeseries::{cap_neu, qcut, winsor, zscore};
+
+        // Determine required columns from registered expressions
+        let mut cols_5m: Vec<String> = Vec::new();
+        for info in self.factors.values() {
+            let expr = info.parsed_expr.clone();
+            for col in extract_columns(&expr) {
+                if let Some(stripped) = col.strip_prefix("5m:") {
+                    let c = stripped.to_string();
+                    if !cols_5m.contains(&c) {
+                        cols_5m.push(c);
                     }
-                    eval_expr_memoized(expr, data, n_rows, &mut cache)
-                } else {
-                    Err("Empty projection".to_string())
                 }
             }
-            _ => Err("Unsupported plan type".to_string()),
         }
+
+        // Query 5m data
+        let mut query_fields = vec!["5m:trading_date".to_string(), "5m:symbol".to_string()];
+        for c in &cols_5m {
+            query_fields.push(format!("5m:{}", c));
+        }
+        let data = data_layer
+            .query(query_fields)
+            .map_err(|e| format!("DataLayer query error: {:?}", e))?;
+
+        // Compute factors (compact mode)
+        let factor_names: Vec<&str> = self.factors.keys().map(|s| s.as_str()).collect();
+        let results = self.compute_batch_for_freq(&factor_names, &data, false, true)?;
+
+        // Build market cap map
+        let mktcap_map = data_layer
+            .build_free_float_cap_map()
+            .map_err(|e| format!("build_free_float_cap_map: {:?}", e))?;
+
+        let symbol_list = data_layer.get_symbols_5m();
+
+        // Apply cs_ pipeline per factor
+        let mut cs_results: HashMap<String, CsResult> = HashMap::new();
+
+        for (name, _info) in &self.factors {
+            let result = results
+                .get(name)
+                .ok_or_else(|| format!("Factor '{}' missing from results", name))?;
+            let groups = result.groups.as_ref().ok_or("Group keys missing")?;
+            let values = &result.values;
+
+            let mut cs = CsResult {
+                groups: groups.clone(),
+                #[cfg(debug_assertions)]
+                raw: Vec::with_capacity(values.len()),
+                #[cfg(debug_assertions)]
+                winsored: Vec::with_capacity(values.len()),
+                #[cfg(debug_assertions)]
+                zscored: Vec::with_capacity(values.len()),
+                cap_neued: Vec::with_capacity(values.len()),
+                qcut: Vec::with_capacity(values.len()),
+            };
+
+            let mut i = 0;
+            while i < groups.len() {
+                let date_int = groups[i].0;
+                let start = i;
+                while i < groups.len() && groups[i].0 == date_int {
+                    i += 1;
+                }
+                let end = i;
+                let n = end - start;
+                if n < 2 {
+                    for k in start..end {
+                        #[cfg(debug_assertions)]
+                        {
+                            cs.raw.push(values[k]);
+                            cs.winsored.push(f64::NAN);
+                            cs.zscored.push(f64::NAN);
+                        }
+                        cs.cap_neued.push(f64::NAN);
+                        cs.qcut.push(None);
+                    }
+                    continue;
+                }
+
+                let vals: Vec<f64> = values[start..end].to_vec();
+                let syms: Vec<usize> = groups[start..end].iter().map(|g| g.1 as usize).collect();
+
+                let mktcaps: Vec<f64> = syms
+                    .iter()
+                    .map(|&s| mktcap_map.get(&(date_int, s)).copied().unwrap_or(f64::NAN))
+                    .collect();
+
+                let winsored = winsor(&vals, n);
+                let zscored = zscore(&winsored, n);
+                let capped = cap_neu(&zscored, &mktcaps, n);
+                let qcut_vals = qcut(&capped, 10);
+
+                for j in 0..n {
+                    #[cfg(debug_assertions)]
+                    {
+                        cs.raw.push(vals[j]);
+                        cs.winsored.push(winsored[j]);
+                        cs.zscored.push(zscored[j]);
+                    }
+                    cs.cap_neued.push(capped[j]);
+                    cs.qcut.push(qcut_vals[j]);
+                }
+            }
+
+            cs_results.insert(name.clone(), cs);
+        }
+
+        Ok(cs_results)
     }
 
     /// Get factor information by name
@@ -1137,21 +1142,19 @@ mod tests {
         let n_symbols = 5;
         let result = timeseries::zscore(&vals, n_symbols);
 
-        // For [1,2,3,4,5]: mean=3, std=sqrt(2)=1.41
-        // zscore = [(1-3)/1.41, (2-3)/1.41, 0, (4-3)/1.41, (5-3)/1.41]
-        // = [-1.41, -0.71, 0, 0.71, 1.41]
+        // zscore uses sample std (ddof=1), so output has sample std = 1.0
+        // Check mean ~0 and sample std ~1.0 for each date
         let date0 = &result[0..5];
         let mean0: f64 = date0.iter().sum::<f64>() / 5.0;
-        let std0 = (date0.iter().map(|x| x.powi(2)).sum::<f64>() / 5.0).sqrt();
+        let std0_sample = (date0.iter().map(|x| x.powi(2)).sum::<f64>() / 4.0).sqrt();
         assert!((mean0 - 0.0).abs() < 1e-10);
-        assert!((std0 - 1.0).abs() < 0.01);
+        assert!((std0_sample - 1.0).abs() < 0.01);
 
-        // For [2,4,6,8,10]: mean=6, std=sqrt(8)=2.83
         let date1 = &result[5..10];
         let mean1: f64 = date1.iter().sum::<f64>() / 5.0;
-        let std1 = (date1.iter().map(|x| x.powi(2)).sum::<f64>() / 5.0).sqrt();
+        let std1_sample = (date1.iter().map(|x| x.powi(2)).sum::<f64>() / 4.0).sqrt();
         assert!((mean1 - 0.0).abs() < 1e-10);
-        assert!((std1 - 1.0).abs() < 0.01);
+        assert!((std1_sample - 1.0).abs() < 0.01);
     }
 
     #[test]
@@ -1170,12 +1173,12 @@ mod tests {
         let variance: f64 = result.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / 5.0;
         let std = variance.sqrt();
 
-        eprintln!("cap_neu result: {:?}", result);
-        eprintln!("mean: {}, std: {}", mean, std);
-
         // Check mean is ~0
         assert!((mean - 0.0).abs() < 1e-10, "mean = {}, expected ~0", mean);
         // Check that result is not all zeros (some signal should remain)
-        assert!(result.iter().any(|x| x.abs() > 0.01), "result should have some non-zero values");
+        assert!(
+            result.iter().any(|x| x.abs() > 0.01),
+            "result should have some non-zero values"
+        );
     }
 }

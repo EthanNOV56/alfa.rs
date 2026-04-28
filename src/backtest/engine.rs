@@ -504,6 +504,71 @@ impl BacktestEngine {
         )
     }
 
+    /// Multi-factor equal-weight combination backtest.
+    ///
+    /// Takes a list of factor matrices (all same shape), averages them
+    /// element-wise with equal weight, then runs the standard `run()`.
+    pub fn run_multi(
+        &self,
+        factors: &[Array2<f64>],
+        returns: Array2<f64>,
+        adj_factor: Array2<f64>,
+        close: Array2<f64>,
+        open: Array2<f64>,
+        vwap: Array2<f64>,
+        tradable: Array2<f64>,
+    ) -> Result<BacktestResult, String> {
+        if factors.is_empty() {
+            return Err("No factors provided".to_string());
+        }
+        let shape = factors[0].dim();
+        for f in factors.iter().skip(1) {
+            if f.dim() != shape {
+                return Err(format!(
+                    "Factor shape mismatch: expected {:?}, got {:?}",
+                    shape,
+                    f.dim()
+                ));
+            }
+        }
+
+        let n = factors.len() as f64;
+        let mut combined = Array2::<f64>::zeros(shape);
+        for f in factors {
+            for i in 0..shape.0 {
+                for j in 0..shape.1 {
+                    if f[[i, j]].is_finite() {
+                        combined[[i, j]] += f[[i, j]] / n;
+                    }
+                }
+            }
+        }
+
+        self.run(combined, returns, adj_factor, close, open, vwap, tradable)
+    }
+
+    /// Multi-factor equal-weight combination backtest with PriceMatrix.
+    pub fn run_multi_with_prices(
+        &self,
+        factors: &[Array2<f64>],
+        prices: &PriceMatrix,
+    ) -> Result<BacktestResult, String> {
+        if factors.is_empty() {
+            return Err("No factors provided".to_string());
+        }
+        let (n_dates, n_syms) = factors[0].dim();
+        let adj_factor = Array2::<f64>::from_elem((n_dates, n_syms), 1.0);
+        self.run_multi(
+            factors,
+            prices.returns.clone(),
+            adj_factor,
+            prices.close.clone(),
+            prices.open.clone(),
+            prices.vwap.clone(),
+            prices.tradable.clone(),
+        )
+    }
+
     // /// Compute weight matrix from factor using quantile-based approach
     // ///
     // /// Returns a weight matrix of shape [n_days, n_symbols] where:

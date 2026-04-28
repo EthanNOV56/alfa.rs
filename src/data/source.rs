@@ -3,7 +3,7 @@
 //! This module provides a trait-based abstraction for data sources,
 //! allowing flexible backends (ClickHouse, MySQL, CSV, etc.)
 
-use crate::types::DataFrame;
+use std::collections::HashMap;
 use std::fmt;
 
 /// Generic query filter for flexible data filtering
@@ -75,7 +75,7 @@ impl std::error::Error for DataError {}
 #[derive(Debug)]
 pub struct MockDataSource {
     connected: bool,
-    query_result: Option<Result<crate::types::DataFrame, DataError>>,
+    query_result: Option<Result<HashMap<String, Vec<f64>>, DataError>>,
 }
 
 impl MockDataSource {
@@ -96,7 +96,7 @@ impl MockDataSource {
     }
 
     /// Set the query result to return
-    pub fn with_query_result(mut self, result: Result<crate::types::DataFrame, DataError>) -> Self {
+    pub fn with_query_result(mut self, result: Result<HashMap<String, Vec<f64>>, DataError>) -> Self {
         self.query_result = Some(result);
         self
     }
@@ -109,7 +109,7 @@ impl Default for MockDataSource {
 }
 
 impl DataSource for MockDataSource {
-    fn query(&self, _sql: &str) -> Result<crate::types::DataFrame, DataError> {
+    fn query(&self, _sql: &str) -> Result<HashMap<String, Vec<f64>>, DataError> {
         if let Some(result) = &self.query_result {
             result.clone()
         } else {
@@ -122,7 +122,7 @@ impl DataSource for MockDataSource {
         _symbol: &str,
         _start_date: &str,
         _end_date: &str,
-    ) -> Result<crate::types::DataFrame, DataError> {
+    ) -> Result<HashMap<String, Vec<f64>>, DataError> {
         if let Some(result) = &self.query_result {
             result.clone()
         } else {
@@ -138,7 +138,6 @@ impl DataSource for MockDataSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::DataFrame;
 
     #[test]
     fn test_data_error_query() {
@@ -229,7 +228,7 @@ mod tests {
 
     #[test]
     fn test_mock_data_source_with_query_result() {
-        let df = DataFrame::new();
+        let df = HashMap::new();
         let mock = MockDataSource::new().with_query_result(Ok(df));
         let result = mock.query("SELECT * FROM test");
         assert!(result.is_ok());
@@ -244,7 +243,7 @@ mod tests {
 
     #[test]
     fn test_mock_data_source_with_factor_data_result() {
-        let df = DataFrame::new();
+        let df = HashMap::new();
         let mock = MockDataSource::new().with_query_result(Ok(df));
         let result = mock.get_factor_data("000001.SZ", "2024-01-01", "2024-12-31");
         assert!(result.is_ok());
@@ -259,8 +258,8 @@ mod tests {
 
 /// Trait for data source implementations
 pub trait DataSource {
-    /// Execute a SQL query and return results as DataFrame
-    fn query(&self, sql: &str) -> Result<DataFrame, DataError>;
+    /// Execute a SQL query and return results as columnar map
+    fn query(&self, sql: &str) -> Result<HashMap<String, Vec<f64>>, DataError>;
 
     /// Get factor data for a symbol within a date range
     fn get_factor_data(
@@ -268,7 +267,7 @@ pub trait DataSource {
         symbol: &str,
         start_date: &str,
         end_date: &str,
-    ) -> Result<DataFrame, DataError>;
+    ) -> Result<HashMap<String, Vec<f64>>, DataError>;
 
     /// Check if the data source is connected
     fn is_connected(&self) -> bool;

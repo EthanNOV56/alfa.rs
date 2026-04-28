@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "alfars"
-version = "0.4.3"
+version = "0.5.0"
 description = "High-performance quant workflow with Rust core and Python bindings."
 readme = "README.md"
 requires-python = ">=3.8"
@@ -28,6 +28,9 @@ dependencies = [
     "polars>=1.8.2",
     "fastapi>=0.100.0",
     "uvicorn>=0.23.0",
+    "clickhouse-connect",
+    "tqdm",
+    "pyarrow>=17.0.0",
 ]
 
 [project.optional-dependencies]

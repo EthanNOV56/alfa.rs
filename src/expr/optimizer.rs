@@ -275,7 +275,7 @@ impl ExpressionOptimizer {
             }
 
             // Function calls
-            Expr::FunctionCall { name, args } => {
+            Expr::FunctionCall { name, args, freq } => {
                 let folded_args = args
                     .into_iter()
                     .map(|arg| self.fold_constants(arg))
@@ -283,6 +283,7 @@ impl ExpressionOptimizer {
                 Expr::FunctionCall {
                     name,
                     args: folded_args,
+                    freq,
                 }
             }
 
@@ -365,7 +366,7 @@ impl ExpressionOptimizer {
                     expr: Arc::new(simplified_expr),
                 }
             }
-            Expr::FunctionCall { name, args } => {
+            Expr::FunctionCall { name, args, freq } => {
                 let simplified_args = args
                     .into_iter()
                     .map(|arg| self.simplify_algebraic(arg))
@@ -373,6 +374,7 @@ impl ExpressionOptimizer {
                 Expr::FunctionCall {
                     name,
                     args: simplified_args,
+                    freq,
                 }
             }
             Expr::Aggregate { op, expr, distinct } => {
@@ -480,11 +482,12 @@ impl ExpressionOptimizer {
                     }
 
                     // For function calls - process args but don't do full CSE
-                    Expr::FunctionCall { name, args } => {
+                    Expr::FunctionCall { name, args, freq } => {
                         let new_args: Vec<Expr> = args.iter().map(|arg| self.visit(arg)).collect();
                         Expr::FunctionCall {
                             name: name.clone(),
                             args: new_args,
+                            freq: freq.clone(),
                         }
                     }
 

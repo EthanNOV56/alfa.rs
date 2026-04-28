@@ -3,7 +3,6 @@
 //! This module provides ClickHouse-specific data source implementation.
 
 use super::{DataDerivation, DataError, DataSource, QueryFilter};
-use crate::types::DataFrame;
 use std::collections::HashMap;
 
 /// ClickHouse data source
@@ -14,7 +13,7 @@ pub struct ClickHouseSource {
     database: String,
     username: String,
     password: Option<String>,
-    /// Volume unit (e.g., 100 for hand = 100 shares)
+    /// Volume unit (e.g., 100 for 手 = 100 shares)
     volume_unit: u16,
     /// Amount unit (e.g., 1000 for 千元)
     amount_unit: u16,
@@ -23,32 +22,41 @@ pub struct ClickHouseSource {
 impl ClickHouseSource {
     /// Create a new ClickHouse source using environment variables for credentials
     ///
-    /// Uses environment variables:
-    /// - CLICKHOUSE_HOST (default: "localhost")
-    /// - CLICKHOUSE_PORT (default: 8123)
-    /// - CLICKHOUSE_DATABASE (default: "default")
-    /// - CLICKHOUSE_USER (default: "default")
-    /// - CLICKHOUSE_PASSWORD (optional)
+    /// Uses environment variables (CLICKHOUSE_* preferred, CH_* as fallback):
+    /// - CLICKHOUSE_HOST / CH_HOST (default: "localhost")
+    /// - CLICKHOUSE_PORT / CH_PORT (default: 8123)
+    /// - CLICKHOUSE_DATABASE / CH_DATABASE (default: "default")
+    /// - CLICKHOUSE_USER / CH_USER (default: "default")
+    /// - CLICKHOUSE_PASSWORD / CH_PASSWORD (optional)
     /// - VOLUME_UNIT (default: 100, e.g., hand = 100 shares)
-    /// - AMOUNT_UNIT (default: 10000, e.g., 万元)
+    /// - AMOUNT_UNIT (default: 1000, e.g., 千元)
     pub fn from_env() -> Self {
-        let host = std::env::var("CLICKHOUSE_HOST").unwrap_or_else(|_| "localhost".to_string());
+        let host = std::env::var("CLICKHOUSE_HOST")
+            .or_else(|_| std::env::var("CH_HOST"))
+            .unwrap_or_else(|_| "localhost".to_string());
         let port: u16 = std::env::var("CLICKHOUSE_PORT")
+            .or_else(|_| std::env::var("CH_PORT"))
             .unwrap_or_else(|_| "8123".to_string())
             .parse()
             .unwrap_or(8123);
         let database =
-            std::env::var("CLICKHOUSE_DATABASE").unwrap_or_else(|_| "default".to_string());
-        let username = std::env::var("CLICKHOUSE_USER").unwrap_or_else(|_| "default".to_string());
-        let password = std::env::var("CLICKHOUSE_PASSWORD").ok();
+            std::env::var("CLICKHOUSE_DATABASE")
+            .or_else(|_| std::env::var("CH_DATABASE"))
+            .unwrap_or_else(|_| "default".to_string());
+        let username = std::env::var("CLICKHOUSE_USER")
+            .or_else(|_| std::env::var("CH_USER"))
+            .unwrap_or_else(|_| "default".to_string());
+        let password = std::env::var("CLICKHOUSE_PASSWORD")
+            .or_else(|_| std::env::var("CH_PASSWORD"))
+            .ok();
         let volume_unit: u16 = std::env::var("VOLUME_UNIT")
             .unwrap_or_else(|_| "100".to_string())
             .parse()
             .unwrap_or(100);
         let amount_unit: u16 = std::env::var("AMOUNT_UNIT")
-            .unwrap_or_else(|_| "10000".to_string())
+            .unwrap_or_else(|_| "1000".to_string())
             .parse()
-            .unwrap_or(10000);
+            .unwrap_or(1000);
 
         ClickHouseSource {
             host,
@@ -70,7 +78,7 @@ impl ClickHouseSource {
             username: "default".to_string(),
             password: None,
             volume_unit: 100,
-            amount_unit: 10000,
+            amount_unit: 1000,
         }
     }
 
@@ -83,7 +91,7 @@ impl ClickHouseSource {
             username: username.to_string(),
             password: None,
             volume_unit: 100,
-            amount_unit: 10000,
+            amount_unit: 1000,
         }
     }
 
@@ -125,6 +133,16 @@ impl ClickHouseSource {
     /// Get the username
     pub fn username(&self) -> &str {
         &self.username
+    }
+
+    /// Volume unit (shares per lot, default 100 for 手)
+    pub fn volume_unit(&self) -> f64 {
+        self.volume_unit as f64
+    }
+
+    /// Amount unit (yuan per unit, default 1000 for 千元)
+    pub fn amount_unit(&self) -> f64 {
+        self.amount_unit as f64
     }
 
     /// Build the ClickHouse HTTP URL
@@ -349,8 +367,49 @@ impl ClickHouseSource {
         self.query_to_json(&sql)
     }
 
+    /// Execute SQL and return raw Arrow IPC stream bytes
+    ///
+    /// Uses ArrowStream format (binary, columnar) matching Python's `client.query_arrow()`.
+    /// This is the memory-efficient path — no JSON parsing, no serde_json::Value tree.
+    pub(crate) fn query_raw_arrow(&self, sql: &str) -> Result<Vec<u8>, DataError> {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(300))
+            .build()
+            .map_err(|e| DataError::Connection(format!("Failed to create client: {}", e)))?;
+
+        let base_url = format!("{}?database={}", self.build_url(), self.database);
+        let url = format!("{}&default_format=ArrowStream", base_url);
+
+        let mut request = client.post(&url);
+        if !self.username.is_empty() {
+            request = request.query(&[("user", &self.username)]);
+        }
+        if let Some(ref password) = self.password {
+            request = request.query(&[("password", password)]);
+        }
+
+        let response = request
+            .body(sql.to_string())
+            .send()
+            .map_err(|e| DataError::Connection(format!("Failed to connect: {}", e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().unwrap_or_default();
+            return Err(DataError::Query(format!("HTTP {}: {}", status, text)));
+        }
+
+        response
+            .bytes()
+            .map(|b| b.to_vec())
+            .map_err(|e| DataError::Query(format!("Failed to read response bytes: {}", e)))
+    }
+
     /// Execute SQL and return raw JSON values (not just f64)
-    fn query_to_json(&self, sql: &str) -> Result<std::collections::HashMap<String, Vec<serde_json::Value>>, DataError> {
+    fn query_to_json(
+        &self,
+        sql: &str,
+    ) -> Result<std::collections::HashMap<String, Vec<serde_json::Value>>, DataError> {
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
@@ -419,7 +478,8 @@ impl ClickHouseSource {
 
         // Build result HashMap with serde_json::Value
         use serde_json::Value;
-        let mut result: std::collections::HashMap<String, Vec<Value>> = std::collections::HashMap::new();
+        let mut result: std::collections::HashMap<String, Vec<Value>> =
+            std::collections::HashMap::new();
         for col in &columns {
             result.insert(col.clone(), Vec::new());
         }
@@ -499,10 +559,9 @@ impl ClickHouseSource {
                 urlencoding::encode(&alt_sql)
             );
 
-            let alt_response = client
-                .get(&alt_url)
-                .send()
-                .map_err(|e| DataError::Connection(format!("Failed to execute alt query: {}", e)))?;
+            let alt_response = client.get(&alt_url).send().map_err(|e| {
+                DataError::Connection(format!("Failed to execute alt query: {}", e))
+            })?;
 
             let alt_text = alt_response
                 .text()
@@ -537,21 +596,8 @@ impl ClickHouseSource {
 }
 
 impl DataSource for ClickHouseSource {
-    fn query(&self, sql: &str) -> Result<DataFrame, DataError> {
-        let data = self.query_to_hashmap(sql)?;
-        if data.is_empty() {
-            return Ok(DataFrame::new());
-        }
-
-        // Convert HashMap<String, Vec<f64>> to DataFrame
-        use crate::types::Series;
-        let mut columns_map: std::collections::HashMap<String, Series> =
-            std::collections::HashMap::new();
-        for (name, values) in data {
-            columns_map.insert(name.clone(), Series::new(values).with_name(&name));
-        }
-
-        DataFrame::from_series_map(columns_map).map_err(|e| DataError::Query(e))
+    fn query(&self, sql: &str) -> Result<HashMap<String, Vec<f64>>, DataError> {
+        self.query_to_hashmap(sql)
     }
 
     fn get_factor_data(
@@ -559,10 +605,9 @@ impl DataSource for ClickHouseSource {
         symbol: &str,
         start_date: &str,
         end_date: &str,
-    ) -> Result<DataFrame, DataError> {
-        // Default table name is stock_1d
+    ) -> Result<HashMap<String, Vec<f64>>, DataError> {
         let table_name = "stock_1d";
-        DataSource::query(self, &format!(
+        self.query(&format!(
             "SELECT symbol, trading_date, open, high, low, close, volume, amount \
              FROM {} \
              WHERE symbol = '{}' \
@@ -655,7 +700,10 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         // Either Connection error or Query error (e.g., 401 Unauthorized) are acceptable
-        assert!(matches!(err, DataError::Connection(_) | DataError::Query(_)));
+        assert!(matches!(
+            err,
+            DataError::Connection(_) | DataError::Query(_)
+        ));
     }
 
     #[test]
@@ -665,7 +713,10 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         // Either Connection error or Query error (e.g., 401 Unauthorized) are acceptable
-        assert!(matches!(err, DataError::Connection(_) | DataError::Query(_)));
+        assert!(matches!(
+            err,
+            DataError::Connection(_) | DataError::Query(_)
+        ));
     }
 
     #[test]
