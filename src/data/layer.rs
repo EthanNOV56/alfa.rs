@@ -746,6 +746,8 @@ impl DataLayer {
         let mut low_mat = Array2::<f64>::from_elem((n_dates, n_syms), f64::NAN);
         let mut vwap_mat = Array2::<f64>::from_elem((n_dates, n_syms), f64::NAN);
         let mut adj_mat = Array2::<f64>::from_elem((n_dates, n_syms), f64::NAN);
+        // Track which (date, symbol) have data, matching Python's group-by semantics
+        let mut has_data = Array2::<bool>::from_elem((n_dates, n_syms), false);
 
         let date_to_idx: std::collections::HashMap<i64, usize> = dates
             .iter().enumerate().map(|(i, &d)| (d, i)).collect();
@@ -761,6 +763,7 @@ impl DataLayer {
                 high_mat[[di, s]] = high[i];
                 low_mat[[di, s]] = low[i];
                 adj_mat[[di, s]] = adj[i];
+                has_data[[di, s]] = true;
                 // vwap = amount * amount_unit / (volume * volume_unit)
                 let factor = self.source.amount_unit() / self.source.volume_unit();
                 if volume[i].is_finite() && volume[i] > 0.0 {
@@ -769,19 +772,17 @@ impl DataLayer {
             }
         }
 
-        // Forward-adjust prices: normalize adj_factor per symbol so last = 1.0,
-        // then multiply all prices. Matches alpha.py read_prices().
+        // Forward-adjust prices: divide adj_factor by last_adj per symbol.
+        // Matches Python's pl.col("adjust_factor") / pl.col("adjust_factor").last().over("symbol").
+        // The "last" is the last date the symbol appears in the data (has_data==true),
+        // even if adj_factor is NaN on that date. IEEE 754 propagates NaN correctly.
         for s in 0..n_syms {
             let last_adj = (0..n_dates).rev()
-                .find(|&d| adj_mat[[d, s]].is_finite() && adj_mat[[d, s]] > 0.0)
+                .find(|&d| has_data[[d, s]])
                 .map(|d| adj_mat[[d, s]])
                 .unwrap_or(1.0);
             for d in 0..n_dates {
-                let f = if adj_mat[[d, s]].is_finite() && adj_mat[[d, s]] > 0.0 && last_adj > 0.0 {
-                    adj_mat[[d, s]] / last_adj
-                } else {
-                    1.0
-                };
+                let f = adj_mat[[d, s]] / last_adj;
                 close_mat[[d, s]] *= f;
                 open_mat[[d, s]] *= f;
                 high_mat[[d, s]] *= f;
@@ -792,11 +793,12 @@ impl DataLayer {
 
         // Backfill close only, matching alpha.py:
         //   close.fill_nan(None).fill_null(strategy="backward").over("symbol")
+        // Only NaN is converted to null and backfilled; 0.0 stays as-is.
         // open/high/low/vwap are NOT backfilled in Python; NaN → fill_nan(0) in backtest.
         for s in 0..n_syms {
             let mut last_close = f64::NAN;
             for d in (0..n_dates).rev() {
-                if close_mat[[d, s]].is_finite() && close_mat[[d, s]] > 0.0 {
+                if close_mat[[d, s]].is_finite() {
                     last_close = close_mat[[d, s]];
                 } else if last_close.is_finite() {
                     close_mat[[d, s]] = last_close;

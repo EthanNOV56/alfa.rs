@@ -692,7 +692,6 @@ impl BacktestEngine {
                     }
                 }
 
-                // Compute asset from previous positions at today's open
                 let mut asset = 0.0f64;
                 for a in 0..n_assets {
                     if tradable[[day, a]] > 0.5 {
@@ -754,6 +753,7 @@ impl BacktestEngine {
 
                 let new_nv = (asset_close - fee_dollars).max(0.0);
                 group_returns[[day - 1, group]] = new_nv / nv - 1.0;
+
                 nv = new_nv;
                 prev_shares = new_shares;
             }

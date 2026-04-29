@@ -141,8 +141,8 @@ pub fn cap_neu(vals: &[f64], market_cap: &[f64], n_symbols: usize) -> Vec<f64> {
             .filter(|&i| alpha_slice[i].is_finite() && log_mktcap[i].is_finite())
             .collect();
 
-        if valid_indices.len() < 2 {
-            // Not enough valid values for regression, keep all as NaN
+        if valid_indices.len() < 10 {
+            // Not enough valid values for regression (matches Python min_samples=10)
             for &v in alpha_slice {
                 result.push(v); // NaN stays NaN
             }
@@ -588,7 +588,9 @@ pub fn decay_linear(vals: &[f64], periods: usize) -> Vec<f64> {
     result
 }
 
-/// Cross-sectional rank
+/// Cross-sectional rank (average tie-breaking, matching Polars `rank(method="average")`).
+///
+/// Returns fractional ranks in [0, 1), where tied values receive the same average rank.
 pub fn rank(vals: &[f64]) -> Vec<f64> {
     let n = vals.len();
     if n == 0 {
@@ -610,9 +612,21 @@ pub fn rank(vals: &[f64]) -> Vec<f64> {
     indexed.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
 
     let mut result = vec![f64::NAN; n];
-    let len = indexed.len();
-    for (rank, (idx, _)) in indexed.iter().enumerate() {
-        result[*idx] = rank as f64 / len as f64;
+    let len = indexed.len() as f64;
+
+    let mut i = 0usize;
+    while i < indexed.len() {
+        let mut j = i + 1;
+        while j < indexed.len() && indexed[j].1 == indexed[i].1 {
+            j += 1;
+        }
+        // Average 0-based position for tied values: (i + (j-1)) / 2 = (i + j - 1) / 2
+        let avg_pos = (i + j - 1) as f64 / 2.0;
+        let pct = avg_pos / len;
+        for k in i..j {
+            result[indexed[k].0] = pct;
+        }
+        i = j;
     }
     result
 }
