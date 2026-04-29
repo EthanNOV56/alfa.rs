@@ -616,9 +616,9 @@ def main():
     for name, reason in sorted(SKIPPED.items()):
         print(f"  {name}: {reason}")
 
-    lab = al.AlfarsLab.from_env() \
-        .with_filter("symbols not like '%BJ'") \
-        .with_years(2024, 2024)
+    lab = al.AlfarsLab.from_env()
+    lab.with_filter("symbols not like '%BJ'")
+    lab.with_years(2024, 2024)
 
     for name, expr in alphas.items():
         try:
