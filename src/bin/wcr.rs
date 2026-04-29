@@ -35,6 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut lab = AlfarsLab::new(ClickHouseSource::from_env())
         .with_filter("symbols not like '%BJ'")
+        .with_years(start_year, end_year)
         .with_backtest_config(BacktestConfig {
             quantiles: 10,
             weight_method: WeightMethod::Equal,
@@ -46,7 +47,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     lab.register("wcr", WCR_EXPR)?;
 
-    let result = lab.run(start_year, end_year, ".tests/wcr_output.csv")?;
+    let panel = lab.calc(".tests/wcr_output.csv")?;
+    let result = lab.run(&panel)?;
     result.to_csv(".tests/backtest_nav_rs.csv")?;
 
     println!(
