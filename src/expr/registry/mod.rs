@@ -319,85 +319,163 @@ impl FactorRegistry {
     /// Unified compute: evaluates registered factors using a DAG with ref-counted
     /// CSE. Intermediate results are dropped when no longer referenced.
     /// `compact=true` for group-by mode (5m data); `compact=false` for full row mode (1d data).
+    /// When `parallel=true`, processes independent nodes in waves with rayon.
     pub fn compute(
         &self,
         names: &[&str],
         data: &HashMap<String, Array1<f64>>,
-        _parallel: bool,
+        parallel: bool,
         compact: bool,
     ) -> Result<HashMap<String, FactorResult>, String> {
         let start = Instant::now();
+        // Fast path: single factor + compact mode — delegate to direct eval
+        if names.len() == 1 && compact {
+            let mut results = HashMap::new();
+            let name = names[0];
+            let info = self.factors.get(name)
+                .ok_or_else(|| format!("Factor '{}' not found", name))?;
+            let (arr, groups) = crate::expr::registry::functions::eval_expr_compact(
+                &info.parsed_expr, data, &mut HashMap::new())?;
+            results.insert(name.to_string(), FactorResult {
+                name: name.to_string(), values: arr.to_vec(),
+                n_rows: arr.len(), n_cols: 1, compute_time_ms: 0,
+                groups: if groups.is_empty() { None } else { Some(groups) },
+            });
+            let elapsed = start.elapsed().as_millis() as u64;
+            for r in results.values_mut() { r.compute_time_ms = elapsed; }
+            return Ok(results);
+        }
 
-        // Build DAG with reference-counted CSE
+        // General path: build DAG with CSE for multi-factor evaluation
         let plan = ComputationPlan::build(&self.factors);
+        let n = plan.nodes.len();
 
-        let mut cache: HashMap<u64, Array1<f64>> = HashMap::new();
-        let mut results: HashMap<String, FactorResult> = HashMap::new();
-        let mut node_refs: Vec<usize> = plan.nodes.iter().map(|n| n.ref_count).collect();
-
-        // Pre-identify factor root indices
-        let mut root_names: Vec<(usize, String)> = Vec::new();
-        for name in names {
-            if let Some(&idx) = plan.factor_roots.get(*name) {
-                root_names.push((idx, name.to_string()));
+        // Build reverse dependency graph
+        let mut children: Vec<Vec<usize>> = vec![Vec::new(); n];
+        let mut indegree: Vec<u32> = vec![0; n];
+        for (i, node) in plan.nodes.iter().enumerate() {
+            for dh in deps_of(node) {
+                if let Some(dep_idx) = plan.nodes.iter().position(|nd| nd.hash == dh) {
+                    children[dep_idx].push(i);
+                    indegree[i] += 1;
+                }
             }
         }
 
-        for (i, node) in plan.nodes.iter().enumerate() {
-            // Check if already cached (common subexpression)
-            let val = if let Some(cached) = cache.get(&node.hash) {
-                cached.clone()
-            } else {
-                eval_expr_vectorized(&node.expr, data, &mut cache)?
-            };
+        let root_set: std::collections::HashSet<usize> = names.iter()
+            .filter_map(|nm| plan.factor_roots.get(*nm).copied())
+            .collect();
 
-            // Decrement ref counts of children; drop when no longer needed
-            let child_hashes: Vec<u64> = match &node.expr {
-                Expr::BinaryExpr { left, right, .. } => {
-                    vec![hash_expr(left), hash_expr(right)]
-                }
-                Expr::UnaryExpr { expr: e, .. } => vec![hash_expr(e)],
-                Expr::FunctionCall { args, .. } => {
-                    args.iter().map(|a| hash_expr(a)).collect()
-                }
-                _ => vec![],
-            };
-            for ch in child_hashes {
-                if let Some(dep_idx) = plan.nodes.iter().position(|n| n.hash == ch) {
-                    if node_refs[dep_idx] > 0 {
-                        node_refs[dep_idx] -= 1;
-                        if node_refs[dep_idx] == 0 {
-                            cache.remove(&ch);
+        let mut ready: Vec<usize> = (0..n).filter(|&i| indegree[i] == 0).collect();
+
+        // Only parallelize waves with many nodes or multi-factor workload
+        let use_parallel = parallel && (ready.len() >= 8 || root_set.len() > 1);
+        if use_parallel {
+            // ── Parallel wave-based evaluation ──
+            use rayon::prelude::*;
+            let cache = std::sync::Mutex::new(HashMap::<u64, Array1<f64>>::new());
+            let results_mtx = std::sync::Mutex::new(HashMap::<String, FactorResult>::new());
+            let node_refs = std::sync::Mutex::new(
+                plan.nodes.iter().map(|nd| nd.ref_count).collect::<Vec<_>>(),
+            );
+            let indegree = std::sync::Mutex::new(indegree);
+
+            while !ready.is_empty() {
+                let next = std::sync::Mutex::new(Vec::new());
+                ready.par_iter().for_each(|&i| {
+                    let node = &plan.nodes[i];
+                    let val = {
+                        let mut c = cache.lock().unwrap();
+                        if let Some(cached) = c.get(&node.hash) { cached.clone() }
+                        else {
+                            match eval_expr_vectorized(&node.expr, data, &mut c) {
+                                Ok(v) => { c.insert(node.hash, v.clone()); v }
+                                Err(_) => return,
+                            }
+                        }
+                    };
+                    if root_set.contains(&i) {
+                        for name in names {
+                            if plan.factor_roots.get(*name) == Some(&i) {
+                                results_mtx.lock().unwrap().insert(name.to_string(), FactorResult {
+                                    name: name.to_string(), values: val.to_vec(),
+                                    n_rows: val.len(), n_cols: 1, compute_time_ms: 0, groups: None,
+                                });
+                            }
                         }
                     }
-                }
-            }
-
-            // If this is a factor root, store result
-            for (root_idx, name) in &root_names {
-                if *root_idx == i {
-                    if compact {
-                        let (arr, groups) = crate::expr::registry::functions::eval_expr_compact(
-                            &node.expr, data, &mut cache)?;
-                        results.insert(name.clone(), FactorResult {
-                            name: name.clone(), values: arr.to_vec(),
-                            n_rows: arr.len(), n_cols: 1, compute_time_ms: 0,
-                            groups: if groups.is_empty() { None } else { Some(groups) },
-                        });
-                    } else {
-                        results.insert(name.clone(), FactorResult {
-                            name: name.clone(), values: val.to_vec(),
-                            n_rows: val.len(), n_cols: 1, compute_time_ms: 0, groups: None,
-                        });
+                    // Decrement refs; drop stale cache entries
+                    {
+                        let mut c = cache.lock().unwrap();
+                        let mut nrefs = node_refs.lock().unwrap();
+                        for dh in deps_of(node) {
+                            if let Some(dep_idx) = plan.nodes.iter().position(|nd| nd.hash == dh) {
+                                if nrefs[dep_idx] > 0 { nrefs[dep_idx] -= 1; if nrefs[dep_idx] == 0 { c.remove(&dh); } }
+                            }
+                        }
                     }
-                }
+                    {
+                        let mut ind = indegree.lock().unwrap();
+                        let mut nxt = next.lock().unwrap();
+                        for &child in &children[i] { ind[child] -= 1; if ind[child] == 0 { nxt.push(child); } }
+                    }
+                });
+                ready = next.into_inner().unwrap();
             }
-        }
+            let mut results = results_mtx.into_inner().unwrap();
+            let elapsed = start.elapsed().as_millis() as u64;
+            for r in results.values_mut() { r.compute_time_ms = elapsed; }
+            Ok(results)
+        } else {
+            // ── Sequential path (no Mutex overhead) ──
+            let mut cache: HashMap<u64, Array1<f64>> = HashMap::new();
+            let mut results = HashMap::new();
+            let mut node_refs: Vec<usize> = plan.nodes.iter().map(|nd| nd.ref_count).collect();
 
-        let elapsed = start.elapsed().as_millis() as u64;
-        for r in results.values_mut() { r.compute_time_ms = elapsed; }
-        Ok(results)
+            while !ready.is_empty() {
+                let mut next = Vec::new();
+                for &i in &ready {
+                    let node = &plan.nodes[i];
+                    let val = if let Some(cached) = cache.get(&node.hash) { cached.clone() }
+                    else {
+                        let v = eval_expr_vectorized(&node.expr, data, &mut cache)?;
+                        cache.insert(node.hash, v.clone());
+                        v
+                    };
+                    if root_set.contains(&i) {
+                        for name in names {
+                            if plan.factor_roots.get(*name) == Some(&i) {
+                                if compact {
+                                    let (arr, groups) = crate::expr::registry::functions::eval_expr_compact(&node.expr, data, &mut cache)?;
+                                    results.insert(name.to_string(), FactorResult {
+                                        name: name.to_string(), values: arr.to_vec(),
+                                        n_rows: arr.len(), n_cols: 1, compute_time_ms: 0,
+                                        groups: if groups.is_empty() { None } else { Some(groups) },
+                                    });
+                                } else {
+                                    results.insert(name.to_string(), FactorResult {
+                                        name: name.to_string(), values: val.to_vec(),
+                                        n_rows: val.len(), n_cols: 1, compute_time_ms: 0, groups: None,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    for dh in deps_of(node) {
+                        if let Some(dep_idx) = plan.nodes.iter().position(|nd| nd.hash == dh) {
+                            if node_refs[dep_idx] > 0 { node_refs[dep_idx] -= 1; if node_refs[dep_idx] == 0 { cache.remove(&dh); } }
+                        }
+                    }
+                    for &child in &children[i] { indegree[child] -= 1; if indegree[child] == 0 { next.push(child); } }
+                }
+                ready = next;
+            }
+            let elapsed = start.elapsed().as_millis() as u64;
+            for r in results.values_mut() { r.compute_time_ms = elapsed; }
+            Ok(results)
+        }
     }
+
 
     /// One-stop compute: factor evaluation + cross-sectional pipeline.
     ///
@@ -653,6 +731,15 @@ impl FactorRegistry {
 }
 
 // Module-level expression hashing helpers (used by the DAG evaluator).
+fn deps_of(node: &crate::expr::registry::config::PlanNode) -> Vec<u64> {
+    match &node.expr {
+        Expr::BinaryExpr { left, right, .. } => vec![hash_expr(left), hash_expr(right)],
+        Expr::UnaryExpr { expr: e, .. } => vec![hash_expr(e)],
+        Expr::FunctionCall { args, .. } => args.iter().map(|a| hash_expr(a)).collect(),
+        _ => vec![],
+    }
+}
+
 fn hash_expr(expr: &Expr) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
