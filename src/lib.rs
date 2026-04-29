@@ -3046,10 +3046,12 @@ impl PyAlfarsLab {
     }
 
     fn evaluate(&self, py: Python<'_>) -> PyResult<(Py<PyDict>, Py<PyAny>)> {
+        py.check_signals()?;
         let (matrices, prices) = self
             .inner.lock().unwrap()
             .evaluate()
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+        py.check_signals()?;
         let dict = PyDict::new(py);
         for (name, mat) in &matrices {
             let arr: Py<PyArray2<f64>> = mat.clone().into_pyarray(py).into();

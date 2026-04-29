@@ -660,7 +660,7 @@ impl FactorRegistry {
 
             let factor_names: Vec<&str> = self.factors.keys().map(|s| s.as_str()).collect();
             // compact=false: each row is already a daily observation (no group-by needed)
-            let results = self.compute_batch_for_freq(&factor_names, &data, false, false)?;
+            let results = self.compute_batch_for_freq(&factor_names, &data, true, false)?;
 
             // Build per-date groups from 1d trading_date and symbol columns
             let dates = data.get("1d:trading_date")
