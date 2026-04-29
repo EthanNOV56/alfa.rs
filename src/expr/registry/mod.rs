@@ -353,27 +353,58 @@ impl FactorRegistry {
             return Ok(results);
         }
 
-        // Sequential fallback: evaluate each factor independently (no DAG, no CSE)
-        if !parallel {
-            let mut results = HashMap::new();
-            for &name in names {
-                let info = self.factors.get(name)
-                    .ok_or_else(|| format!("Factor '{}' not found", name))?;
+        // Per-factor parallel — each thread has its own cache for full parallelism.
+        if parallel && names.len() > 1 {
+            use parking_lot::Mutex;
+            use rayon::prelude::*;
+            let results_mtx = Mutex::new(HashMap::<String, FactorResult>::new());
+            eprintln!("compute: parallel {} factors with rayon", names.len());
+            names.par_iter().for_each(|&name| {
+                let info = match self.factors.get(name) { Some(i) => i, None => return };
+                let mut cache = HashMap::new();
                 let (arr, groups) = if compact {
-                    crate::expr::registry::functions::eval_expr_compact(
-                        &info.parsed_expr, data, &mut HashMap::new())?
+                    match crate::expr::registry::functions::eval_expr_compact(
+                        &info.parsed_expr, data, &mut cache) {
+                        Ok(v) => v, Err(_) => return,
+                    }
                 } else {
-                    let v = eval_expr_vectorized(&info.parsed_expr, data, &mut HashMap::new())?;
-                    (v, vec![])
+                    match eval_expr_vectorized(&info.parsed_expr, data, &mut cache) {
+                        Ok(v) => (v, vec![]), Err(_) => return,
+                    }
                 };
-                results.insert(name.to_string(), FactorResult {
+                results_mtx.lock().insert(name.to_string(), FactorResult {
                     name: name.to_string(), values: arr.to_vec(),
                     n_rows: arr.len(), n_cols: 1, compute_time_ms: 0,
                     groups: if groups.is_empty() { None } else { Some(groups) },
                 });
-            }
+            });
+            let mut results = results_mtx.into_inner();
+            let elapsed = start.elapsed().as_millis() as u64;
+            for r in results.values_mut() { r.compute_time_ms = elapsed; }
+            eprintln!("compute: done in {}ms", elapsed);
             return Ok(results);
         }
+
+        // Sequential evaluation with shared cache across factors
+        let mut cache = HashMap::new();
+        let mut results = HashMap::new();
+        for &name in names {
+            let info = self.factors.get(name)
+                .ok_or_else(|| format!("Factor '{}' not found", name))?;
+            let (arr, groups) = if compact {
+                crate::expr::registry::functions::eval_expr_compact(
+                    &info.parsed_expr, data, &mut cache)?
+            } else {
+                let v = eval_expr_vectorized(&info.parsed_expr, data, &mut cache)?;
+                (v, vec![])
+            };
+            results.insert(name.to_string(), FactorResult {
+                name: name.to_string(), values: arr.to_vec(),
+                n_rows: arr.len(), n_cols: 1, compute_time_ms: 0,
+                groups: if groups.is_empty() { None } else { Some(groups) },
+            });
+        }
+        return Ok(results);
 
         // DAG path: build ComputationPlan from all factors
         let plan = ComputationPlan::build(&self.factors);
