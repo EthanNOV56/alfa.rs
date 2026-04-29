@@ -388,6 +388,7 @@ impl ClickHouseSource {
             request = request.query(&[("password", password)]);
         }
 
+        let request_start = std::time::Instant::now();
         let response = request
             .body(sql.to_string())
             .send()
@@ -399,10 +400,15 @@ impl ClickHouseSource {
             return Err(DataError::Query(format!("HTTP {}: {}", status, text)));
         }
 
-        response
+        let bytes = response
             .bytes()
             .map(|b| b.to_vec())
-            .map_err(|e| DataError::Query(format!("Failed to read response bytes: {}", e)))
+            .map_err(|e| DataError::Query(format!("Failed to read response bytes: {}", e)))?;
+
+        let request_ms = request_start.elapsed().as_millis();
+        eprintln!("    clickhouse query: {}ms ({} bytes)", request_ms, bytes.len());
+
+        Ok(bytes)
     }
 
     /// Execute SQL and return raw JSON values (not just f64)

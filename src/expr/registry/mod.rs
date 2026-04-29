@@ -622,6 +622,9 @@ impl FactorRegistry {
         data_layer: &mut DataLayer,
     ) -> Result<HashMap<String, FactorSlice>, String> {
         use crate::expr::registry::timeseries::{cap_neu, qcut, winsor, zscore};
+        use std::time::Instant;
+
+        let t_start = Instant::now();
 
         let mut cols_5m: Vec<String> = Vec::new();
         for info in self.factors.values() {
@@ -639,19 +642,26 @@ impl FactorRegistry {
         for c in &cols_5m {
             query_fields.push(format!("5m:{}", c));
         }
+        let t_query = Instant::now();
         let data = data_layer
             .query(query_fields)
             .map_err(|e| format!("DataLayer query error: {:?}", e))?;
+        let t_query_ms = t_query.elapsed().as_millis();
 
+        let t_eval = Instant::now();
         let factor_names: Vec<&str> = self.factors.keys().map(|s| s.as_str()).collect();
         let results = self.compute_batch_for_freq(&factor_names, &data, false, true)?;
+        let t_eval_ms = t_eval.elapsed().as_millis();
 
+        let t_mktcap = Instant::now();
         let mktcap_map = data_layer
             .build_free_float_cap_map()
             .map_err(|e| format!("build_free_float_cap_map: {:?}", e))?;
+        let t_mktcap_ms = t_mktcap.elapsed().as_millis();
 
         let symbol_list = data_layer.get_symbols_5m().to_vec();
 
+        let t_cs = Instant::now();
         let mut cs_results: HashMap<String, FactorSlice> = HashMap::new();
 
         for (name, _info) in &self.factors {
@@ -725,6 +735,13 @@ impl FactorRegistry {
 
             cs_results.insert(name.clone(), slice);
         }
+        let t_cs_ms = t_cs.elapsed().as_millis();
+        let t_total_ms = t_start.elapsed().as_millis();
+
+        eprintln!(
+            "  pipeline: query={}ms eval={}ms mktcap={}ms cs={}ms total={}ms",
+            t_query_ms, t_eval_ms, t_mktcap_ms, t_cs_ms, t_total_ms
+        );
 
         Ok(cs_results)
     }

@@ -526,17 +526,60 @@ impl DataLayer {
             col_specs.push((i, field.name().clone(), kind));
         }
 
-        // Pre-allocate result vectors
+        // Collect all batches first (needed for two-pass symbol encoding)
+        let mut batches: Vec<RecordBatch> = Vec::new();
+        for batch_result in reader {
+            batches.push(
+                batch_result
+                    .map_err(|e| DataError::Query(format!("Arrow batch read: {}", e)))?,
+            );
+        }
+
+        // Build symbol encoding (pass 1: scan only, allocate Strings only for unique symbols)
+        let t_encode = std::time::Instant::now();
+        let symbol_to_idx: HashMap<String, f64>;
+        if !self.symbols_5m.is_empty() {
+            symbol_to_idx = self
+                .symbols_5m
+                .iter()
+                .enumerate()
+                .map(|(i, s)| (s.clone(), i as f64))
+                .collect();
+        } else {
+            let mut unique_set: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for batch in &batches {
+                let arrays = batch.columns();
+                for &(col_idx, _, ref kind) in &col_specs {
+                    if matches!(kind, ColKind::Symbol) {
+                        if let Some(arr) = arrays[col_idx].as_any().downcast_ref::<StringArray>() {
+                            for i in 0..batch.num_rows() {
+                                let s = arr.value(i);
+                                if !unique_set.contains(s) {
+                                    unique_set.insert(s.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            let mut unique: Vec<String> = unique_set.into_iter().collect();
+            unique.sort();
+            symbol_to_idx = unique
+                .iter()
+                .enumerate()
+                .map(|(i, s)| (s.clone(), i as f64))
+                .collect();
+            self.symbols_5m = unique;
+        }
+
+        // Pass 2: process all columns, encode symbols via HashMap lookup (no allocation)
+        let t_parse = std::time::Instant::now();
         let mut col_vecs: HashMap<String, Vec<f64>> = HashMap::new();
-        let mut symbol_strings: Vec<String> = Vec::new();
         for (_, name, _) in &col_specs {
             col_vecs.insert(name.clone(), Vec::new());
         }
 
-        // Process Arrow batches
-        for batch_result in reader {
-            let batch: RecordBatch = batch_result
-                .map_err(|e| DataError::Query(format!("Arrow batch read: {}", e)))?;
+        for batch in &batches {
             let arrays = batch.columns();
             let n_rows = batch.num_rows();
 
@@ -554,8 +597,7 @@ impl DataLayer {
                             .downcast_ref::<PrimitiveArray<Date32Type>>()
                             .ok_or_else(|| {
                                 DataError::Query(format!(
-                                    "Column '{}' expected Date32",
-                                    name
+                                    "Column '{}' expected Date32", name
                                 ))
                             })?;
                         for i in 0..n_rows {
@@ -568,58 +610,30 @@ impl DataLayer {
                             .downcast_ref::<StringArray>()
                             .ok_or_else(|| {
                                 DataError::Query(format!(
-                                    "Column '{}' expected StringArray",
-                                    name
+                                    "Column '{}' expected StringArray", name
                                 ))
                             })?;
                         for i in 0..n_rows {
-                            symbol_strings.push(arr.value(i).to_string());
+                            vec.push(
+                                symbol_to_idx.get(arr.value(i)).copied().unwrap_or(f64::NAN),
+                            );
                         }
                     }
                 }
             }
         }
+        let t_parse_ms = t_parse.elapsed().as_millis();
 
-        // Build symbol encoding
-        let symbol_to_idx: HashMap<String, f64>;
-        if !self.symbols_5m.is_empty() {
-            symbol_to_idx = self
-                .symbols_5m
-                .iter()
-                .enumerate()
-                .map(|(i, s)| (s.clone(), i as f64))
-                .collect();
-        } else {
-            let mut unique: Vec<String> = symbol_strings.iter().cloned().collect();
-            unique.sort();
-            unique.dedup();
-            symbol_to_idx = unique
-                .iter()
-                .enumerate()
-                .map(|(i, s)| (s.clone(), i as f64))
-                .collect();
-            self.symbols_5m = unique;
-        }
-
-        // Encode symbols and build final result
+        // Build final result (Vec → Array1 without clone via from_vec)
         let mut result = HashMap::new();
-        for (_, name, kind) in col_specs {
+        for (_, name, kind) in &col_specs {
             let key = format!("{}:{}", prefix, name);
-            match kind {
-                ColKind::Symbol => {
-                    let arr: Array1<f64> = symbol_strings
-                        .iter()
-                        .map(|s| symbol_to_idx.get(s).copied().unwrap_or(f64::NAN))
-                        .collect();
-                    result.insert(key, arr);
-                }
-                ColKind::Float | ColKind::Date => {
-                    if let Some(vec) = col_vecs.remove(&name) {
-                        result.insert(key, Array1::from_vec(vec));
-                    }
-                }
+            if let Some(vec) = col_vecs.remove(name) {
+                result.insert(key, Array1::from_vec(vec));
             }
         }
+        let n_rows = result.values().next().map(|v| v.len()).unwrap_or(0);
+        eprintln!("    arrow parse: {}ms  encode: {}ms  rows={}", t_parse_ms, t_encode.elapsed().as_millis(), n_rows);
 
         Ok(result)
     }

@@ -84,6 +84,11 @@ impl AlfarsLab {
         FactorSlice::write_header(&mut wtr);
 
         let t0 = Instant::now();
+        let mut total_query_ms = 0u64;
+        let mut total_eval_ms = 0u64;
+        let mut total_cs_ms = 0u64;
+        let mut total_csv_ms = 0u64;
+        let mut total_mktcap_ms = 0u64;
         for year in start_year..=end_year {
             let start = format!("{}-01-01", year);
             let end = format!("{}-01-01", year + 1);
@@ -92,8 +97,10 @@ impl AlfarsLab {
             let mut year_dl = DataLayer::new(self.source.clone());
             year_dl.set_pre_filter(&pre_filter);
 
+            let t_q0 = Instant::now();
             let results = self.registry.compute_cs_pipeline(&mut year_dl)
                 .map_err(|e| format!("Year {}: {}", year, e))?;
+            // Timing breakdown is logged inside compute_cs_pipeline
 
             for (_name, slice) in &results {
                 slice.write_to(&mut wtr)
