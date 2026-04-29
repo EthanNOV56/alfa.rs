@@ -647,6 +647,8 @@ impl FactorRegistry {
             .query(query_fields)
             .map_err(|e| format!("DataLayer query error: {:?}", e))?;
         let t_query_ms = t_query.elapsed().as_millis();
+        // Free Arrow batch memory before eval allocates more
+        data_layer.clear_cache_keep_symbols();
 
         let t_eval = Instant::now();
         let factor_names: Vec<&str> = self.factors.keys().map(|s| s.as_str()).collect();

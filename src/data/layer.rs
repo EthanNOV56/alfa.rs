@@ -371,6 +371,11 @@ impl DataLayer {
         self.symbols_5m.clear();
     }
 
+    /// Clear only the data cache, preserving the symbol encoding map
+    pub fn clear_cache_keep_symbols(&mut self) {
+        self.cache.clear();
+    }
+
     /// Get the unique symbols from the last 5m query (sorted)
     pub fn get_symbols_5m(&self) -> &[String] {
         &self.symbols_5m
@@ -435,8 +440,9 @@ impl DataLayer {
                 }
             } else {
                 let data = self.query_5m_with_columns(&freq_5m_cols, &pre)?;
-                self.cache.insert("5m:full".to_string(), data.clone());
                 result.extend(data);
+                // Don't clone into cache — pipeline queries data once per year,
+                // and cloning doubles memory (Array1 multi-GB allocations).
             }
         }
 
@@ -617,6 +623,8 @@ impl DataLayer {
             }
         }
         let t_parse_ms = t_parse.elapsed().as_millis();
+        // Drop Arrow batches early to free ~680MB before building final Array1
+        drop(batches);
 
         // Build final result (Vec → Array1 without clone via from_vec)
         let mut result = HashMap::new();
