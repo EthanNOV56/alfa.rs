@@ -627,39 +627,65 @@ impl FactorRegistry {
             // compact=false: each row is already a daily observation (no group-by needed)
             let results = self.compute(&factor_names, &data, true, false)?;
 
-            // Build per-date groups from 1d trading_date and symbol columns
+            // Build per-date groups and sort by (date, symbol) for CS pipeline.
+            // Data is ORDER BY symbol, trading_date; CS pipeline expects date order.
             let dates = data
                 .get("1d:trading_date")
                 .ok_or("1d:trading_date missing")?;
             let symbols = data.get("1d:symbol").ok_or("1d:symbol missing")?;
             let n = dates.len();
-            let mut groups: Vec<(i64, i64)> = Vec::with_capacity(n);
-            for i in 0..n {
-                groups.push((dates[i] as i64, symbols[i] as i64));
-            }
+            let mut indexed: Vec<(usize, (i64, i64))> = (0..n)
+                .map(|i| (i, (dates[i] as i64, symbols[i] as i64)))
+                .collect();
+            indexed.sort_by_key(|(_, (d, s))| (*d, *s));
+            let perm: Vec<usize> = indexed.iter().map(|(i, _)| *i).collect();
+            let groups: Vec<(i64, i64)> = indexed.iter().map(|(_, g)| *g).collect();
             let symbol_list = data_layer.get_symbols_5m().to_vec();
             let mktcap_map = data_layer
                 .build_free_float_cap_map()
                 .map_err(|e| format!("build_free_float_cap_map: {:?}", e))?;
 
-            // Wrap results with groups
+            // Attach shared groups (same for all 1d factors — avoids 82x clone)
             let mut grouped_results: HashMap<String, FactorResult> = HashMap::new();
             for (name, fr) in results {
-                let values = crate::expr::registry::FactorResult {
-                    groups: Some(groups.clone()),
+                let permuted_vals: Vec<f64> = perm.iter().map(|&i| fr.values[i]).collect();
+                grouped_results.insert(name, crate::expr::registry::FactorResult {
+                    values: permuted_vals,
+                    groups: None, // shared groups passed separately below
                     ..fr
-                };
-                grouped_results.insert(name, values);
+                });
             }
-            self.build_slices(&grouped_results, &symbol_list, &mktcap_map)
+            self.build_slices_shared_groups(&grouped_results, &symbol_list, &mktcap_map, &groups)
         }
     }
 
+    /// Build slices for 5m compact path (groups are per-factor in FactorResult).
     fn build_slices(
         &self,
         results: &HashMap<String, FactorResult>,
         symbol_list: &[String],
         mktcap_map: &HashMap<(i64, usize), f64>,
+    ) -> Result<HashMap<String, FactorSlice>, String> {
+        self.build_slices_impl(results, symbol_list, mktcap_map, None)
+    }
+
+    /// Build slices for 1d path (shared groups for all factors).
+    fn build_slices_shared_groups(
+        &self,
+        results: &HashMap<String, FactorResult>,
+        symbol_list: &[String],
+        mktcap_map: &HashMap<(i64, usize), f64>,
+        shared_groups: &[(i64, i64)],
+    ) -> Result<HashMap<String, FactorSlice>, String> {
+        self.build_slices_impl(results, symbol_list, mktcap_map, Some(shared_groups))
+    }
+
+    fn build_slices_impl(
+        &self,
+        results: &HashMap<String, FactorResult>,
+        symbol_list: &[String],
+        mktcap_map: &HashMap<(i64, usize), f64>,
+        shared_groups: Option<&[(i64, i64)]>,
     ) -> Result<HashMap<String, FactorSlice>, String> {
         use crate::expr::registry::timeseries::{cap_neu, qcut, winsor, zscore};
         use rayon::prelude::*;
@@ -669,12 +695,16 @@ impl FactorRegistry {
             let result = results
                 .get(name)
                 .ok_or_else(|| format!("Factor '{}' missing from results", name))?;
-            let groups = result.groups.as_ref().ok_or("Group keys missing")?;
+            let groups: &[(i64, i64)] = if let Some(sg) = shared_groups {
+                sg
+            } else {
+                result.groups.as_deref().ok_or("Group keys missing")?
+            };
             let values = &result.values;
 
             let mut slice = FactorSlice {
                 factor_name: name.clone(),
-                groups: groups.clone(),
+                groups: groups.to_vec(),
                 symbols: symbol_list.to_vec(),
                 #[cfg(debug_assertions)]
                 raw: Vec::with_capacity(values.len()),
