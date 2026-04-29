@@ -544,7 +544,6 @@ impl DataLayer {
         }
 
         // Build symbol encoding
-        let t_encode = std::time::Instant::now();
         let symbol_to_idx: AHashMap<String, f64>;
         if !self.symbols_5m.is_empty() {
             symbol_to_idx = self
@@ -581,7 +580,6 @@ impl DataLayer {
         }
 
         // Process columns in parallel with rayon (one thread per column)
-        let t_parse = std::time::Instant::now();
         use std::sync::Arc;
         let batches_arc = Arc::new(batches);
         let symbol_to_idx_arc = Arc::new(symbol_to_idx);
@@ -620,7 +618,6 @@ impl DataLayer {
                 (name.clone(), vec)
             })
             .collect();
-        let t_parse_ms = t_parse.elapsed().as_millis();
         drop(batches_arc);
 
         // Build final result from parallel column results
@@ -629,9 +626,6 @@ impl DataLayer {
             let key = format!("{}:{}", prefix, name);
             result.insert(key, Array1::from_vec(vec));
         }
-        let n_rows = result.values().next().map(|v| v.len()).unwrap_or(0);
-        eprintln!("    arrow parse: {}ms  encode: {}ms  rows={}", t_parse_ms, t_encode.elapsed().as_millis(), n_rows);
-
         Ok(result)
     }
 
