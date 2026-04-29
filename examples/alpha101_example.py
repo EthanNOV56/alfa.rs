@@ -2,33 +2,19 @@
 """
 Alpha101 Factor Example.
 
-Computes Alpha101 factors from daily OHLCV data using the full Rust pipeline:
-ClickHouseSource → DataLayer → FactorRegistry.compute_factor_matrices_1d →
-FactorCombiner → BacktestEngine.run_with_prices.
+Each alpha computed independently through winsor→zscore→cap_neu→qcut,
+then equal-weight combined via lab.run_multi().
 
-Alphas skipped:
-  - alpha48,58,59,63,67,69,70,76,79,80,82,87,89,90,91,93,97,100: IndNeutralize
-  - alpha56: requires market cap (cap) field
+Skipped: alpha48,56,58,59,63,67,69,70,76,79,80,82,87,89,90,91,93,97,100
 """
 
 import alfars as al
-from alfars._core import (
-    ClickHouseSource,
-    DataLayer,
-    FactorCombiner,
-    FactorRegistry,
-    PyBacktestEngine,
-)
-
-# ── Alpha101 expressions ──────────────────────────────────────────────────────
 
 ret_expr = "close / ts_delay(close, 1) - 1"
 
 
 def build_alphas() -> dict[str, str]:
-    """Return dict of factor_name → alfars expression."""
     a: dict[str, str] = {}
-
     a["alpha1"] = f"(cs_rank(ts_argmax(power(quesval(0, {ret_expr}, close, ts_std({ret_expr}, 20)), 2.0), 5)) - 0.5)"
     a["alpha2"] = f"(-1) * ts_correlation(cs_rank(ts_delta(log(volume), 2)), cs_rank((close - open) / open), 6)"
     a["alpha3"] = "ts_correlation(cs_rank(open), cs_rank(volume), 10) * -1"
@@ -76,7 +62,6 @@ def build_alphas() -> dict[str, str]:
     a["alpha45"] = "(-1) * cs_rank(ts_sum(ts_delay(close, 5), 20) / 20) * ts_correlation(close, volume, 2) * cs_rank(ts_correlation(ts_sum(close, 5), ts_sum(close, 20), 2))"
     a["alpha46"] = f"quesval(0.25, ((ts_delay(close, 20) - ts_delay(close, 10)) / 10 - (ts_delay(close, 10) - close) / 10), -1, quesval(0, ((ts_delay(close, 20) - ts_delay(close, 10)) / 10 - (ts_delay(close, 10) - close) / 10), (-1) * (close - ts_delay(close, 1)), 1))"
     a["alpha47"] = "((cs_rank(power(close, -1)) * volume / ts_mean(volume, 20)) * (high * cs_rank(high - close)) / (ts_sum(high, 5) / 5)) - cs_rank(vwap - ts_delay(vwap, 5))"
-    # alpha48,56,58,59,63,67,69,70,76,79,80,82,87,89,90,91,93,97,100: skipped (IndNeutralize/cap)
     a["alpha49"] = f"quesval(-0.1, ((ts_delay(close, 20) - ts_delay(close, 10)) / 10 - (ts_delay(close, 10) - close) / 10), (-1) * (close - ts_delay(close, 1)), 1)"
     a["alpha50"] = "(-1) * ts_max(cs_rank(ts_correlation(cs_rank(volume), cs_rank(vwap), 5)), 5)"
     a["alpha51"] = f"quesval(-0.05, ((ts_delay(close, 20) - ts_delay(close, 10)) / 10 - (ts_delay(close, 10) - close) / 10), (-1) * (close - ts_delay(close, 1)), 1)"
@@ -112,11 +97,8 @@ def build_alphas() -> dict[str, str]:
     a["alpha98"] = "cs_rank(ts_decay_linear(ts_correlation(vwap, ts_sum(ts_mean(volume, 5), 26), 5), 7)) - cs_rank(ts_decay_linear(ts_rank(ts_argmin(ts_correlation(cs_rank(open), cs_rank(ts_mean(volume, 15)), 21), 9), 7), 8))"
     a["alpha99"] = "quesval2(cs_rank(ts_correlation(ts_sum((high + low) / 2, 20), ts_sum(ts_mean(volume, 60), 20), 9)), cs_rank(ts_correlation(low, volume, 6)), 1, 0) * -1"
     a["alpha101"] = "((close - open) / ((high - low) + 0.001))"
-
     return a
 
-
-# ── Main ──────────────────────────────────────────────────────────────────────
 
 SKIPPED = {
     "alpha48", "alpha56", "alpha58", "alpha59", "alpha63", "alpha67",
@@ -128,54 +110,31 @@ SKIPPED = {
 def main():
     alphas = build_alphas()
     print(f"Alphas defined: {len(alphas)}")
-    for skip in sorted(SKIPPED):
-        print(f"  {skip}: skipped")
 
-    # Full Rust pipeline: data → compute → combine → backtest
-    ch = ClickHouseSource.from_env()
-    dl = DataLayer(ch)
-    dl.set_pre_filter("2024-01-01:2025-01-01 symbols not like '%BJ'")
+    lab = al.AlfarsLab.from_env() \
+        .with_filter("symbols not like '%BJ'") \
+        .with_years(2024, 2024)
 
-    registry = FactorRegistry("default")
-    names = []
     for name, expr in alphas.items():
+        if name in SKIPPED:
+            continue
         try:
-            registry.register(name, expr)
-            names.append(name)
+            lab.register(name, expr)
         except Exception as e:
             print(f"  REGISTER FAIL {name}: {e}")
 
-    print(f"Registered {len(names)} factors, computing...")
-    factor_mats, prices = registry.compute_factor_matrices_1d(dl)
+    names = sorted(alphas.keys() - SKIPPED)
+    print(f"Registered {len(names)}, computing...")
 
-    # Collect valid factor matrices
-    mats = []
-    valid_names = []
-    for name in names:
-        if name not in factor_mats:
-            continue
-        mat = factor_mats[name]
-        if mat.size == 0:
-            continue
-        mats.append(mat)
-        valid_names.append(name)
+    # Compute all factors through full pipeline (winsor→zscore→cap_neu→qcut)
+    matrices, prices = lab.evaluate()
+    valid_mats = [matrices[n] for n in names if n in matrices]
+    print(f"Valid factor matrices: {len(valid_mats)}")
 
-    print(f"Valid factors: {len(mats)}")
+    # Equal-weight multi-factor backtest
+    result = lab.run_multi(valid_mats, prices)
 
-    if len(mats) < 2:
-        print("Not enough valid factors")
-        return
-
-    # Combine factors (equal-weight)
-    print("\nCombining factors (equal-weight)...")
-    combined = FactorCombiner.equal_weight(mats)
-
-    # Backtest
-    print("Running backtest...")
-    engine = PyBacktestEngine(10, "equal", 1, 1, 0.001)
-    result = engine.run_with_prices(combined, prices)
-
-    print(f"\n── Backtest Results ({len(valid_names)} factors) ──")
+    print(f"\n── Backtest Results ({len(valid_mats)} factors) ──")
     print(f"  IC mean:   {result.ic_mean:.6f}")
     print(f"  IC IR:     {result.ic_ir:.4f}")
     print(f"  Total ret: {result.total_return:.4f}")

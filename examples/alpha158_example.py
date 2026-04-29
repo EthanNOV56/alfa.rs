@@ -8,13 +8,6 @@ FactorCombiner → BacktestEngine.run_with_prices.
 """
 
 import alfars as al
-from alfars._core import (
-    ClickHouseSource,
-    DataLayer,
-    FactorCombiner,
-    FactorRegistry,
-    PyBacktestEngine,
-)
 
 
 def build_alphas() -> dict[str, str]:
@@ -109,47 +102,24 @@ def main():
     alphas = build_alphas()
     print(f"Alphas defined: {len(alphas)}")
 
-    ch = ClickHouseSource.from_env()
-    dl = DataLayer(ch)
-    dl.set_pre_filter("2024-01-01:2025-01-01 symbols not like '%BJ'")
+    lab = al.AlfarsLab.from_env() \
+        .with_filter("symbols not like '%BJ'") \
+        .with_years(2024, 2024)
 
-    registry = FactorRegistry("default")
-    names = []
     for name, expr in alphas.items():
         try:
-            registry.register(name, expr)
-            names.append(name)
+            lab.register(name, expr)
         except Exception as e:
             print(f"  SKIP {name}: {e}")
 
-    print(f"Registered {len(names)} factors, computing...")
-    factor_mats, prices = registry.compute_factor_matrices_1d(dl)
+    print(f"Registered {len(alphas)} factors, computing...")
+    matrices, prices = lab.evaluate()
+    valid_mats = [matrices[n] for n in matrices]
+    print(f"Valid factors: {len(valid_mats)}")
 
-    mats = []
-    valid_names = []
-    for name in names:
-        if name not in factor_mats:
-            continue
-        mat = factor_mats[name]
-        if mat.size == 0:
-            continue
-        mats.append(mat)
-        valid_names.append(name)
+    result = lab.run_multi(valid_mats, prices)
 
-    print(f"Valid factors for backtest: {len(mats)}")
-
-    if len(mats) < 2:
-        print("Not enough valid factors")
-        return
-
-    print("\nCombining factors (equal-weight)...")
-    combined = FactorCombiner.equal_weight(mats)
-
-    print("Running backtest...")
-    engine = PyBacktestEngine(10, "equal", 1, 1, 0.001)
-    result = engine.run_with_prices(combined, prices)
-
-    print(f"\n── Backtest Results ({len(valid_names)} factors) ──")
+    print(f"\n── Backtest Results ({len(valid_mats)} factors) ──")
     print(f"  IC mean:   {result.ic_mean:.6f}")
     print(f"  IC IR:     {result.ic_ir:.4f}")
     print(f"  Total ret: {result.total_return:.4f}")

@@ -15,6 +15,8 @@
 //! println!("Sharpe: {:.4}", result.sharpe_ratio);
 //! ```
 
+use std::collections::HashMap;
+
 use crate::backtest::{BacktestConfig, BacktestEngine, BacktestResult};
 use crate::data::clickhouse::ClickHouseSource;
 use crate::data::layer::DataLayer;
@@ -61,6 +63,53 @@ impl AlfarsLab {
     pub fn register(&mut self, name: &str, expression: &str) -> Result<&mut Self, String> {
         self.registry.register(name, expression)?;
         Ok(self)
+    }
+
+    /// Evaluate all registered factors (raw values + CS pipeline), returning
+    /// factor matrices aligned to a common PriceMatrix. For multi-factor backtest.
+    pub fn evaluate(
+        &self,
+    ) -> Result<(HashMap<String, ndarray::Array2<f64>>, crate::data::layer::PriceMatrix), String>
+    {
+        let (start_year, end_year) = self.years()?;
+        let base_filter = self.dl.pre_filter().to_string();
+        let mut all_slices = Vec::new();
+
+        for year in start_year..=end_year {
+            let start = format!("{}-01-01", year);
+            let end = format!("{}-01-01", year + 1);
+            let mut year_dl = DataLayer::new(self.source.clone());
+            year_dl.set_pre_filter(&format!("{}:{} {}", start, end, base_filter));
+            let results = self.registry.compute_cs_pipeline(&mut year_dl)
+                .map_err(|e| format!("Year {}: {}", year, e))?;
+            all_slices.extend(results.into_values());
+        }
+
+        let start_full = format!("{}-01-01", start_year);
+        let end_full = format!("{}-01-01", end_year + 1);
+        let mut dl = DataLayer::new(self.source.clone());
+        dl.set_pre_filter(&format!("{}:{} {}", start_full, end_full, base_filter));
+        let prices = dl.query_price_matrix()
+            .map_err(|e| format!("Price query: {:?}", e))?;
+
+        let mut matrices = HashMap::new();
+        for name in self.registry.list() {
+            let factor_slices: Vec<_> = all_slices.iter()
+                .filter(|s| s.factor_name == name).cloned().collect();
+            if factor_slices.is_empty() { continue; }
+            matrices.insert(name, prices.build_factor_matrix(&factor_slices));
+        }
+        Ok((matrices, prices))
+    }
+
+    /// Multi-factor equal-weight combination backtest.
+    pub fn run_multi(
+        &self,
+        factor_mats: &[ndarray::Array2<f64>],
+        prices: &crate::data::layer::PriceMatrix,
+    ) -> Result<BacktestResult, String> {
+        BacktestEngine::with_config(self.backtest_config.clone())
+            .run_multi_with_prices(factor_mats, prices)
     }
 
     pub fn set_filter(&mut self, filter: &str) {

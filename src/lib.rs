@@ -3045,6 +3045,35 @@ impl PyAlfarsLab {
         Ok(PyBacktestResult::from(result))
     }
 
+    fn evaluate(&self, py: Python<'_>) -> PyResult<(Py<PyDict>, Py<PyAny>)> {
+        let (matrices, prices) = self
+            .inner.lock().unwrap()
+            .evaluate()
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+        let dict = PyDict::new(py);
+        for (name, mat) in &matrices {
+            let arr: Py<PyArray2<f64>> = mat.clone().into_pyarray(py).into();
+            dict.set_item(name, arr)?;
+        }
+        let py_prices = Py::new(py, PyPriceMatrix { inner: prices })?;
+        Ok((dict.into(), py_prices.into()))
+    }
+
+    fn run_multi(
+        &self,
+        factor_mats: Vec<Bound<'_, PyArray2<f64>>>,
+        prices: &PyPriceMatrix,
+    ) -> PyResult<PyBacktestResult> {
+        let mats: Vec<_> = factor_mats.iter()
+            .map(|m| m.readonly().as_array().to_owned())
+            .collect();
+        let result = self
+            .inner.lock().unwrap()
+            .run_multi(&mats, &prices.inner)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+        Ok(PyBacktestResult::from(result))
+    }
+
     fn __repr__(&self) -> String {
         "AlfarsLab()".to_string()
     }
