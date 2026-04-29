@@ -131,18 +131,16 @@ pub fn collect_frequencies(expr: &Expr, freqs: &mut Vec<Frequency>) {
 /// Memoized expression evaluation - computes each subexpression only once
 pub fn eval_expr_memoized(
     expr: &Expr,
-    data: &HashMap<String, Vec<f64>>,
+    data: &HashMap<String, Array1<f64>>,
     n_rows: usize,
-    cache: &mut HashMap<u64, Vec<f64>>,
-) -> Result<Vec<f64>, String> {
+    cache: &mut HashMap<u64, Array1<f64>>,
+) -> Result<Array1<f64>, String> {
     let hash = expr_hash(expr);
 
-    // Check cache first
     if let Some(cached) = cache.get(&hash) {
         return Ok(cached.clone());
     }
 
-    // Compute the expression
     let result = match expr {
         Expr::Column(name) => data
             .get(name)
@@ -154,12 +152,12 @@ pub fn eval_expr_memoized(
                 Literal::Integer(i) => *i as f64,
                 _ => 0.0,
             };
-            Ok(vec![val; n_rows])
+            Ok(Array1::from_elem(n_rows, val))
         }
         Expr::BinaryExpr { left, op, right } => {
             let left_vals = eval_expr_memoized(left, data, n_rows, cache)?;
             let right_vals = eval_expr_memoized(right, data, n_rows, cache)?;
-            let mut result = vec![0.0; n_rows];
+            let mut result = Array1::zeros(n_rows);
             for i in 0..n_rows {
                 result[i] = match op {
                     BinaryOp::Add => left_vals[i] + right_vals[i],
@@ -179,13 +177,10 @@ pub fn eval_expr_memoized(
         }
         Expr::UnaryExpr { op, expr: e } => {
             let vals = eval_expr_memoized(e, data, n_rows, cache)?;
-            Ok(vals
-                .into_iter()
-                .map(|v| match op {
-                    UnaryOp::Negate => -v,
-                    _ => v,
-                })
-                .collect())
+            Ok(match op {
+                UnaryOp::Negate => -&vals,
+                _ => vals,
+            })
         }
         Expr::FunctionCall { name, args, freq: _ } => {
             eval_function_memoized(name, args, data, n_rows, cache)
@@ -193,7 +188,6 @@ pub fn eval_expr_memoized(
         _ => Err("Unsupported expr type".to_string()),
     }?;
 
-    // Cache the result
     cache.insert(hash, result.clone());
     Ok(result)
 }
@@ -202,13 +196,12 @@ pub fn eval_expr_memoized(
 pub fn eval_function_memoized(
     name: &str,
     args: &[Expr],
-    data: &HashMap<String, Vec<f64>>,
+    data: &HashMap<String, Array1<f64>>,
     n_rows: usize,
-    cache: &mut HashMap<u64, Vec<f64>>,
-) -> Result<Vec<f64>, String> {
+    cache: &mut HashMap<u64, Array1<f64>>,
+) -> Result<Array1<f64>, String> {
     let name_lower = name.to_lowercase();
 
-    // Check for ts_ prefix OR known ts functions without prefix
     if name_lower.starts_with("ts_")
         || matches!(
             name_lower.as_str(),
@@ -218,58 +211,48 @@ pub fn eval_function_memoized(
         return eval_ts_function_memoized(&name_lower, args, data, n_rows, cache);
     }
 
-    // First evaluate all arguments (with memoization)
-    let mut arg_values: Vec<Vec<f64>> = Vec::new();
+    // First evaluate all arguments
+    let mut arg_values: Vec<Array1<f64>> = Vec::new();
     for arg in args {
         arg_values.push(eval_expr_memoized(arg, data, n_rows, cache)?);
+    }
+
+    fn binop(a: &Array1<f64>, b: &Array1<f64>, f: impl Fn(f64, f64) -> f64) -> Array1<f64> {
+        let n = a.len();
+        let mut r = Array1::zeros(n);
+        for i in 0..n { r[i] = f(a[i], b[i]); }
+        r
     }
 
     match name_lower.as_str() {
         "cs_rank" => Ok(rank(&arg_values[0])),
         "cs_scale" => Ok(scale(&arg_values[0])),
         "sign" => Ok(sign(&arg_values[0])),
-        "abs" => Ok(arg_values[0].iter().map(|v| v.abs()).collect()),
-        // Element-wise min of two series: min(a, b)
+        "abs" => Ok(arg_values[0].mapv(f64::abs)),
         "min" => {
             if args.len() >= 2 {
-                Ok(arg_values[0]
-                    .iter()
-                    .zip(arg_values[1].iter())
-                    .map(|(&a, &b)| a.min(b))
-                    .collect())
+                Ok(binop(&arg_values[0], &arg_values[1], f64::min))
             } else {
                 Ok(arg_values[0].clone())
             }
         }
-        // Element-wise max of two series: max(a, b)
         "max" => {
             if args.len() >= 2 {
-                Ok(arg_values[0]
-                    .iter()
-                    .zip(arg_values[1].iter())
-                    .map(|(&a, &b)| a.max(b))
-                    .collect())
+                Ok(binop(&arg_values[0], &arg_values[1], f64::max))
             } else {
                 Ok(arg_values[0].clone())
             }
         }
-        // Sum of all elements in a series: sum(a)
         "sum" => {
             let total: f64 = arg_values[0].iter().sum();
-            Ok(arg_values[0].iter().map(|_| total).collect())
+            Ok(Array1::from_elem(arg_values[0].len(), total))
         }
-        "log" => Ok(arg_values[0]
-            .iter()
-            .map(|v| if *v > 0.0 { v.ln() } else { f64::NAN })
-            .collect()),
-        "log10" => Ok(arg_values[0]
-            .iter()
-            .map(|v| if *v > 0.0 { v.log10() } else { f64::NAN })
-            .collect()),
-        "sqrt" => Ok(arg_values[0].iter().map(|v| v.sqrt()).collect()),
+        "log" => Ok(arg_values[0].mapv(|v| if v > 0.0 { v.ln() } else { f64::NAN })),
+        "log10" => Ok(arg_values[0].mapv(|v| if v > 0.0 { v.log10() } else { f64::NAN })),
+        "sqrt" => Ok(arg_values[0].mapv(f64::sqrt)),
         "power" => {
             let exponent = get_literal_int(&args[1]).map(|e| e as f64).unwrap_or(2.0);
-            Ok(arg_values[0].iter().map(|v| v.powf(exponent)).collect())
+            Ok(arg_values[0].mapv(|v| v.powf(exponent)))
         }
         "delta" => {
             let periods = get_literal_int(&args[1]).unwrap_or(1);
@@ -279,44 +262,19 @@ pub fn eval_function_memoized(
             if args.len() != 3 {
                 return Err("IF requires 3 arguments".to_string());
             }
-            let result: Vec<f64> = arg_values[0]
-                .iter()
-                .zip(arg_values[1].iter())
-                .zip(arg_values[2].iter())
-                .map(|((&c, &t), &f)| if c > 0.0 { t } else { f })
-                .collect();
-            Ok(result)
+            let n = arg_values[0].len();
+            let mut r = Array1::zeros(n);
+            for i in 0..n {
+                r[i] = if arg_values[0][i] > 0.0 { arg_values[1][i] } else { arg_values[2][i] };
+            }
+            Ok(r)
         }
-        "gt" | "greater" => Ok(arg_values[0]
-            .iter()
-            .zip(arg_values[1].iter())
-            .map(|(&x, &y)| if x > y { 1.0 } else { 0.0 })
-            .collect()),
-        "lt" | "less" => Ok(arg_values[0]
-            .iter()
-            .zip(arg_values[1].iter())
-            .map(|(&x, &y)| if x < y { 1.0 } else { 0.0 })
-            .collect()),
-        "ge" | "greater_equal" | "gte" => Ok(arg_values[0]
-            .iter()
-            .zip(arg_values[1].iter())
-            .map(|(&x, &y)| if x >= y { 1.0 } else { 0.0 })
-            .collect()),
-        "le" | "less_equal" | "lte" => Ok(arg_values[0]
-            .iter()
-            .zip(arg_values[1].iter())
-            .map(|(&x, &y)| if x <= y { 1.0 } else { 0.0 })
-            .collect()),
-        "eq" | "equal" => Ok(arg_values[0]
-            .iter()
-            .zip(arg_values[1].iter())
-            .map(|(&x, &y)| if (x - y).abs() < 1e-10 { 1.0 } else { 0.0 })
-            .collect()),
-        "ne" | "not_equal" => Ok(arg_values[0]
-            .iter()
-            .zip(arg_values[1].iter())
-            .map(|(&x, &y)| if (x - y).abs() >= 1e-10 { 1.0 } else { 0.0 })
-            .collect()),
+        "gt" | "greater" => Ok(binop(&arg_values[0], &arg_values[1], |x, y| if x > y { 1.0 } else { 0.0 })),
+        "lt" | "less" => Ok(binop(&arg_values[0], &arg_values[1], |x, y| if x < y { 1.0 } else { 0.0 })),
+        "ge" | "greater_equal" | "gte" => Ok(binop(&arg_values[0], &arg_values[1], |x, y| if x >= y { 1.0 } else { 0.0 })),
+        "le" | "less_equal" | "lte" => Ok(binop(&arg_values[0], &arg_values[1], |x, y| if x <= y { 1.0 } else { 0.0 })),
+        "eq" | "equal" => Ok(binop(&arg_values[0], &arg_values[1], |x, y| if (x - y).abs() < 1e-10 { 1.0 } else { 0.0 })),
+        "ne" | "not_equal" => Ok(binop(&arg_values[0], &arg_values[1], |x, y| if (x - y).abs() >= 1e-10 { 1.0 } else { 0.0 })),
         "winsor" => {
             // winsor(alpha, n_symbols) - clip to [mean - 3*std, mean + 3*std] per date
             let n_symbols = args
@@ -349,35 +307,29 @@ pub fn eval_function_memoized(
                 return Err("quesval requires 4 arguments".to_string());
             }
             let threshold = get_literal_float(&args[0]).unwrap_or(0.0);
-            let result: Vec<f64> = arg_values[1]
-                .iter()
-                .zip(arg_values[2].iter())
-                .zip(arg_values[3].iter())
-                .map(|((&a, &b), &c)| if a > threshold { b } else { c })
-                .collect();
-            Ok(result)
+            let n = arg_values[1].len();
+            let mut r = Array1::zeros(n);
+            for i in 0..n {
+                r[i] = if arg_values[1][i] > threshold { arg_values[2][i] } else { arg_values[3][i] };
+            }
+            Ok(r)
         }
         "quesval2" => {
-            // quesval2(a, b, c, d): if a > b, c else d
             if args.len() != 4 {
                 return Err("quesval2 requires 4 arguments".to_string());
             }
-            let result: Vec<f64> = arg_values[0]
-                .iter()
-                .zip(arg_values[1].iter())
-                .zip(arg_values[2].iter())
-                .zip(arg_values[3].iter())
-                .map(|(((&a, &b), &c), &d)| if a > b { c } else { d })
-                .collect();
-            Ok(result)
+            let n = arg_values[0].len();
+            let mut r = Array1::zeros(n);
+            for i in 0..n {
+                r[i] = if arg_values[0][i] > arg_values[1][i] { arg_values[2][i] } else { arg_values[3][i] };
+            }
+            Ok(r)
         }
         "returns" => {
             let delayed = delay(&arg_values[0], 1);
-            Ok(arg_values[0]
-                .iter()
-                .zip(delayed.iter())
-                .map(|(&c, &d)| if d != 0.0 { c / d - 1.0 } else { 0.0 })
-                .collect())
+            Ok(binop(&arg_values[0], &delayed, |c, d| {
+                if d != 0.0 { c / d - 1.0 } else { 0.0 }
+            }))
         }
         _ => Err(format!("Unknown function: {}", name)),
     }
@@ -387,11 +339,10 @@ pub fn eval_function_memoized(
 pub fn eval_ts_function_memoized(
     name: &str,
     args: &[Expr],
-    data: &HashMap<String, Vec<f64>>,
+    data: &HashMap<String, Array1<f64>>,
     n_rows: usize,
-    cache: &mut HashMap<u64, Vec<f64>>,
-) -> Result<Vec<f64>, String> {
-    // Evaluate the first argument (the values)
+    cache: &mut HashMap<u64, Array1<f64>>,
+) -> Result<Array1<f64>, String> {
     let vals = eval_expr_memoized(&args[0], data, n_rows, cache)?;
     let window = args.get(1).and_then(|a| get_literal_int(a)).unwrap_or(20);
 
@@ -422,21 +373,13 @@ pub fn eval_ts_function_memoized(
         "ts_delay" => Ok(delay(&vals, window)),
         "ts_decay_linear" => Ok(decay_linear(&vals, window)),
         "ts_sma" => {
-            let n = window;
             let m = args.get(2).and_then(|a| get_literal_int(a)).unwrap_or(2);
-            let alpha = m as f64 / n as f64;
-            let alpha = if alpha > 0.0 && alpha <= 1.0 {
-                alpha
-            } else {
-                0.5
-            };
+            let alpha = m as f64 / window as f64;
+            let alpha = if alpha > 0.0 && alpha <= 1.0 { alpha } else { 0.5 };
             Ok(sma(&vals, alpha))
         }
         "ts_quantile" => {
-            let q = args
-                .get(2)
-                .and_then(|a| get_literal_float(a))
-                .unwrap_or(0.5);
+            let q = args.get(2).and_then(|a| get_literal_float(a)).unwrap_or(0.5);
             Ok(ts_quantile(&vals, window, q))
         }
         "ts_slope" => Ok(ts_slope(&vals, window)),
@@ -445,11 +388,9 @@ pub fn eval_ts_function_memoized(
         "ts_lowday" => Ok(lowday(&vals, window)),
         "ts_highday" => Ok(highday(&vals, window)),
         "ts_wma" => Ok(wma(&vals, window)),
-        // Backward-compat bare names
         "sma" => {
-            let n = window;
             let m = args.get(2).and_then(|a| get_literal_int(a)).unwrap_or(2);
-            let alpha = m as f64 / n as f64;
+            let alpha = m as f64 / window as f64;
             let alpha = if alpha > 0.0 && alpha <= 1.0 { alpha } else { 0.5 };
             Ok(sma(&vals, alpha))
         }
@@ -722,9 +663,9 @@ pub fn eval_function_vectorized(
     }
 
     match name_lower.as_str() {
-        "cs_rank" => Ok(rank(arg_values[0].as_slice().unwrap()).into()),
-        "cs_scale" => Ok(scale(arg_values[0].as_slice().unwrap()).into()),
-        "sign" => Ok(sign(arg_values[0].as_slice().unwrap()).into()),
+        "cs_rank" => Ok(rank(&arg_values[0])),
+        "cs_scale" => Ok(scale(&arg_values[0])),
+        "sign" => Ok(sign(&arg_values[0])),
         "abs" => Ok(arg_values[0].mapv(f64::abs)),
         // Element-wise min of two series
         "min" => {
@@ -765,7 +706,7 @@ pub fn eval_function_vectorized(
         }
         "delta" => {
             let periods = get_literal_int(&args[1]).unwrap_or(1);
-            Ok(ts_delta(arg_values[0].as_slice().unwrap(), periods).into())
+            Ok(ts_delta(&arg_values[0], periods))
         }
         "if" => {
             if args.len() != 3 {
@@ -853,8 +794,8 @@ pub fn eval_function_vectorized(
                 .get(1)
                 .and_then(|a| get_literal_int(a))
                 .unwrap_or(100); // default 100 symbols
-            let result = winsor(arg_values[0].as_slice().unwrap(), n_symbols);
-            Ok(result.into())
+            let result = winsor(&arg_values[0], n_symbols);
+            Ok(result)
         }
         "zscore" => {
             // zscore(alpha, n_symbols) - (x - mean) / std per date
@@ -862,8 +803,8 @@ pub fn eval_function_vectorized(
                 .get(1)
                 .and_then(|a| get_literal_int(a))
                 .unwrap_or(100); // default 100 symbols
-            let result = zscore(arg_values[0].as_slice().unwrap(), n_symbols);
-            Ok(result.into())
+            let result = zscore(&arg_values[0], n_symbols);
+            Ok(result)
         }
         "cap_neu" => {
             // cap_neu(alpha, market_cap, n_symbols) - regress on log(market_cap), return standardized residuals
@@ -875,12 +816,8 @@ pub fn eval_function_vectorized(
                 .get(2)
                 .and_then(|a| get_literal_int(a))
                 .unwrap_or(100); // default 100 symbols
-            let result = cap_neu(
-                arg_values[0].as_slice().unwrap(),
-                market_cap.as_slice().unwrap(),
-                n_symbols,
-            );
-            Ok(result.into())
+            let result = cap_neu(&arg_values[0], &market_cap, n_symbols);
+            Ok(result)
         }
         "quesval" => {
             if args.len() != 4 {
@@ -912,7 +849,7 @@ pub fn eval_function_vectorized(
             Ok(result)
         }
         "returns" => {
-            let delayed = delay(arg_values[0].as_slice().unwrap(), 1);
+            let delayed = delay(&arg_values[0], 1);
             let mut result = arg_values[0].clone();
             for i in 0..result.len() {
                 if delayed[i] != 0.0 {
@@ -1421,63 +1358,62 @@ pub fn eval_ts_function_vectorized(
 ) -> Result<Array1<f64>, String> {
     // Evaluate the first argument
     let vals = eval_expr_vectorized(&args[0], data, cache)?;
-    let vals_slice = vals.as_slice().unwrap();
     let window = args.get(1).and_then(|a| get_literal_int(a)).unwrap_or(20);
 
     match name {
-        "ts_mean" => Ok(ts_mean(vals_slice, window).into()),
-        "ts_sum" => Ok(ts_sum(vals_slice, window).into()),
-        "ts_count" => Ok(ts_count(vals_slice, window).into()),
-        "ts_std" => Ok(ts_std(vals_slice, window).into()),
-        "ts_max" => Ok(ts_max(vals_slice, window).into()),
-        "ts_min" => Ok(ts_min(vals_slice, window).into()),
-        "ts_rank" => Ok(ts_rank(vals_slice, window).into()),
-        "ts_argmax" => Ok(ts_argmax(vals_slice, window).into()),
-        "ts_argmin" => Ok(ts_argmin(vals_slice, window).into()),
-        "ts_delta" => Ok(ts_delta(vals_slice, window).into()),
-        "ts_product" => Ok(ts_product(vals_slice, window).into()),
+        "ts_mean" => Ok(ts_mean(&vals, window)),
+        "ts_sum" => Ok(ts_sum(&vals, window)),
+        "ts_count" => Ok(ts_count(&vals, window)),
+        "ts_std" => Ok(ts_std(&vals, window)),
+        "ts_max" => Ok(ts_max(&vals, window)),
+        "ts_min" => Ok(ts_min(&vals, window)),
+        "ts_rank" => Ok(ts_rank(&vals, window)),
+        "ts_argmax" => Ok(ts_argmax(&vals, window)),
+        "ts_argmin" => Ok(ts_argmin(&vals, window)),
+        "ts_delta" => Ok(ts_delta(&vals, window)),
+        "ts_product" => Ok(ts_product(&vals, window)),
         "ts_correlation" => {
             let vals2 = eval_expr_vectorized(&args[1], data, cache)?;
-            Ok(ts_correlation(vals_slice, vals2.as_slice().unwrap(), window).into())
+            Ok(ts_correlation(&vals, &vals2, window))
         }
         "ts_covariance" | "ts_cov" => {
             let vals2 = eval_expr_vectorized(&args[1], data, cache)?;
-            Ok(ts_cov(vals_slice, vals2.as_slice().unwrap(), window).into())
+            Ok(ts_cov(&vals, &vals2, window))
         }
-        "ts_delay" => Ok(delay(vals_slice, window).into()),
-        "ts_decay_linear" => Ok(decay_linear(vals_slice, window).into()),
+        "ts_delay" => Ok(delay(&vals, window)),
+        "ts_decay_linear" => Ok(decay_linear(&vals, window)),
         "ts_sma" => {
             let m = args.get(2).and_then(|a| get_literal_int(a)).unwrap_or(2);
             let alpha = m as f64 / window as f64;
             let alpha = if alpha > 0.0 && alpha <= 1.0 { alpha } else { 0.5 };
-            Ok(sma(vals_slice, alpha).into())
+            Ok(sma(&vals, alpha))
         }
         "ts_quantile" => {
             let q = args
                 .get(2)
                 .and_then(|a| get_literal_float(a))
                 .unwrap_or(0.5);
-            Ok(ts_quantile(vals_slice, window, q).into())
+            Ok(ts_quantile(&vals, window, q))
         }
-        "ts_slope" => Ok(ts_slope(vals_slice, window).into()),
-        "ts_rsquare" => Ok(ts_rsquare(vals_slice, window).into()),
-        "ts_resi" => Ok(ts_resi(vals_slice, window).into()),
-        "ts_lowday" => Ok(lowday(vals_slice, window).into()),
-        "ts_highday" => Ok(highday(vals_slice, window).into()),
-        "ts_wma" => Ok(wma(vals_slice, window).into()),
+        "ts_slope" => Ok(ts_slope(&vals, window)),
+        "ts_rsquare" => Ok(ts_rsquare(&vals, window)),
+        "ts_resi" => Ok(ts_resi(&vals, window)),
+        "ts_lowday" => Ok(lowday(&vals, window)),
+        "ts_highday" => Ok(highday(&vals, window)),
+        "ts_wma" => Ok(wma(&vals, window)),
         // Backward-compat bare names
         "sma" => {
             let m = args.get(2).and_then(|a| get_literal_int(a)).unwrap_or(2);
             let alpha = m as f64 / window as f64;
             let alpha = if alpha > 0.0 && alpha <= 1.0 { alpha } else { 0.5 };
-            Ok(sma(vals_slice, alpha).into())
+            Ok(sma(&vals, alpha))
         }
-        "lowday" => Ok(lowday(vals_slice, window).into()),
-        "highday" => Ok(highday(vals_slice, window).into()),
-        "wma" => Ok(wma(vals_slice, window).into()),
-        "min" => Ok(ts_min(vals_slice, window).into()),
-        "max" => Ok(ts_max(vals_slice, window).into()),
-        "sum" => Ok(ts_sum(vals_slice, window).into()),
+        "lowday" => Ok(lowday(&vals, window)),
+        "highday" => Ok(highday(&vals, window)),
+        "wma" => Ok(wma(&vals, window)),
+        "min" => Ok(ts_min(&vals, window)),
+        "max" => Ok(ts_max(&vals, window)),
+        "sum" => Ok(ts_sum(&vals, window)),
         _ => Err(format!("Unknown ts function: {}", name)),
     }
 }

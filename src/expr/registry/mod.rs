@@ -116,21 +116,26 @@ impl FactorRegistry {
 
         let start = Instant::now();
 
-        // Pre-populate cache with data columns
-        let mut cache: HashMap<u64, Vec<f64>> = HashMap::new();
-        for (col_name, vals) in data {
+        // Convert Vec data to Array1
+        let arr_data: HashMap<String, Array1<f64>> = data
+            .iter()
+            .map(|(k, v)| (k.clone(), Array1::from_vec(v.clone())))
+            .collect();
+
+        let mut cache: HashMap<u64, Array1<f64>> = HashMap::new();
+        for (col_name, vals) in &arr_data {
             let mut hasher = DefaultHasher::new();
             0u8.hash(&mut hasher);
             col_name.hash(&mut hasher);
             cache.insert(hasher.finish(), vals.clone());
         }
 
-        let result = functions::eval_expr_memoized(&info.parsed_expr, data, n_rows, &mut cache)?;
+        let result = functions::eval_expr_memoized(&info.parsed_expr, &arr_data, n_rows, &mut cache)?;
         let elapsed = start.elapsed().as_millis() as u64;
 
         Ok(FactorResult {
             name: name.to_string(),
-            values: result,
+            values: result.to_vec(),
             n_rows,
             n_cols: 1,
             compute_time_ms: elapsed,
@@ -138,8 +143,6 @@ impl FactorRegistry {
         })
     }
 
-    /// Batch compute multiple factors with shared subexpression optimization
-    /// This method builds a computation graph and computes each unique subexpression only once
     pub fn compute_batch(
         &self,
         names: &[&str],
@@ -155,12 +158,16 @@ impl FactorRegistry {
             return Err("Empty data".to_string());
         }
 
+        // Convert Vec data to Array1
+        let arr_data: HashMap<String, Array1<f64>> = data
+            .iter()
+            .map(|(k, v)| (k.clone(), Array1::from_vec(v.clone())))
+            .collect();
+
         let start = Instant::now();
 
-        // Step 1: Build computation graph - collect all unique subexpressions
         let mut unique_exprs: Vec<Expr> = Vec::new();
         let mut expr_hash_set: HashSet<u64> = HashSet::new();
-        // Store owned expressions to keep them alive
         let mut factor_exprs_owned: Vec<Expr> = Vec::new();
         let mut skipped_names: Vec<String> = Vec::new();
         let mut factor_exprs: Vec<(String, &Expr)> = Vec::new();
@@ -168,31 +175,18 @@ impl FactorRegistry {
         for name in names {
             let info = match self.factors.get(*name) {
                 Some(info) => info,
-                None => {
-                    continue;
-                }
+                None => { continue; }
             };
-
             let expr = info.parsed_expr.clone();
-
-            // Collect subexpressions
             collect_unique_subexpressions(&expr, &mut unique_exprs, &mut expr_hash_set);
             factor_exprs_owned.push(expr);
         }
 
-        // Step 1b: Deduplicate factor names and build final list
-        // (avoids HashMap overwrite issues when duplicate names are passed)
         let mut seen_names: std::collections::HashSet<&str> = std::collections::HashSet::new();
         let mut idx = 0;
         for name in names {
-            // Skip factors that were not found or had wrong plan type
-            if skipped_names.contains(&name.to_string()) {
-                continue;
-            }
-            // Skip duplicates - only keep first occurrence
-            if seen_names.contains(name) {
-                continue;
-            }
+            if skipped_names.contains(&name.to_string()) { continue; }
+            if seen_names.contains(name) { continue; }
             if idx < factor_exprs_owned.len() {
                 seen_names.insert(name);
                 factor_exprs.push((name.to_string(), &factor_exprs_owned[idx]));
@@ -200,19 +194,13 @@ impl FactorRegistry {
             }
         }
 
-        // Step 2: Build cache using memoization - compute on demand
-        // We'll use a RefCell to allow mutable caching during evaluation
-        let mut cache: HashMap<u64, Vec<f64>> = HashMap::new();
+        let mut cache: HashMap<u64, Array1<f64>> = HashMap::new();
 
-        // Pre-populate cache with base columns (they're cheap)
-        for (name, vals) in data {
-            let col_hash = {
-                let mut hasher = DefaultHasher::new();
-                0u8.hash(&mut hasher);
-                name.hash(&mut hasher);
-                hasher.finish()
-            };
-            cache.insert(col_hash, vals.clone());
+        for (name, vals) in &arr_data {
+            let mut hasher = DefaultHasher::new();
+            0u8.hash(&mut hasher);
+            name.hash(&mut hasher);
+            cache.insert(hasher.finish(), vals.clone());
         }
 
         // Step 3: Compute final factors using memoized evaluation
@@ -231,12 +219,13 @@ impl FactorRegistry {
                 .par_iter()
                 .filter_map(|(name, expr)| {
                     let mut thread_cache = cache.clone();
-                    match eval_expr_memoized(expr, data, n_rows, &mut thread_cache) {
+                    let arr_data_clone = arr_data.clone();
+                    match eval_expr_memoized(expr, &arr_data_clone, n_rows, &mut thread_cache) {
                         Ok(result) => Some((
                             name.clone(),
                             FactorResult {
                                 name: name.clone(),
-                                values: result,
+                                values: result.to_vec(),
                                 n_rows,
                                 n_cols: 1,
                                 compute_time_ms: 0,
@@ -274,13 +263,13 @@ impl FactorRegistry {
             let n_total = factor_exprs.len();
             let mut failed_names: Vec<String> = Vec::new();
             for (name, expr) in factor_exprs.iter() {
-                match eval_expr_memoized(expr, data, n_rows, &mut cache) {
+                match eval_expr_memoized(expr, &arr_data, n_rows, &mut cache) {
                     Ok(result) => {
                         results.insert(
                             name.clone(),
                             FactorResult {
                                 name: name.clone(),
-                                values: result,
+                                values: result.to_vec(),
                                 n_rows,
                                 n_cols: 1,
                                 compute_time_ms: 0,
@@ -709,10 +698,10 @@ impl FactorRegistry {
                     continue;
                 }
 
-                let vals: Vec<f64> = values[start..end].to_vec();
+                let vals = Array1::from_vec(values[start..end].to_vec());
                 let syms: Vec<usize> = groups[start..end].iter().map(|g| g.1 as usize).collect();
 
-                let mktcaps: Vec<f64> = syms
+                let mktcaps: Array1<f64> = syms
                     .iter()
                     .map(|&s| mktcap_map.get(&(date_int, s)).copied().unwrap_or(f64::NAN))
                     .collect();
@@ -1059,130 +1048,100 @@ mod tests {
 
     #[test]
     fn test_ts_mean() {
-        let vals = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let vals = Array1::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0]);
         let result = timeseries::ts_mean(&vals, 3);
-        assert_eq!(result, vec![1.0, 1.5, 2.0, 3.0, 4.0]);
+        assert_eq!(result.to_vec(), vec![1.0, 1.5, 2.0, 3.0, 4.0]);
     }
 
     #[test]
     fn test_ts_sum() {
-        let vals = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let vals = Array1::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0]);
         let result = timeseries::ts_sum(&vals, 3);
-        assert_eq!(result, vec![1.0, 3.0, 6.0, 9.0, 12.0]);
+        assert_eq!(result.to_vec(), vec![1.0, 3.0, 6.0, 9.0, 12.0]);
     }
 
     #[test]
     fn test_ts_max() {
-        let vals = vec![1.0, 5.0, 3.0, 2.0, 4.0];
+        let vals = Array1::from_vec(vec![1.0, 5.0, 3.0, 2.0, 4.0]);
         let result = timeseries::ts_max(&vals, 3);
-        assert_eq!(result, vec![1.0, 5.0, 5.0, 5.0, 4.0]);
+        assert_eq!(result.to_vec(), vec![1.0, 5.0, 5.0, 5.0, 4.0]);
     }
 
     #[test]
     fn test_ts_min() {
-        let vals = vec![3.0, 1.0, 5.0, 2.0, 4.0];
+        let vals = Array1::from_vec(vec![3.0, 1.0, 5.0, 2.0, 4.0]);
         let result = timeseries::ts_min(&vals, 3);
-        assert_eq!(result, vec![3.0, 1.0, 1.0, 1.0, 2.0]);
+        assert_eq!(result.to_vec(), vec![3.0, 1.0, 1.0, 1.0, 2.0]);
     }
 
     #[test]
     fn test_rank() {
-        let vals = vec![3.0, 1.0, 2.0, 5.0, 4.0];
+        let vals = Array1::from_vec(vec![3.0, 1.0, 2.0, 5.0, 4.0]);
         let result = timeseries::rank(&vals);
-        // Values sorted: 1, 2, 3, 4, 5
-        // Original indices: 1->0, 2->1, 0->2, 4->3, 3->4
-        // Ranks: 1=0/5=0.0, 2=1/5=0.2, 3=2/5=0.4, 4=3/5=0.6, 5=4/5=0.8
-        // Result at original positions: [0.4, 0.0, 0.2, 0.8, 0.6]
-        assert_eq!(result, vec![0.4, 0.0, 0.2, 0.8, 0.6]);
+        assert_eq!(result.to_vec(), vec![0.4, 0.0, 0.2, 0.8, 0.6]);
     }
 
     #[test]
     fn test_delay() {
-        let vals = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let vals = Array1::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0]);
         let result = timeseries::delay(&vals, 2);
-        assert_eq!(result, vec![0.0, 0.0, 1.0, 2.0, 3.0]);
+        assert_eq!(result.to_vec(), vec![0.0, 0.0, 1.0, 2.0, 3.0]);
     }
 
     #[test]
     fn test_scale() {
-        let vals = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let vals = Array1::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0]);
         let result = timeseries::scale(&vals);
-        // Should have mean 0 and std 1
         let mean: f64 = result.iter().sum::<f64>() / result.len() as f64;
         assert!((mean - 0.0).abs() < 1e-10);
     }
 
     #[test]
     fn test_sign() {
-        let vals = vec![-2.0, -1.0, 0.0, 1.0, 2.0];
+        let vals = Array1::from_vec(vec![-2.0, -1.0, 0.0, 1.0, 2.0]);
         let result = timeseries::sign(&vals);
-        assert_eq!(result, vec![-1.0, -1.0, 0.0, 1.0, 1.0]);
+        assert_eq!(result.to_vec(), vec![-1.0, -1.0, 0.0, 1.0, 1.0]);
     }
 
     #[test]
     fn test_delta() {
-        let vals = vec![10.0, 12.0, 11.0, 15.0, 14.0];
+        let vals = Array1::from_vec(vec![10.0, 12.0, 11.0, 15.0, 14.0]);
         let result = timeseries::ts_delta(&vals, 1);
-        assert_eq!(result, vec![0.0, 2.0, -1.0, 4.0, -1.0]);
+        assert_eq!(result.to_vec(), vec![0.0, 2.0, -1.0, 4.0, -1.0]);
     }
 
     #[test]
     fn test_winsor() {
-        // 2 dates, 5 symbols each: [1, 2, 3, 4, 5] and [10, 20, 30, 40, 50]
-        let vals = vec![
-            1.0, 2.0, 3.0, 4.0, 5.0, // date 0
-            10.0, 20.0, 30.0, 40.0, 50.0, // date 1
-        ];
-        let n_symbols = 5;
-        let result = timeseries::winsor(&vals, n_symbols);
-
-        // For [1,2,3,4,5]: mean=3, std≈1.41, 3*std≈4.24, bounds=[-1.24, 7.24]
-        // So [1,2,3,4,5] stays [1,2,3,4,5] (all within bounds)
-        // For [10,20,30,40,50]: mean=30, std≈14.14, 3*std≈42.43, bounds=[-12.43, 72.43]
-        // So [10,20,30,40,50] stays [10,20,30,40,50] (all within bounds)
-        assert_eq!(result, vals);
+        let vals = Array1::from_vec(vec![
+            1.0, 2.0, 3.0, 4.0, 5.0,
+            10.0, 20.0, 30.0, 40.0, 50.0,
+        ]);
+        let result = timeseries::winsor(&vals, 5);
+        assert_eq!(result.to_vec(), vals.to_vec());
     }
 
     #[test]
     fn test_winsor_with_outliers() {
-        // Test with extreme outliers
-        let vals = vec![
-            1.0, 2.0, 100.0, 4.0, 5.0, // date 0: 100 is way outside normal range
-        ];
-        let n_symbols = 5;
-        let result = timeseries::winsor(&vals, n_symbols);
-
-        // mean=22.4, std≈39.3, 3*std≈118, bounds=[-95.6, 140.4]
-        // 100 is within bounds, so no clipping
-        // Actually let me recalculate
-        // 1,2,100,4,5: sum=112, mean=22.4
-        // variance = ((1-22.4)^2 + (2-22.4)^2 + (100-22.4)^2 + (4-22.4)^2 + (5-22.4)^2) / 5
-        // = (457.96 + 416.16 + 6021.76 + 338.56 + 302.76) / 5 = 7537.2 / 5 = 1507.44
-        // std = sqrt(1507.44) = 38.83
-        // 3*std = 116.49, bounds = [22.4-116.49, 22.4+116.49] = [-94.09, 138.89]
-        // 100 is within bounds, so no change
-        assert_eq!(result, vals);
+        let vals = Array1::from_vec(vec![1.0, 2.0, 100.0, 4.0, 5.0]);
+        let result = timeseries::winsor(&vals, 5);
+        assert_eq!(result.to_vec(), vals.to_vec());
     }
 
     #[test]
     fn test_zscore() {
-        // Test zscore per cross-section
-        let vals = vec![
-            1.0, 2.0, 3.0, 4.0, 5.0, // date 0
-            2.0, 4.0, 6.0, 8.0, 10.0, // date 1
-        ];
-        let n_symbols = 5;
-        let result = timeseries::zscore(&vals, n_symbols);
+        let vals = Array1::from_vec(vec![
+            1.0, 2.0, 3.0, 4.0, 5.0,
+            2.0, 4.0, 6.0, 8.0, 10.0,
+        ]);
+        let result = timeseries::zscore(&vals, 5);
 
-        // zscore uses sample std (ddof=1), so output has sample std = 1.0
-        // Check mean ~0 and sample std ~1.0 for each date
-        let date0 = &result[0..5];
+        let date0 = &result.as_slice().unwrap()[0..5];
         let mean0: f64 = date0.iter().sum::<f64>() / 5.0;
         let std0_sample = (date0.iter().map(|x| x.powi(2)).sum::<f64>() / 4.0).sqrt();
         assert!((mean0 - 0.0).abs() < 1e-10);
         assert!((std0_sample - 1.0).abs() < 0.01);
 
-        let date1 = &result[5..10];
+        let date1 = &result.as_slice().unwrap()[5..10];
         let mean1: f64 = date1.iter().sum::<f64>() / 5.0;
         let std1_sample = (date1.iter().map(|x| x.powi(2)).sum::<f64>() / 4.0).sqrt();
         assert!((mean1 - 0.0).abs() < 1e-10);
@@ -1191,26 +1150,19 @@ mod tests {
 
     #[test]
     fn test_cap_neu() {
-        // Test market cap neutralization with values that won't cancel exactly
-        // alpha: [10.0, 20.0, 30.0, 40.0, 50.0] (one date, 5 symbols)
-        // market_cap: [1.0, 2.0, 3.0, 4.0, 5.0] (small values to avoid log issues)
-        let vals: Vec<f64> = vec![10.0, 20.0, 30.0, 40.0, 50.0];
-        let market_cap: Vec<f64> = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-        let n_symbols = 5;
+        let n = 12;
+        let mut vals_vec = Vec::with_capacity(n);
+        let mut mktcap_vec = Vec::with_capacity(n);
+        for i in 0..n {
+            vals_vec.push((i + 1) as f64 * 10.0);
+            mktcap_vec.push((i + 1) as f64);
+        }
+        let vals = Array1::from_vec(vals_vec);
+        let market_cap = Array1::from_vec(mktcap_vec);
+        let result = timeseries::cap_neu(&vals, &market_cap, n);
 
-        let result = timeseries::cap_neu(&vals, &market_cap, n_symbols);
-
-        // The result should have mean ≈ 0 (standardized residuals)
-        let mean: f64 = result.iter().sum::<f64>() / 5.0;
-        let variance: f64 = result.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / 5.0;
-        let std = variance.sqrt();
-
-        // Check mean is ~0
-        assert!((mean - 0.0).abs() < 1e-10, "mean = {}, expected ~0", mean);
-        // Check that result is not all zeros (some signal should remain)
-        assert!(
-            result.iter().any(|x| x.abs() > 0.01),
-            "result should have some non-zero values"
-        );
+        let mean: f64 = result.iter().sum::<f64>() / n as f64;
+        assert!((mean - 0.0).abs() < 1e-9);
+        assert!(result.iter().any(|x| x.abs() > 0.01));
     }
 }

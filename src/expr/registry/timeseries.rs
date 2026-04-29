@@ -1,29 +1,30 @@
 //! Time series functions for factor computation
 
+use ndarray::Array1;
+
 /// Winsorize: clip values to [mean - 3*std, mean + 3*std] per cross-section (per date)
 /// Data is flattened as (n_dates * n_symbols), n_symbols is the number of assets per date
 /// NaN values are excluded from mean/std computation but remain as NaN in output
-pub fn winsor(vals: &[f64], n_symbols: usize) -> Vec<f64> {
+pub fn winsor(vals: &Array1<f64>, n_symbols: usize) -> Array1<f64> {
     let n = vals.len();
     if n == 0 || n_symbols == 0 {
-        return vec![];
+        return Array1::zeros(0);
     }
     let n_dates = n / n_symbols;
-    let mut result = Vec::with_capacity(n);
+    let mut result = Array1::from_elem(n, f64::NAN);
 
     for d in 0..n_dates {
         let start = d * n_symbols;
         let end = start + n_symbols;
-        let slice = &vals[start..end];
+        let slice = &vals.as_slice().unwrap()[start..end];
 
         // Filter out NaN values for computing mean and std
-        let valid_vals: Vec<f64> = slice.iter().filter(|v| v.is_finite()).copied().collect();
+        let valid_vals: Array1<f64> = slice.iter().filter(|v| v.is_finite()).copied().collect();
         let n_valid = valid_vals.len();
 
         if n_valid == 0 {
-            // No valid values, keep all as NaN
-            for &v in slice {
-                result.push(v); // NaN stays NaN
+            for (j, &v) in slice.iter().enumerate() {
+                result[start + j] = v;
             }
             continue;
         }
@@ -41,13 +42,8 @@ pub fn winsor(vals: &[f64], n_symbols: usize) -> Vec<f64> {
         let lower = mean - 3.0 * std;
         let upper = mean + 3.0 * std;
 
-        // Clip each value (NaN stays as NaN)
-        for &v in slice {
-            if v.is_finite() {
-                result.push(v.clamp(lower, upper));
-            } else {
-                result.push(v);
-            }
+        for (j, &v) in slice.iter().enumerate() {
+            result[start + j] = if v.is_finite() { v.clamp(lower, upper) } else { v };
         }
     }
     result
@@ -56,32 +52,29 @@ pub fn winsor(vals: &[f64], n_symbols: usize) -> Vec<f64> {
 /// Zscore: (x - mean) / std per cross-section (per date)
 /// Data is flattened as (n_dates * n_symbols), n_symbols is the number of assets per date
 /// NaN values are excluded from mean/std computation but remain as NaN in output
-pub fn zscore(vals: &[f64], n_symbols: usize) -> Vec<f64> {
+pub fn zscore(vals: &Array1<f64>, n_symbols: usize) -> Array1<f64> {
     let n = vals.len();
     if n == 0 || n_symbols == 0 {
-        return vec![];
+        return Array1::zeros(0);
     }
     let n_dates = n / n_symbols;
-    let mut result = Vec::with_capacity(n);
+    let mut result = Array1::from_elem(n, f64::NAN);
 
     for d in 0..n_dates {
         let start = d * n_symbols;
         let end = start + n_symbols;
-        let slice = &vals[start..end];
+        let slice = &vals.as_slice().unwrap()[start..end];
 
-        // Filter out NaN values for computing mean and std
-        let valid_vals: Vec<f64> = slice.iter().filter(|v| v.is_finite()).copied().collect();
+        let valid_vals: Array1<f64> = slice.iter().filter(|v| v.is_finite()).copied().collect();
         let n_valid = valid_vals.len();
 
         if n_valid == 0 {
-            // No valid values, keep all as NaN
-            for &v in slice {
-                result.push(v); // NaN stays NaN
+            for (j, &v) in slice.iter().enumerate() {
+                result[start + j] = v;
             }
             continue;
         }
 
-        // Compute mean and std on valid values (sample std, ddof=1, matches Polars default)
         let sum: f64 = valid_vals.iter().sum();
         let mean = sum / n_valid as f64;
         let variance = if n_valid > 1 {
@@ -92,18 +85,12 @@ pub fn zscore(vals: &[f64], n_symbols: usize) -> Vec<f64> {
         let std = variance.sqrt();
 
         if std < 1e-10 {
-            // If std is near zero, return NaN for all (or zeros)
-            for &v in slice {
-                result.push(f64::NAN);
+            for (j, _) in slice.iter().enumerate() {
+                result[start + j] = f64::NAN;
             }
         } else {
-            // Zscore each value (NaN stays as NaN)
-            for &v in slice {
-                if v.is_finite() {
-                    result.push((v - mean) / std);
-                } else {
-                    result.push(v);
-                }
+            for (j, &v) in slice.iter().enumerate() {
+                result[start + j] = if v.is_finite() { (v - mean) / std } else { v };
             }
         }
     }
@@ -114,57 +101,47 @@ pub fn zscore(vals: &[f64], n_symbols: usize) -> Vec<f64> {
 /// Data is flattened as (n_dates * n_symbols), n_symbols is the number of assets per date
 /// market_cap: market cap values per asset (used across all dates)
 /// NaN values in alpha are excluded from regression but remain as NaN in output
-pub fn cap_neu(vals: &[f64], market_cap: &[f64], n_symbols: usize) -> Vec<f64> {
+pub fn cap_neu(vals: &Array1<f64>, market_cap: &Array1<f64>, n_symbols: usize) -> Array1<f64> {
     let n = vals.len();
     if n == 0 || n_symbols == 0 || market_cap.len() != n_symbols {
-        return vec![];
+        return Array1::zeros(0);
     }
     let n_dates = n / n_symbols;
-    let mut result = Vec::with_capacity(n);
+    let mut result = Array1::from_elem(n, f64::NAN);
 
     // Pre-compute log(market_cap)
-    // Use NEG_INFINITY for non-positive values so they are filtered out by is_finite check,
-    // matching Python's behavior: np.log(negative/zero) = NaN/-inf, both not finite.
-    let log_mktcap: Vec<f64> = market_cap
-        .iter()
-        .map(|&v| if v > 0.0 { v.ln() } else { f64::NEG_INFINITY })
-        .collect();
+    let log_mktcap: Array1<f64> = market_cap
+        .mapv(|v| if v > 0.0 { v.ln() } else { f64::NEG_INFINITY });
 
     for d in 0..n_dates {
         let start = d * n_symbols;
         let end = start + n_symbols;
-        let alpha_slice = &vals[start..end];
+        let alpha_slice = &vals.as_slice().unwrap()[start..end];
 
-        // Filter to indices where BOTH alpha and log_mktcap are finite
-        // Matches Python: np.isfinite(factor_values) & np.isfinite(log_market_cap)
         let valid_indices: Vec<usize> = (0..n_symbols)
             .filter(|&i| alpha_slice[i].is_finite() && log_mktcap[i].is_finite())
             .collect();
 
         if valid_indices.len() < 10 {
-            // Not enough valid values for regression (matches Python min_samples=10)
-            for &v in alpha_slice {
-                result.push(v); // NaN stays NaN
+            for (j, &v) in alpha_slice.iter().enumerate() {
+                result[start + j] = v;
             }
             continue;
         }
 
         let n_valid = valid_indices.len() as f64;
 
-        // Compute means on valid values only
         let alpha_sum: f64 = valid_indices.iter().map(|&i| alpha_slice[i]).sum();
         let alpha_mean = alpha_sum / n_valid;
 
         let log_mktcap_sum: f64 = valid_indices.iter().map(|&i| log_mktcap[i]).sum();
         let log_mktcap_mean = log_mktcap_sum / n_valid;
 
-        // Covariance: E[(alpha - alpha_mean) * (log_mktcap - log_mktcap_mean)] over valid set
         let cov: f64 = valid_indices
             .iter()
             .map(|&i| (alpha_slice[i] - alpha_mean) * (log_mktcap[i] - log_mktcap_mean))
             .sum::<f64>() / n_valid;
 
-        // Variance of log_mktcap over the SAME valid set
         let var_log_mktcap: f64 = valid_indices
             .iter()
             .map(|&i| (log_mktcap[i] - log_mktcap_mean).powi(2))
@@ -176,17 +153,13 @@ pub fn cap_neu(vals: &[f64], market_cap: &[f64], n_symbols: usize) -> Vec<f64> {
             0.0
         };
 
-        // Compute residuals: alpha - (alpha_mean + beta * (log_mktcap - log_mktcap_mean))
-        // This is equivalent to OLS with intercept: alpha = b0 + b1*log_mktcap + residual
-        // where b0 = alpha_mean - beta * log_mktcap_mean
-        let residuals: Vec<f64> = alpha_slice
+        let residuals: Array1<f64> = alpha_slice
             .iter()
             .zip(log_mktcap.iter())
             .map(|(&a, &l)| a - alpha_mean - beta * (l - log_mktcap_mean))
             .collect();
 
-        // Standardize residuals on valid set only (matches numpy .std(ddof=0))
-        let valid_residuals: Vec<f64> = valid_indices.iter().map(|&i| residuals[i]).collect();
+        let valid_residuals: Array1<f64> = valid_indices.iter().map(|&i| residuals[i]).collect();
         let residual_sum: f64 = valid_residuals.iter().sum();
         let residual_mean = residual_sum / n_valid;
         let residual_var = valid_residuals
@@ -195,18 +168,17 @@ pub fn cap_neu(vals: &[f64], market_cap: &[f64], n_symbols: usize) -> Vec<f64> {
             .sum::<f64>() / n_valid;
         let residual_std = residual_var.sqrt();
 
-        // Standardized residuals (NaN values stay as NaN)
         if residual_std > 1e-10 {
             for i in 0..n_symbols {
                 if alpha_slice[i].is_finite() && log_mktcap[i].is_finite() {
-                    result.push((residuals[i] - residual_mean) / residual_std);
+                    result[start + i] = (residuals[i] - residual_mean) / residual_std;
                 } else {
-                    result.push(f64::NAN);
+                    result[start + i] = f64::NAN;
                 }
             }
         } else {
-            for &v in alpha_slice {
-                result.push(v); // Keep original (NaN stays NaN)
+            for (j, &v) in alpha_slice.iter().enumerate() {
+                result[start + j] = v;
             }
         }
     }
@@ -214,23 +186,22 @@ pub fn cap_neu(vals: &[f64], market_cap: &[f64], n_symbols: usize) -> Vec<f64> {
 }
 
 /// Rolling mean (simple moving average)
-pub fn ts_mean(vals: &[f64], window: usize) -> Vec<f64> {
+pub fn ts_mean(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     let n = vals.len();
-    let mut result = vec![0.0; n];
+    let mut result = Array1::zeros(n);
     for i in 0..n {
         let start = i.saturating_sub(window - 1);
-        let slice = &vals[start..=i];
+        let slice = &vals.as_slice().unwrap()[start..=i];
         result[i] = slice.iter().sum::<f64>() / slice.len() as f64;
     }
     result
 }
 
 /// Rolling sum
-pub fn ts_sum(vals: &[f64], window: usize) -> Vec<f64> {
+pub fn ts_sum(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     let n = vals.len();
-    let mut result = vec![0.0; n];
+    let mut result = Array1::zeros(n);
 
-    // Optimized path for expanding window (window=0 means from start)
     if window == 0 {
         let mut cumsum = 0.0;
         for i in 0..n {
@@ -240,20 +211,18 @@ pub fn ts_sum(vals: &[f64], window: usize) -> Vec<f64> {
         return result;
     }
 
-    // Regular rolling window
     for i in 0..n {
         let start = i.saturating_sub(window - 1);
-        result[i] = vals[start..=i].iter().sum();
+        result[i] = vals.as_slice().unwrap()[start..=i].iter().sum();
     }
     result
 }
 
 /// Rolling count of non-NaN values
-pub fn ts_count(vals: &[f64], window: usize) -> Vec<f64> {
+pub fn ts_count(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     let n = vals.len();
-    let mut result = vec![0.0; n];
+    let mut result = Array1::zeros(n);
 
-    // Optimized path for expanding window (window=0 means from start)
     if window == 0 {
         let mut cumcount = 0.0;
         for i in 0..n {
@@ -265,22 +234,23 @@ pub fn ts_count(vals: &[f64], window: usize) -> Vec<f64> {
         return result;
     }
 
-    // Regular rolling window
     for i in 0..n {
         let start = i.saturating_sub(window - 1);
-        // Count non-NaN values in the window
-        result[i] = vals[start..=i].iter().filter(|v| !v.is_nan()).count() as f64;
+        result[i] = vals.as_slice().unwrap()[start..=i]
+            .iter()
+            .filter(|v| !v.is_nan())
+            .count() as f64;
     }
     result
 }
 
 /// Rolling maximum
-pub fn ts_max(vals: &[f64], window: usize) -> Vec<f64> {
+pub fn ts_max(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     let n = vals.len();
-    let mut result = vec![0.0; n];
+    let mut result = Array1::zeros(n);
     for i in 0..n {
         let start = i.saturating_sub(window - 1);
-        result[i] = vals[start..=i]
+        result[i] = vals.as_slice().unwrap()[start..=i]
             .iter()
             .fold(f64::NEG_INFINITY, |a, &b| a.max(b));
     }
@@ -288,37 +258,40 @@ pub fn ts_max(vals: &[f64], window: usize) -> Vec<f64> {
 }
 
 /// Rolling minimum
-pub fn ts_min(vals: &[f64], window: usize) -> Vec<f64> {
+pub fn ts_min(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     let n = vals.len();
-    let mut result = vec![0.0; n];
+    let mut result = Array1::zeros(n);
     for i in 0..n {
         let start = i.saturating_sub(window - 1);
-        result[i] = vals[start..=i].iter().fold(f64::INFINITY, |a, &b| a.min(b));
+        result[i] = vals.as_slice().unwrap()[start..=i]
+            .iter()
+            .fold(f64::INFINITY, |a, &b| a.min(b));
     }
     result
 }
 
 /// Rolling standard deviation
-pub fn ts_std(vals: &[f64], window: usize) -> Vec<f64> {
+pub fn ts_std(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     let n = vals.len();
-    let mut result = vec![0.0; n];
+    let mut result = Array1::zeros(n);
     for i in 0..n {
         let start = i.saturating_sub(window - 1);
-        let slice = &vals[start..=i];
+        let slice = &vals.as_slice().unwrap()[start..=i];
         let mean = slice.iter().sum::<f64>() / slice.len() as f64;
-        let variance = slice.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / slice.len() as f64;
+        let variance =
+            slice.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / slice.len() as f64;
         result[i] = variance.sqrt();
     }
     result
 }
 
 /// Rolling rank (percentile rank of current value in window)
-pub fn ts_rank(vals: &[f64], window: usize) -> Vec<f64> {
+pub fn ts_rank(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     let n = vals.len();
-    let mut result = vec![0.0; n];
+    let mut result = Array1::zeros(n);
     for i in 0..n {
         let start = i.saturating_sub(window - 1);
-        let slice = &vals[start..=i];
+        let slice = &vals.as_slice().unwrap()[start..=i];
         let current = vals[i];
         let rank = slice.iter().filter(|&&x| x < current).count() as f64;
         result[i] = rank / slice.len() as f64;
@@ -327,12 +300,12 @@ pub fn ts_rank(vals: &[f64], window: usize) -> Vec<f64> {
 }
 
 /// Position of maximum value in window (1-indexed like Alpha101)
-pub fn ts_argmax(vals: &[f64], window: usize) -> Vec<f64> {
+pub fn ts_argmax(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     let n = vals.len();
-    let mut result = vec![0.0; n];
+    let mut result = Array1::zeros(n);
     for i in 0..n {
         let start = i.saturating_sub(window - 1);
-        let slice = &vals[start..=i];
+        let slice = &vals.as_slice().unwrap()[start..=i];
         let max_val = slice.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
         let pos = slice
             .iter()
@@ -343,12 +316,12 @@ pub fn ts_argmax(vals: &[f64], window: usize) -> Vec<f64> {
 }
 
 /// Position of minimum value in window (1-indexed like Alpha101)
-pub fn ts_argmin(vals: &[f64], window: usize) -> Vec<f64> {
+pub fn ts_argmin(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     let n = vals.len();
-    let mut result = vec![0.0; n];
+    let mut result = Array1::zeros(n);
     for i in 0..n {
         let start = i.saturating_sub(window - 1);
-        let slice = &vals[start..=i];
+        let slice = &vals.as_slice().unwrap()[start..=i];
         let min_val = slice.iter().cloned().fold(f64::INFINITY, f64::min);
         let pos = slice
             .iter()
@@ -359,14 +332,14 @@ pub fn ts_argmin(vals: &[f64], window: usize) -> Vec<f64> {
 }
 
 /// Rolling correlation between two series
-pub fn ts_correlation(vals1: &[f64], vals2: &[f64], window: usize) -> Vec<f64> {
+pub fn ts_correlation(vals1: &Array1<f64>, vals2: &Array1<f64>, window: usize) -> Array1<f64> {
     let n = vals1.len();
-    let mut result = vec![0.0; n];
+    let mut result = Array1::zeros(n);
 
     for i in 0..n {
         let start = i.saturating_sub(window - 1);
-        let slice1 = &vals1[start..=i];
-        let slice2 = &vals2[start..=i];
+        let slice1 = &vals1.as_slice().unwrap()[start..=i];
+        let slice2 = &vals2.as_slice().unwrap()[start..=i];
 
         let len = slice1.len();
         if len < 2 {
@@ -390,24 +363,20 @@ pub fn ts_correlation(vals1: &[f64], vals2: &[f64], window: usize) -> Vec<f64> {
         }
 
         let denom = (var1 * var2).sqrt();
-        if denom > 1e-10 {
-            result[i] = cov / denom;
-        } else {
-            result[i] = 0.0;
-        }
+        result[i] = if denom > 1e-10 { cov / denom } else { 0.0 };
     }
     result
 }
 
 /// Rolling covariance between two series
-pub fn ts_cov(vals1: &[f64], vals2: &[f64], window: usize) -> Vec<f64> {
+pub fn ts_cov(vals1: &Array1<f64>, vals2: &Array1<f64>, window: usize) -> Array1<f64> {
     let n = vals1.len();
-    let mut result = vec![0.0; n];
+    let mut result = Array1::zeros(n);
 
     for i in 0..n {
         let start = i.saturating_sub(window - 1);
-        let slice1 = &vals1[start..=i];
-        let slice2 = &vals2[start..=i];
+        let slice1 = &vals1.as_slice().unwrap()[start..=i];
+        let slice2 = &vals2.as_slice().unwrap()[start..=i];
 
         let len = slice1.len();
         if len < 2 {
@@ -424,21 +393,20 @@ pub fn ts_cov(vals1: &[f64], vals2: &[f64], window: usize) -> Vec<f64> {
             let d2 = slice2[j] - mean2;
             cov += d1 * d2;
         }
-        result[i] = cov / (len - 1) as f64; // Sample covariance
+        result[i] = cov / (len - 1) as f64;
     }
     result
 }
 
 /// Exponential weighted moving average (EMA/SMA)
 /// alpha: smoothing factor (0 < alpha <= 1)
-pub fn sma(vals: &[f64], alpha: f64) -> Vec<f64> {
+pub fn sma(vals: &Array1<f64>, alpha: f64) -> Array1<f64> {
     let n = vals.len();
-    let mut result = vec![0.0; n];
+    let mut result = Array1::zeros(n);
     if n == 0 {
         return result;
     }
 
-    // Initialize with first value
     result[0] = vals[0];
 
     for i in 1..n {
@@ -448,20 +416,19 @@ pub fn sma(vals: &[f64], alpha: f64) -> Vec<f64> {
 }
 
 /// Days since minimum value in window
-pub fn lowday(vals: &[f64], window: usize) -> Vec<f64> {
+pub fn lowday(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     let n = vals.len();
-    let mut result = vec![0.0; n];
+    let mut result = Array1::zeros(n);
 
     for i in 0..n {
         let start = i.saturating_sub(window - 1);
-        let slice = &vals[start..=i];
+        let slice = &vals.as_slice().unwrap()[start..=i];
 
         if slice.is_empty() {
             result[i] = 0.0;
             continue;
         }
 
-        // Find position of minimum (from start of window)
         let min_pos = slice
             .iter()
             .enumerate()
@@ -469,27 +436,25 @@ pub fn lowday(vals: &[f64], window: usize) -> Vec<f64> {
             .map(|(idx, _)| idx)
             .unwrap_or(0);
 
-        // Days since low = position from end
         result[i] = (slice.len() - 1 - min_pos) as f64;
     }
     result
 }
 
 /// Days since maximum value in window
-pub fn highday(vals: &[f64], window: usize) -> Vec<f64> {
+pub fn highday(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     let n = vals.len();
-    let mut result = vec![0.0; n];
+    let mut result = Array1::zeros(n);
 
     for i in 0..n {
         let start = i.saturating_sub(window - 1);
-        let slice = &vals[start..=i];
+        let slice = &vals.as_slice().unwrap()[start..=i];
 
         if slice.is_empty() {
             result[i] = 0.0;
             continue;
         }
 
-        // Find position of maximum (from start of window)
         let max_pos = slice
             .iter()
             .enumerate()
@@ -497,16 +462,15 @@ pub fn highday(vals: &[f64], window: usize) -> Vec<f64> {
             .map(|(idx, _)| idx)
             .unwrap_or(0);
 
-        // Days since high = position from end
         result[i] = (slice.len() - 1 - max_pos) as f64;
     }
     result
 }
 
 /// Weighted moving average
-pub fn wma(vals: &[f64], window: usize) -> Vec<f64> {
+pub fn wma(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     let n = vals.len();
-    let mut result = vec![0.0; n];
+    let mut result = Array1::zeros(n);
 
     if window == 0 {
         return result;
@@ -514,7 +478,7 @@ pub fn wma(vals: &[f64], window: usize) -> Vec<f64> {
 
     for i in 0..n {
         let start = i.saturating_sub(window - 1);
-        let slice = &vals[start..=i];
+        let slice = &vals.as_slice().unwrap()[start..=i];
         let len = slice.len();
 
         if len == 0 {
@@ -522,7 +486,6 @@ pub fn wma(vals: &[f64], window: usize) -> Vec<f64> {
             continue;
         }
 
-        // Weights: 0.9^(len-1), 0.9^(len-2), ..., 0.9^0
         let mut sum_weighted = 0.0;
         let mut sum_weights = 0.0;
 
@@ -542,9 +505,9 @@ pub fn wma(vals: &[f64], window: usize) -> Vec<f64> {
 }
 
 /// Difference over window periods (like delta in Alpha101)
-pub fn ts_delta(vals: &[f64], periods: usize) -> Vec<f64> {
+pub fn ts_delta(vals: &Array1<f64>, periods: usize) -> Array1<f64> {
     let n = vals.len();
-    let mut result = vec![0.0; n];
+    let mut result = Array1::zeros(n);
     for i in periods..n {
         result[i] = vals[i] - vals[i - periods];
     }
@@ -552,12 +515,12 @@ pub fn ts_delta(vals: &[f64], periods: usize) -> Vec<f64> {
 }
 
 /// Rolling product
-pub fn ts_product(vals: &[f64], window: usize) -> Vec<f64> {
+pub fn ts_product(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     let n = vals.len();
-    let mut result = vec![0.0; n];
+    let mut result = Array1::zeros(n);
     for i in 0..n {
         let start = i.saturating_sub(window - 1);
-        let slice = &vals[start..=i];
+        let slice = &vals.as_slice().unwrap()[start..=i];
         let prod: f64 = slice.iter().fold(1.0, |acc, &v| acc * v);
         result[i] = prod;
     }
@@ -565,16 +528,15 @@ pub fn ts_product(vals: &[f64], window: usize) -> Vec<f64> {
 }
 
 /// Decay linear (exponentially weighted with linear weights)
-pub fn decay_linear(vals: &[f64], periods: usize) -> Vec<f64> {
+pub fn decay_linear(vals: &Array1<f64>, periods: usize) -> Array1<f64> {
     let n = vals.len();
-    let mut result = vec![0.0; n];
+    let mut result = Array1::zeros(n);
 
     for i in 0..n {
         let start = i.saturating_sub(periods - 1);
-        let slice = &vals[start..=i];
+        let slice = &vals.as_slice().unwrap()[start..=i];
         let len = slice.len();
 
-        // Linear weights: 1, 2, 3, ..., len
         let weight_sum: f64 = (1..=len).sum::<usize>() as f64;
         let mut weighted_sum = 0.0;
 
@@ -591,10 +553,10 @@ pub fn decay_linear(vals: &[f64], periods: usize) -> Vec<f64> {
 /// Cross-sectional rank (average tie-breaking, matching Polars `rank(method="average")`).
 ///
 /// Returns fractional ranks in [0, 1), where tied values receive the same average rank.
-pub fn rank(vals: &[f64]) -> Vec<f64> {
+pub fn rank(vals: &Array1<f64>) -> Array1<f64> {
     let n = vals.len();
     if n == 0 {
-        return vec![];
+        return Array1::zeros(0);
     }
 
     // Separate NaN values and valid values
@@ -606,12 +568,12 @@ pub fn rank(vals: &[f64]) -> Vec<f64> {
         .collect();
 
     if indexed.is_empty() {
-        return vec![f64::NAN; n];
+        return Array1::from_elem(n, f64::NAN);
     }
 
     indexed.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
 
-    let mut result = vec![f64::NAN; n];
+    let mut result = Array1::from_elem(n, f64::NAN);
     let len = indexed.len() as f64;
 
     let mut i = 0usize;
@@ -632,7 +594,7 @@ pub fn rank(vals: &[f64]) -> Vec<f64> {
 }
 
 /// Cross-sectional quantile cut
-pub fn qcut(vals: &[f64], n_bins: i32) -> Vec<Option<i32>> {
+pub fn qcut(vals: &Array1<f64>, n_bins: i32) -> Vec<Option<i32>> {
     let ranks = rank(vals);
     ranks
         .iter()
@@ -648,9 +610,9 @@ pub fn qcut(vals: &[f64], n_bins: i32) -> Vec<Option<i32>> {
 }
 
 /// Shift values by periods
-pub fn delay(vals: &[f64], periods: usize) -> Vec<f64> {
+pub fn delay(vals: &Array1<f64>, periods: usize) -> Array1<f64> {
     let n = vals.len();
-    let mut result = vec![0.0; n];
+    let mut result = Array1::zeros(n);
     for i in periods..n {
         result[i] = vals[i - periods];
     }
@@ -658,39 +620,29 @@ pub fn delay(vals: &[f64], periods: usize) -> Vec<f64> {
 }
 
 /// Scale values to have mean 0 and std 1
-pub fn scale(vals: &[f64]) -> Vec<f64> {
+pub fn scale(vals: &Array1<f64>) -> Array1<f64> {
     let n = vals.len();
     if n == 0 {
-        return vec![];
+        return Array1::zeros(0);
     }
     let sum: f64 = vals.iter().sum();
     let mean = sum / n as f64;
     let std = (vals.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n as f64).sqrt();
     if std < 1e-10 {
-        return vec![0.0; n];
+        return Array1::zeros(n);
     }
-    vals.iter().map(|v| (v - mean) / std).collect()
+    vals.mapv(|v| (v - mean) / std)
 }
 
 /// Sign of values
-pub fn sign(vals: &[f64]) -> Vec<f64> {
-    vals.iter()
-        .map(|v| {
-            if *v > 0.0 {
-                1.0
-            } else if *v < 0.0 {
-                -1.0
-            } else {
-                0.0
-            }
-        })
-        .collect()
+pub fn sign(vals: &Array1<f64>) -> Array1<f64> {
+    vals.mapv(|v| if v > 0.0 { 1.0 } else if v < 0.0 { -1.0 } else { 0.0 })
 }
 
 /// Conditional: if a > threshold, return b, else return c
-pub fn quesval(threshold: f64, a: &[f64], b: &[f64], c: &[f64]) -> Vec<f64> {
+pub fn quesval(threshold: f64, a: &Array1<f64>, b: &Array1<f64>, c: &Array1<f64>) -> Array1<f64> {
     let n = a.len();
-    let mut result = vec![0.0; n];
+    let mut result = Array1::zeros(n);
     for i in 0..n {
         result[i] = if a[i] > threshold { b[i] } else { c[i] };
     }
@@ -698,9 +650,14 @@ pub fn quesval(threshold: f64, a: &[f64], b: &[f64], c: &[f64]) -> Vec<f64> {
 }
 
 /// Conditional: if a > b, return c, else return d
-pub fn quesval2(a: &[f64], b: &[f64], c: &[f64], d: &[f64]) -> Vec<f64> {
+pub fn quesval2(
+    a: &Array1<f64>,
+    b: &Array1<f64>,
+    c: &Array1<f64>,
+    d: &Array1<f64>,
+) -> Array1<f64> {
     let n = a.len();
-    let mut result = vec![0.0; n];
+    let mut result = Array1::zeros(n);
     for i in 0..n {
         result[i] = if a[i] > b[i] { c[i] } else { d[i] };
     }
@@ -708,14 +665,14 @@ pub fn quesval2(a: &[f64], b: &[f64], c: &[f64], d: &[f64]) -> Vec<f64> {
 }
 
 /// Rolling quantile (linear interpolation)
-pub fn ts_quantile(vals: &[f64], window: usize, quantile: f64) -> Vec<f64> {
+pub fn ts_quantile(vals: &Array1<f64>, window: usize, quantile: f64) -> Array1<f64> {
     let n = vals.len();
-    let mut result = vec![0.0; n];
+    let mut result = Array1::zeros(n);
     let q = quantile.clamp(0.0, 1.0);
 
     for i in 0..n {
         let start = i.saturating_sub(window - 1);
-        let slice = &vals[start..=i];
+        let slice = &vals.as_slice().unwrap()[start..=i];
         let len = slice.len();
 
         if len == 0 {
@@ -723,7 +680,6 @@ pub fn ts_quantile(vals: &[f64], window: usize, quantile: f64) -> Vec<f64> {
             continue;
         }
 
-        // Collect and sort valid values
         let mut sorted: Vec<f64> = slice.iter().filter(|v| v.is_finite()).copied().collect();
         if sorted.is_empty() {
             result[i] = f64::NAN;
@@ -746,13 +702,13 @@ pub fn ts_quantile(vals: &[f64], window: usize, quantile: f64) -> Vec<f64> {
 
 /// Rolling linear regression slope: β = Cov(y, t) / Var(t)
 /// where t = 0..window-1 are the time indices
-pub fn ts_slope(vals: &[f64], window: usize) -> Vec<f64> {
+pub fn ts_slope(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     let n = vals.len();
-    let mut result = vec![0.0; n];
+    let mut result = Array1::zeros(n);
 
     for i in 0..n {
         let start = i.saturating_sub(window - 1);
-        let slice = &vals[start..=i];
+        let slice = &vals.as_slice().unwrap()[start..=i];
         let len = slice.len();
 
         if len < 2 {
@@ -778,13 +734,13 @@ pub fn ts_slope(vals: &[f64], window: usize) -> Vec<f64> {
 }
 
 /// Rolling regression R² = 1 - SS_res / SS_tot
-pub fn ts_rsquare(vals: &[f64], window: usize) -> Vec<f64> {
+pub fn ts_rsquare(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     let n = vals.len();
-    let mut result = vec![0.0; n];
+    let mut result = Array1::zeros(n);
 
     for i in 0..n {
         let start = i.saturating_sub(window - 1);
-        let slice = &vals[start..=i];
+        let slice = &vals.as_slice().unwrap()[start..=i];
         let len = slice.len();
 
         if len < 2 {
@@ -824,13 +780,13 @@ pub fn ts_rsquare(vals: &[f64], window: usize) -> Vec<f64> {
 }
 
 /// Rolling regression residual: y_last - (intercept + slope * t_last)
-pub fn ts_resi(vals: &[f64], window: usize) -> Vec<f64> {
+pub fn ts_resi(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     let n = vals.len();
-    let mut result = vec![0.0; n];
+    let mut result = Array1::zeros(n);
 
     for i in 0..n {
         let start = i.saturating_sub(window - 1);
-        let slice = &vals[start..=i];
+        let slice = &vals.as_slice().unwrap()[start..=i];
         let len = slice.len();
 
         if len < 2 {
@@ -859,4 +815,130 @@ pub fn ts_resi(vals: &[f64], window: usize) -> Vec<f64> {
         result[i] = last_val - y_pred;
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ts_mean() {
+        let vals = Array1::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0]);
+        let result = ts_mean(&vals, 3);
+        assert_eq!(result.to_vec(), vec![1.0, 1.5, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn test_ts_sum() {
+        let vals = Array1::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0]);
+        let result = ts_sum(&vals, 3);
+        assert_eq!(result.to_vec(), vec![1.0, 3.0, 6.0, 9.0, 12.0]);
+    }
+
+    #[test]
+    fn test_ts_max() {
+        let vals = Array1::from_vec(vec![1.0, 5.0, 3.0, 2.0, 4.0]);
+        let result = ts_max(&vals, 3);
+        assert_eq!(result.to_vec(), vec![1.0, 5.0, 5.0, 5.0, 4.0]);
+    }
+
+    #[test]
+    fn test_ts_min() {
+        let vals = Array1::from_vec(vec![3.0, 1.0, 5.0, 2.0, 4.0]);
+        let result = ts_min(&vals, 3);
+        assert_eq!(result.to_vec(), vec![3.0, 1.0, 1.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn test_rank() {
+        let vals = Array1::from_vec(vec![3.0, 1.0, 2.0, 5.0, 4.0]);
+        let result = rank(&vals);
+        assert_eq!(result.to_vec(), vec![0.4, 0.0, 0.2, 0.8, 0.6]);
+    }
+
+    #[test]
+    fn test_delay() {
+        let vals = Array1::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0]);
+        let result = delay(&vals, 2);
+        assert_eq!(result.to_vec(), vec![0.0, 0.0, 1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn test_scale() {
+        let vals = Array1::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0]);
+        let result = scale(&vals);
+        let mean: f64 = result.iter().sum::<f64>() / result.len() as f64;
+        assert!((mean - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_sign() {
+        let vals = Array1::from_vec(vec![-2.0, -1.0, 0.0, 1.0, 2.0]);
+        let result = sign(&vals);
+        assert_eq!(result.to_vec(), vec![-1.0, -1.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn test_delta() {
+        let vals = Array1::from_vec(vec![10.0, 12.0, 11.0, 15.0, 14.0]);
+        let result = ts_delta(&vals, 1);
+        assert_eq!(result.to_vec(), vec![0.0, 2.0, -1.0, 4.0, -1.0]);
+    }
+
+    #[test]
+    fn test_winsor() {
+        let vals = Array1::from_vec(vec![
+            1.0, 2.0, 3.0, 4.0, 5.0,
+            10.0, 20.0, 30.0, 40.0, 50.0,
+        ]);
+        let result = winsor(&vals, 5);
+        assert_eq!(result.to_vec(), vals.to_vec());
+    }
+
+    #[test]
+    fn test_winsor_with_outliers() {
+        let vals = Array1::from_vec(vec![1.0, 2.0, 100.0, 4.0, 5.0]);
+        let result = winsor(&vals, 5);
+        assert_eq!(result.to_vec(), vals.to_vec());
+    }
+
+    #[test]
+    fn test_zscore() {
+        let vals = Array1::from_vec(vec![
+            1.0, 2.0, 3.0, 4.0, 5.0,
+            2.0, 4.0, 6.0, 8.0, 10.0,
+        ]);
+        let result = zscore(&vals, 5);
+
+        let date0 = &result.as_slice().unwrap()[0..5];
+        let mean0: f64 = date0.iter().sum::<f64>() / 5.0;
+        let std0_sample = (date0.iter().map(|x| x.powi(2)).sum::<f64>() / 4.0).sqrt();
+        assert!((mean0 - 0.0).abs() < 1e-10);
+        assert!((std0_sample - 1.0).abs() < 0.01);
+
+        let date1 = &result.as_slice().unwrap()[5..10];
+        let mean1: f64 = date1.iter().sum::<f64>() / 5.0;
+        let std1_sample = (date1.iter().map(|x| x.powi(2)).sum::<f64>() / 4.0).sqrt();
+        assert!((mean1 - 0.0).abs() < 1e-10);
+        assert!((std1_sample - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_cap_neu() {
+        // Need >= 10 values for OLS (matches Python min_samples=10)
+        let n = 12;
+        let mut vals_vec = Vec::with_capacity(n);
+        let mut mktcap_vec = Vec::with_capacity(n);
+        for i in 0..n {
+            vals_vec.push((i + 1) as f64 * 10.0);
+            mktcap_vec.push((i + 1) as f64);
+        }
+        let vals = Array1::from_vec(vals_vec);
+        let market_cap = Array1::from_vec(mktcap_vec);
+        let result = cap_neu(&vals, &market_cap, n);
+
+        let mean: f64 = result.iter().sum::<f64>() / n as f64;
+        assert!((mean - 0.0).abs() < 1e-9);
+        assert!(result.iter().any(|x| x.abs() > 0.01));
+    }
 }
