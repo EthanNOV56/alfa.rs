@@ -2139,7 +2139,7 @@ impl PyFactorRegistry {
         }
 
         self.inner
-            .compute(name, &hashmap)
+            .compute_single(name, &hashmap)
             .map(|r| PyFactorResult {
                 name: r.name,
                 values: r.values,
@@ -2268,7 +2268,7 @@ impl PyFactorRegistry {
         let factor_names: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
         let results = self
             .inner
-            .compute_batch_for_freq(&factor_names, &data, false, false)
+            .compute(&factor_names, &data, false, false)
             .map_err(|e| PyRuntimeError::new_err(e))?;
 
         // 7. Build PriceMatrix for alignment

@@ -405,50 +405,6 @@ pub fn eval_ts_function_memoized(
 }
 
 /// Compute expressions in parallel using rayon
-#[allow(dead_code)]
-pub fn compute_exprs_parallel(
-    exprs: &[Expr],
-    data: &HashMap<String, Vec<f64>>,
-    n_rows: usize,
-    cache: &mut HashMap<u64, Vec<f64>>,
-) -> Result<(), String> {
-    // For now, compute sequentially but this can be extended for parallel execution
-    // The key optimization here is the shared subexpression caching
-    for expr in exprs {
-        let hash = expr_hash(expr);
-        if !cache.contains_key(&hash) {
-            // Use a simple evaluator (inline evaluation for parallel)
-            let result = eval_expr_simple(expr, data, n_rows)?;
-            cache.insert(hash, result);
-        }
-    }
-    Ok(())
-}
-
-/// Simple expression evaluator for parallel computation
-#[allow(dead_code)]
-pub fn eval_expr_simple(
-    expr: &Expr,
-    data: &HashMap<String, Vec<f64>>,
-    n_rows: usize,
-) -> Result<Vec<f64>, String> {
-    match expr {
-        Expr::Column(name) => data
-            .get(name)
-            .cloned()
-            .ok_or_else(|| format!("Column '{}' not found", name)),
-        Expr::Literal(lit) => {
-            let val = match lit {
-                Literal::Float(f) => *f,
-                Literal::Integer(i) => *i as f64,
-                _ => 0.0,
-            };
-            Ok(vec![val; n_rows])
-        }
-        _ => Err("Complex expressions handled elsewhere".to_string()),
-    }
-}
-
 /// Extract integer literal from expression
 pub fn get_literal_int(expr: &Expr) -> Option<usize> {
     match expr {

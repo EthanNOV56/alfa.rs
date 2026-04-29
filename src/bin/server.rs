@@ -744,7 +744,7 @@ async fn run_backtest(
             }
 
             // Compute factor using vectorized batch computation
-            let results = registry.compute_batch_for_freq(&["factor"], &data_array1, true, false)
+            let results = registry.compute(&["factor"], &data_array1, true, false)
                 .map_err(|e| {
                     (
                         StatusCode::BAD_REQUEST,
@@ -1245,7 +1245,7 @@ async fn compute_factor(
         }
 
         // Compute the factor using vectorized batch computation
-        match registry.compute_batch_for_freq(&[factor_name], &data_array1, true, false) {
+        match registry.compute(&[factor_name], &data_array1, true, false) {
             Ok(results) => {
                 // Extract the result for our factor
                 let result = results.get(factor_name).ok_or_else(|| {

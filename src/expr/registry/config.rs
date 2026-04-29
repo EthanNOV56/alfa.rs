@@ -57,32 +57,156 @@ pub struct FactorInfo {
     pub category: Option<String>,
 }
 
-/// Pre-built computation DAG with explicit common subexpression elimination.
+/// Pre-built computation DAG with common subexpression elimination and reference counting.
 ///
-/// Built once from all registered factors. Reusable across data batches,
-/// different date ranges, and multiple evaluation calls.
+/// Built once per evaluate call from registered factors. Intermediate results are
+/// dropped when no longer referenced, minimizing memory.
 #[derive(Debug, Clone)]
 pub struct ComputationPlan {
-    /// Topologically ordered expressions (leaves first: columns, then literals,
-    /// then composite expressions, then factor roots).
-    pub exprs: Vec<Expr>,
-    /// Expression hash → index in `exprs` (for CSE dedup).
-    pub hash_to_idx: HashMap<u64, usize>,
-    /// Factor name → index in `exprs` (root expression).
+    /// Topologically ordered nodes (leaves first, roots last).
+    pub nodes: Vec<PlanNode>,
+    /// Factor name → index in `nodes` (root expression).
     pub factor_roots: HashMap<String, usize>,
-    /// All column names required by this plan (for data query construction).
-    pub required_columns: HashSet<String>,
 }
 
-/// What data to fetch: frequency + column list.
+/// One node in the computation DAG.
 #[derive(Debug, Clone)]
-pub struct QueryPlan {
-    pub frequency: Frequency,
-    /// Full prefixed column names (e.g., "1d:close", "1d:volume").
-    pub columns: Vec<String>,
-    /// Grouping columns: trading date + symbol.
-    pub trading_date_col: String,
-    pub symbol_col: String,
+pub struct PlanNode {
+    pub expr: Expr,
+    /// Unique hash for CSE deduplication.
+    pub hash: u64,
+    /// Number of remaining consumers. When drops to 0 after evaluation,
+    /// this intermediate result can be freed.
+    pub ref_count: usize,
+}
+
+impl ComputationPlan {
+    /// Build a DAG from all registered factor expressions.
+    pub fn build(factors: &HashMap<String, FactorInfo>) -> Self {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        fn hash_expr(expr: &Expr) -> u64 {
+            let mut h = DefaultHasher::new();
+            hash_impl(expr, &mut h);
+            h.finish()
+        }
+
+        fn hash_impl(expr: &Expr, h: &mut DefaultHasher) {
+            match expr {
+                Expr::Column(name) => { 0u8.hash(h); name.hash(h); }
+                Expr::Literal(lit) => {
+                    1u8.hash(h);
+                    match lit {
+                        crate::expr::ast::Literal::Boolean(b) => { 0u8.hash(h); b.hash(h); }
+                        crate::expr::ast::Literal::Integer(i) => { 1u8.hash(h); i.hash(h); }
+                        crate::expr::ast::Literal::Float(f) => { 2u8.hash(h); f.to_bits().hash(h); }
+                        crate::expr::ast::Literal::String(s) => { 3u8.hash(h); s.hash(h); }
+                        crate::expr::ast::Literal::Null => { 4u8.hash(h); }
+                    }
+                }
+                Expr::BinaryExpr { left, right, op } => {
+                    2u8.hash(h); op.hash(h);
+                    hash_impl(left, h); hash_impl(right, h);
+                }
+                Expr::UnaryExpr { op, expr: e } => {
+                    3u8.hash(h); op.hash(h); hash_impl(e, h);
+                }
+                Expr::FunctionCall { name, args, freq } => {
+                    4u8.hash(h); name.hash(h); freq.hash(h);
+                    for a in args { hash_impl(a, h); }
+                }
+                _ => {}
+            }
+        }
+
+        // Phase 1: collect unique subexpressions and count references (pre-order DFS)
+        let mut unique: Vec<(Expr, u64)> = Vec::new();
+        let mut seen: HashSet<u64> = HashSet::new();
+        let mut ref_counts: HashMap<u64, usize> = HashMap::new();
+
+        for info in factors.values() {
+            collect(&info.parsed_expr, &mut unique, &mut seen, &mut ref_counts);
+        }
+
+        fn collect(
+            expr: &Expr,
+            unique: &mut Vec<(Expr, u64)>,
+            seen: &mut HashSet<u64>,
+            ref_counts: &mut HashMap<u64, usize>,
+        ) -> u64 {
+            let h = hash_expr(expr);
+            if seen.insert(h) {
+                unique.push((expr.clone(), h));
+                // Recurse into children
+                match expr {
+                    Expr::BinaryExpr { left, right, .. } => {
+                        collect(left, unique, seen, ref_counts);
+                        collect(right, unique, seen, ref_counts);
+                    }
+                    Expr::UnaryExpr { expr: e, .. } => {
+                        collect(e, unique, seen, ref_counts);
+                    }
+                    Expr::FunctionCall { args, .. } => {
+                        for a in args { collect(a, unique, seen, ref_counts); }
+                    }
+                    _ => {}
+                }
+            }
+            *ref_counts.entry(h).or_insert(0) += 1;
+            h
+        }
+
+        // Phase 2: topological sort via Kahn's algorithm
+        let hash_to_idx: HashMap<u64, usize> = unique.iter().enumerate()
+            .map(|(i, (_, h))| (*h, i)).collect();
+        let n = unique.len();
+        let mut indegree = vec![0u32; n];
+        let mut edges: Vec<Vec<usize>> = vec![Vec::new(); n];
+
+        for (i, (expr, _)) in unique.iter().enumerate() {
+            let child_hashes = match expr {
+                Expr::BinaryExpr { left, right, .. } => vec![hash_expr(left), hash_expr(right)],
+                Expr::UnaryExpr { expr: e, .. } => vec![hash_expr(e)],
+                Expr::FunctionCall { args, .. } => args.iter().map(|a| hash_expr(a)).collect(),
+                _ => vec![],
+            };
+            for ch in child_hashes {
+                if let Some(&ci) = hash_to_idx.get(&ch) {
+                    edges[ci].push(i);
+                    indegree[i] += 1;
+                }
+            }
+        }
+
+        let mut queue: Vec<usize> = (0..n).filter(|&i| indegree[i] == 0).collect();
+        let mut order = Vec::with_capacity(n);
+        while let Some(i) = queue.pop() {
+            order.push(i);
+            for &c in &edges[i] {
+                indegree[c] -= 1;
+                if indegree[c] == 0 { queue.push(c); }
+            }
+        }
+
+        let nodes: Vec<PlanNode> = order.iter().map(|&orig_idx| {
+            let (ref expr, hash) = unique[orig_idx];
+            let rc = *ref_counts.get(&hash).unwrap_or(&0);
+            PlanNode { expr: expr.clone(), hash, ref_count: rc }
+        }).collect();
+
+        let mut factor_roots = HashMap::new();
+        for (name, info) in factors.iter() {
+            let h = hash_expr(&info.parsed_expr);
+            if let Some(&orig_idx) = hash_to_idx.get(&h) {
+                if let Some(sorted_pos) = order.iter().position(|&i| i == orig_idx) {
+                    factor_roots.insert(name.clone(), sorted_pos);
+                }
+            }
+        }
+
+        ComputationPlan { nodes, factor_roots }
+    }
 }
 
 /// Factor computation result
@@ -99,7 +223,7 @@ pub struct FactorResult {
 
 impl FactorResult {
     /// Return per-date (date_int, start_idx, end_idx) ranges for compact results.
-    /// Groups must be sorted by (date, symbol) — guaranteed by `compute_batch_for_freq`.
+    /// Groups must be sorted by (date, symbol) — guaranteed by `compute`.
     pub fn date_ranges(&self) -> Option<Vec<(i64, usize, usize)>> {
         let groups = self.groups.as_ref()?;
         let mut ranges = Vec::new();

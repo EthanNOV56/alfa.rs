@@ -10,12 +10,14 @@ pub mod parser;
 pub mod timeseries;
 
 pub use config::{
-    ColumnMeta, ComputeConfig, FactorInfo, FactorPanel, FactorResult, FactorSlice,
+    ColumnMeta, ComputationPlan, ComputeConfig, FactorInfo, FactorPanel, FactorResult,
+    FactorSlice, PlanNode,
 };
 pub use parser::parse_expression;
 
 use crate::data::layer::DataLayer;
 use crate::expr::ast::{Expr, Frequency};
+use ahash::AHashMap;
 use ndarray::Array1;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
@@ -99,7 +101,7 @@ impl FactorRegistry {
         Ok(name.to_string())
     }
 
-    pub fn compute(
+    pub fn compute_single(
         &self,
         name: &str,
         data: &HashMap<String, Vec<f64>>,
@@ -314,297 +316,86 @@ impl FactorRegistry {
     ///
     /// # Returns
     /// HashMap from factor name to (FactorResult, Frequency) tuple
-    pub fn compute_batch_vectorized(
-        &self,
-        data_layer: &mut DataLayer,
-        parallel: bool,
-    ) -> Result<HashMap<String, (FactorResult, Frequency)>, String> {
-        // Step 1: Get all registered factor names
-        let factor_names: Vec<String> = self.factors.keys().cloned().collect();
-        if factor_names.is_empty() {
-            return Ok(HashMap::new());
-        }
-
-        // Step 2: Extract required fields from all expressions
-        let mut all_fields: Vec<String> = Vec::new();
-        let mut freq_per_factor: HashMap<String, Frequency> = HashMap::new();
-
-        for name in &factor_names {
-            let info = self
-                .factors
-                .get(name)
-                .ok_or_else(|| format!("Factor '{}' not found", name))?;
-            let expr = info.parsed_expr.clone();
-
-            let columns = extract_columns(&expr);
-            for col in &columns {
-                if !all_fields.contains(col) {
-                    all_fields.push(col.clone());
-                }
-            }
-
-            // Determine the finest frequency needed for this factor
-            let mut finest = Frequency::Daily;
-            for col in &columns {
-                if let Some(colon_pos) = col.find(':') {
-                    let freq_str = &col[..colon_pos];
-                    if let Some(freq) = Frequency::parse(freq_str) {
-                        if freq.period_days() < finest.period_days() {
-                            finest = freq;
-                        }
-                    }
-                }
-            }
-            freq_per_factor.insert(name.clone(), finest);
-        }
-
-        // Collect all group-by frequencies from FunctionCall nodes in all expressions,
-        // then add {finest_freq}:trading_date and {finest_freq}:symbol as grouping columns.
-        // Grouping columns must match the data granularity (finest frequency), not the
-        // output frequency, because the values being aggregated are at the finest level.
-        {
-            let mut all_group_freqs: Vec<Frequency> = Vec::new();
-            let mut finest_col_freq = Frequency::Daily;
-            for name in &factor_names {
-                let info = self.factors.get(name).unwrap();
-                let expr = info.parsed_expr.clone();
-                collect_frequencies(&expr, &mut all_group_freqs);
-
-                // Find finest column frequency
-                let cols = extract_columns(&expr);
-                for col in &cols {
-                    if let Some(colon_pos) = col.find(':') {
-                        let freq_str = &col[..colon_pos];
-                        if let Some(freq) = Frequency::parse(freq_str) {
-                            if freq.period_days() < finest_col_freq.period_days() {
-                                finest_col_freq = freq;
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Use finest column frequency for grouping columns (aligns with data row count)
-            let prefix = finest_col_freq.as_str();
-            for meta_col in &["trading_date", "symbol"] {
-                let field = format!("{}:{}", prefix, meta_col);
-                if !all_fields.contains(&field) {
-                    all_fields.push(field);
-                }
-            }
-        }
-
-        // Step 3: Query data from DataLayer
-        let data = data_layer
-            .query(all_fields)
-            .map_err(|e| format!("DataLayer query error: {:?}", e))?;
-
-        let n_rows = data.values().next().map(|arr| arr.len()).unwrap_or(0);
-        if n_rows == 0 {
-            return Err("No data fetched".to_string());
-        }
-
-        // Step 4: Compute each factor
-        let mut results: HashMap<String, (FactorResult, Frequency)> = HashMap::new();
-
-        for name in &factor_names {
-            let info = self
-                .factors
-                .get(name)
-                .ok_or_else(|| format!("Factor '{}' not found", name))?;
-            let expr = info.parsed_expr.clone();
-
-            let freq = freq_per_factor
-                .get(name)
-                .cloned()
-                .unwrap_or(Frequency::Daily);
-
-            // Use the internal computation method
-            let result = self.compute_single_factor(&expr, &data, n_rows, parallel)?;
-
-            results.insert(
-                name.clone(),
-                (
-                    FactorResult {
-                        name: name.clone(),
-                        values: result,
-                        n_rows,
-                        n_cols: 1,
-                        compute_time_ms: 0,
-                        groups: None,
-                    },
-                    freq,
-                ),
-            );
-        }
-
-        Ok(results)
-    }
-
-    /// Build cache from data columns for expression evaluation
-    fn build_cache(_data: &HashMap<String, Array1<f64>>) -> HashMap<u64, Array1<f64>> {
-        // Column lookups go through `data` directly (Expr::Column handler),
-        // not through cache. Cache is only for intermediate expression results.
-        HashMap::new()
-    }
-
-    /// Compute a single factor expression
-    fn compute_single_factor(
-        &self,
-        expr: &Expr,
-        data: &HashMap<String, Array1<f64>>,
-        _n_rows: usize,
-        _parallel: bool,
-    ) -> Result<Vec<f64>, String> {
-        use crate::expr::registry::functions::eval_expr_vectorized;
-
-        let mut cache = Self::build_cache(data);
-        let arr = eval_expr_vectorized(expr, data, &mut cache)?;
-        Ok(arr.to_vec())
-    }
-
-    /// Compute factors using pre-loaded data (no DataLayer dependency)
-    ///
-    /// When `compact` is true, group-aggregation expressions return per-group results
-    /// instead of expanding back to n_rows. FactorResult.groups will be populated with
-    /// (date_int, symbol_int) group keys, sorted by date then symbol.
-    ///
-    /// Suitable for callers that manage their own data loading (e.g., server binaries).
-    pub fn compute_batch_for_freq(
+    /// Unified compute: evaluates registered factors using a DAG with ref-counted
+    /// CSE. Intermediate results are dropped when no longer referenced.
+    /// `compact=true` for group-by mode (5m data); `compact=false` for full row mode (1d data).
+    pub fn compute(
         &self,
         names: &[&str],
         data: &HashMap<String, Array1<f64>>,
-        parallel: bool,
+        _parallel: bool,
         compact: bool,
     ) -> Result<HashMap<String, FactorResult>, String> {
         let start = Instant::now();
 
-        // Step 1: Build computation graph
-        let mut unique_exprs: Vec<Expr> = Vec::new();
-        let mut expr_hash_set: HashSet<u64> = HashSet::new();
-        let mut factor_exprs_owned: Vec<Expr> = Vec::new();
-        let mut factor_exprs: Vec<(String, &Expr)> = Vec::new();
+        // Build DAG with reference-counted CSE
+        let plan = ComputationPlan::build(&self.factors);
 
-        for name in names {
-            let info = self
-                .factors
-                .get(*name)
-                .ok_or_else(|| format!("Factor '{}' not found", name))?;
-
-            let expr = info.parsed_expr.clone();
-
-            collect_unique_subexpressions(&expr, &mut unique_exprs, &mut expr_hash_set);
-            factor_exprs_owned.push(expr);
-        }
-
-        for (i, name) in names.iter().enumerate() {
-            factor_exprs.push((name.to_string(), &factor_exprs_owned[i]));
-        }
-
-        // Step 2: Build cache
-        let mut cache = Self::build_cache(data);
-
-        // Step 3: Compute factors
+        let mut cache: HashMap<u64, Array1<f64>> = HashMap::new();
         let mut results: HashMap<String, FactorResult> = HashMap::new();
+        let mut node_refs: Vec<usize> = plan.nodes.iter().map(|n| n.ref_count).collect();
 
-        if compact {
-            use crate::expr::registry::functions::eval_expr_compact;
-            // Compact evaluation: returns per-group values + group keys
-            // No parallel path needed — compact results are small (n_groups << n_rows)
-            for (name, expr) in factor_exprs {
-                let (arr, groups) = eval_expr_compact(expr, data, &mut cache)?;
-                results.insert(
-                    name.clone(),
-                    FactorResult {
-                        name,
-                        values: arr.to_vec(),
-                        n_rows: arr.len(),
-                        n_cols: 1,
-                        compute_time_ms: 0,
-                        groups: if groups.is_empty() {
-                            None
-                        } else {
-                            Some(groups)
-                        },
-                    },
-                );
+        // Pre-identify factor root indices
+        let mut root_names: Vec<(usize, String)> = Vec::new();
+        for name in names {
+            if let Some(&idx) = plan.factor_roots.get(*name) {
+                root_names.push((idx, name.to_string()));
             }
-        } else {
-            let n_rows = data.values().next().map(|arr| arr.len()).unwrap_or(0);
+        }
 
-            if parallel && factor_exprs.len() > 1 {
-                let use_parallel = n_rows < 1_000_000;
+        for (i, node) in plan.nodes.iter().enumerate() {
+            // Check if already cached (common subexpression)
+            let val = if let Some(cached) = cache.get(&node.hash) {
+                cached.clone()
+            } else {
+                eval_expr_vectorized(&node.expr, data, &mut cache)?
+            };
 
-                if use_parallel {
-                    use rayon::prelude::*;
-
-                    let results_vec: Vec<(String, FactorResult)> = factor_exprs
-                        .par_iter()
-                        .filter_map(|(name, expr)| {
-                            let mut thread_cache = cache.clone();
-                            match eval_expr_vectorized(expr, data, &mut thread_cache) {
-                                Ok(arr) => Some((
-                                    name.clone(),
-                                    FactorResult {
-                                        name: name.clone(),
-                                        values: arr.to_vec(),
-                                        n_rows,
-                                        n_cols: 1,
-                                        compute_time_ms: 0,
-                                        groups: None,
-                                    },
-                                )),
-                                Err(e) => {
-                                    eprintln!("Error computing {}: {}", name, e);
-                                    None
-                                }
-                            }
-                        })
-                        .collect();
-
-                    for (name, result) in results_vec {
-                        results.insert(name, result);
-                    }
-                } else {
-                    for (name, expr) in factor_exprs {
-                        let arr = eval_expr_vectorized(expr, data, &mut cache)?;
-                        results.insert(
-                            name.clone(),
-                            FactorResult {
-                                name,
-                                values: arr.to_vec(),
-                                n_rows,
-                                n_cols: 1,
-                                compute_time_ms: 0,
-                                groups: None,
-                            },
-                        );
+            // Decrement ref counts of children; drop when no longer needed
+            let child_hashes: Vec<u64> = match &node.expr {
+                Expr::BinaryExpr { left, right, .. } => {
+                    vec![hash_expr(left), hash_expr(right)]
+                }
+                Expr::UnaryExpr { expr: e, .. } => vec![hash_expr(e)],
+                Expr::FunctionCall { args, .. } => {
+                    args.iter().map(|a| hash_expr(a)).collect()
+                }
+                _ => vec![],
+            };
+            for ch in child_hashes {
+                if let Some(dep_idx) = plan.nodes.iter().position(|n| n.hash == ch) {
+                    if node_refs[dep_idx] > 0 {
+                        node_refs[dep_idx] -= 1;
+                        if node_refs[dep_idx] == 0 {
+                            cache.remove(&ch);
+                        }
                     }
                 }
-            } else {
-                for (name, expr) in factor_exprs {
-                    let arr = eval_expr_vectorized(expr, data, &mut cache)?;
-                    results.insert(
-                        name.clone(),
-                        FactorResult {
-                            name,
-                            values: arr.to_vec(),
-                            n_rows,
-                            n_cols: 1,
-                            compute_time_ms: 0,
-                            groups: None,
-                        },
-                    );
+            }
+
+            // If this is a factor root, store result
+            for (root_idx, name) in &root_names {
+                if *root_idx == i {
+                    if compact {
+                        let (arr, groups) = crate::expr::registry::functions::eval_expr_compact(
+                            &node.expr, data, &mut cache)?;
+                        results.insert(name.clone(), FactorResult {
+                            name: name.clone(), values: arr.to_vec(),
+                            n_rows: arr.len(), n_cols: 1, compute_time_ms: 0,
+                            groups: if groups.is_empty() { None } else { Some(groups) },
+                        });
+                    } else {
+                        results.insert(name.clone(), FactorResult {
+                            name: name.clone(), values: val.to_vec(),
+                            n_rows: val.len(), n_cols: 1, compute_time_ms: 0, groups: None,
+                        });
+                    }
                 }
             }
         }
 
         let elapsed = start.elapsed().as_millis() as u64;
-
-        for result in results.values_mut() {
-            result.compute_time_ms = elapsed;
-        }
-
+        for r in results.values_mut() { r.compute_time_ms = elapsed; }
         Ok(results)
     }
 
@@ -644,7 +435,7 @@ impl FactorRegistry {
             data_layer.clear_cache_keep_symbols();
 
             let factor_names: Vec<&str> = self.factors.keys().map(|s| s.as_str()).collect();
-            let results = self.compute_batch_for_freq(&factor_names, &data, false, true)?;
+            let results = self.compute(&factor_names, &data, false, true)?;
             let mktcap_map = data_layer.build_free_float_cap_map()
                 .map_err(|e| format!("build_free_float_cap_map: {:?}", e))?;
             let symbol_list = data_layer.get_symbols_5m().to_vec();
@@ -660,7 +451,7 @@ impl FactorRegistry {
 
             let factor_names: Vec<&str> = self.factors.keys().map(|s| s.as_str()).collect();
             // compact=false: each row is already a daily observation (no group-by needed)
-            let results = self.compute_batch_for_freq(&factor_names, &data, true, false)?;
+            let results = self.compute(&factor_names, &data, true, false)?;
 
             // Build per-date groups from 1d trading_date and symbol columns
             let dates = data.get("1d:trading_date")
@@ -858,6 +649,44 @@ impl FactorRegistry {
     /// Update configuration
     pub fn update_config(&mut self, config: ComputeConfig) {
         self.config = config;
+    }
+}
+
+// Module-level expression hashing helpers (used by the DAG evaluator).
+fn hash_expr(expr: &Expr) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    hash_expr_impl(expr, &mut h);
+    h.finish()
+}
+
+fn hash_expr_impl(expr: &Expr, h: &mut std::collections::hash_map::DefaultHasher) {
+    use std::hash::Hash;
+    match expr {
+        Expr::Column(name) => { 0u8.hash(h); name.hash(h); }
+        Expr::Literal(lit) => {
+            1u8.hash(h);
+            match lit {
+                crate::expr::ast::Literal::Boolean(b) => { 0u8.hash(h); b.hash(h); }
+                crate::expr::ast::Literal::Integer(i) => { 1u8.hash(h); i.hash(h); }
+                crate::expr::ast::Literal::Float(f) => { 2u8.hash(h); f.to_bits().hash(h); }
+                crate::expr::ast::Literal::String(s) => { 3u8.hash(h); s.hash(h); }
+                crate::expr::ast::Literal::Null => { 4u8.hash(h); }
+            }
+        }
+        Expr::BinaryExpr { left, right, op } => {
+            2u8.hash(h); op.hash(h);
+            hash_expr_impl(left, h); hash_expr_impl(right, h);
+        }
+        Expr::UnaryExpr { op, expr: e } => {
+            3u8.hash(h); op.hash(h); hash_expr_impl(e, h);
+        }
+        Expr::FunctionCall { name, args, freq } => {
+            4u8.hash(h); name.hash(h); freq.hash(h);
+            for a in args { hash_expr_impl(a, h); }
+        }
+        _ => {}
     }
 }
 
