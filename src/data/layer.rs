@@ -536,7 +536,7 @@ impl DataLayer {
             );
         }
 
-        // Build symbol encoding (pass 1: scan only, allocate Strings only for unique symbols)
+        // Build symbol encoding
         let t_encode = std::time::Instant::now();
         let symbol_to_idx: AHashMap<String, f64>;
         if !self.symbols_5m.is_empty() {
@@ -573,12 +573,13 @@ impl DataLayer {
             self.symbols_5m = unique;
         }
 
-        // Pass 2: process all columns, encode symbols via HashMap lookup (no allocation)
+        // Process all columns with date cache (avoids 21M calendar conversions)
         let t_parse = std::time::Instant::now();
         let mut col_vecs: HashMap<String, Vec<f64>> = HashMap::new();
         for (_, name, _) in &col_specs {
             col_vecs.insert(name.clone(), Vec::new());
         }
+        let mut date_cache: HashMap<i32, f64> = HashMap::with_capacity(256);
 
         for batch in &batches {
             let arrays = batch.columns();
@@ -596,28 +597,20 @@ impl DataLayer {
                         let arr = array
                             .as_any()
                             .downcast_ref::<PrimitiveArray<Date32Type>>()
-                            .ok_or_else(|| {
-                                DataError::Query(format!(
-                                    "Column '{}' expected Date32", name
-                                ))
-                            })?;
+                            .ok_or_else(|| DataError::Query(format!("Column '{}' expected Date32", name)))?;
                         for i in 0..n_rows {
-                            vec.push(date32_to_ymd_f64(arr.value(i)));
+                            let epoch = arr.value(i);
+                            let ymd = *date_cache.entry(epoch).or_insert_with(|| date32_to_ymd_f64(epoch));
+                            vec.push(ymd);
                         }
                     }
                     ColKind::Symbol => {
                         let arr = array
                             .as_any()
                             .downcast_ref::<StringArray>()
-                            .ok_or_else(|| {
-                                DataError::Query(format!(
-                                    "Column '{}' expected StringArray", name
-                                ))
-                            })?;
+                            .ok_or_else(|| DataError::Query(format!("Column '{}' expected StringArray", name)))?;
                         for i in 0..n_rows {
-                            vec.push(
-                                symbol_to_idx.get(arr.value(i)).copied().unwrap_or(f64::NAN),
-                            );
+                            vec.push(symbol_to_idx.get(arr.value(i)).copied().unwrap_or(f64::NAN));
                         }
                     }
                 }
