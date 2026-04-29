@@ -872,6 +872,151 @@ pub fn eval_function_vectorized(
 /// as soon as possible to free memory.
 ///
 /// When expand=false, populates `group_keys` with sorted (date_int, symbol_int) pairs.
+/// Sequential group-by scan for compact mode.
+///
+/// Data is pre-sorted by `ORDER BY symbol, trading_date`, so groups are
+/// contiguous. We scan boundaries without any hashing or sorting.
+fn scan_compact(
+    name: &str,
+    dates: &Array1<f64>,
+    symbols: &Array1<f64>,
+    values: &Array1<f64>,
+    group_keys: &mut Option<Vec<(i64, i64)>>,
+) -> Result<Array1<f64>, String> {
+    let n_rows = values.len();
+    // Pre-allocate for ~200 dates * 5000 symbols
+    let est_groups = (n_rows / 10).min(2_000_000);
+    let mut result: Vec<f64> = Vec::with_capacity(est_groups);
+    let mut keys: Vec<(i64, i64)> = Vec::with_capacity(est_groups);
+
+    let mut i = 0;
+    match name {
+        "sum" | "add" => {
+            while i < n_rows {
+                let sd = dates[i] as i64;
+                let ss = symbols[i] as i64;
+                let mut sum = 0.0f64;
+                let mut count = 0u32;
+                while i < n_rows && (dates[i] as i64) == sd && (symbols[i] as i64) == ss {
+                    let v = values[i];
+                    if v.is_finite() { sum += v; count += 1; }
+                    i += 1;
+                }
+                result.push(if count > 0 { sum } else { f64::NAN });
+                keys.push((sd, ss));
+            }
+        }
+        "mean" | "avg" | "average" => {
+            while i < n_rows {
+                let sd = dates[i] as i64;
+                let ss = symbols[i] as i64;
+                let mut sum = 0.0f64;
+                let mut count = 0u32;
+                while i < n_rows && (dates[i] as i64) == sd && (symbols[i] as i64) == ss {
+                    let v = values[i];
+                    if v.is_finite() { sum += v; count += 1; }
+                    i += 1;
+                }
+                result.push(if count > 0 { sum / count as f64 } else { f64::NAN });
+                keys.push((sd, ss));
+            }
+        }
+        "count" | "cnt" => {
+            while i < n_rows {
+                let sd = dates[i] as i64;
+                let ss = symbols[i] as i64;
+                let mut count = 0u32;
+                while i < n_rows && (dates[i] as i64) == sd && (symbols[i] as i64) == ss {
+                    count += 1;
+                    i += 1;
+                }
+                result.push(count as f64);
+                keys.push((sd, ss));
+            }
+        }
+        "min" | "minimum" => {
+            while i < n_rows {
+                let sd = dates[i] as i64;
+                let ss = symbols[i] as i64;
+                let mut min_val = f64::INFINITY;
+                while i < n_rows && (dates[i] as i64) == sd && (symbols[i] as i64) == ss {
+                    let v = values[i];
+                    if v.is_finite() && v < min_val { min_val = v; }
+                    i += 1;
+                }
+                result.push(if min_val.is_finite() { min_val } else { f64::NAN });
+                keys.push((sd, ss));
+            }
+        }
+        "max" | "maximum" => {
+            while i < n_rows {
+                let sd = dates[i] as i64;
+                let ss = symbols[i] as i64;
+                let mut max_val = f64::NEG_INFINITY;
+                while i < n_rows && (dates[i] as i64) == sd && (symbols[i] as i64) == ss {
+                    let v = values[i];
+                    if v.is_finite() && v > max_val { max_val = v; }
+                    i += 1;
+                }
+                result.push(if max_val.is_finite() { max_val } else { f64::NAN });
+                keys.push((sd, ss));
+            }
+        }
+        "std" | "stdev" | "var" | "variance" => {
+            // Two-pass: first compute mean, then compute variance
+            // First pass: collect per-group sums and counts
+            let mut sums: Vec<f64> = Vec::with_capacity(est_groups);
+            let mut counts: Vec<u32> = Vec::with_capacity(est_groups);
+            let mut group_starts: Vec<usize> = Vec::with_capacity(est_groups);
+            while i < n_rows {
+                let sd = dates[i] as i64;
+                let ss = symbols[i] as i64;
+                group_starts.push(i);
+                let mut sum = 0.0f64;
+                let mut count = 0u32;
+                while i < n_rows && (dates[i] as i64) == sd && (symbols[i] as i64) == ss {
+                    let v = values[i];
+                    if v.is_finite() { sum += v; count += 1; }
+                    i += 1;
+                }
+                sums.push(sum);
+                counts.push(count);
+                keys.push((sd, ss));
+            }
+            // Second pass: compute variance per group
+            let n_groups = sums.len();
+            let is_std = name == "std" || name == "stdev";
+            for g in 0..n_groups {
+                if counts[g] < 2 {
+                    result.push(f64::NAN);
+                    continue;
+                }
+                let mean = sums[g] / counts[g] as f64;
+                let mut sq_diff = 0.0f64;
+                let start = group_starts[g];
+                let end = if g + 1 < n_groups { group_starts[g + 1] } else { n_rows };
+                for j in start..end {
+                    let v = values[j];
+                    if v.is_finite() { sq_diff += (v - mean).powi(2); }
+                }
+                let var = sq_diff / (counts[g] - 1) as f64; // sample variance
+                result.push(if is_std { var.sqrt() } else { var });
+            }
+        }
+        _ => return Err(format!("Unknown group function: {}", name)),
+    }
+
+    // Data is ORDER BY symbol, trading_date; pipeline expects (date, symbol) order.
+    // Sort groups by date then symbol for downstream cross-section processing.
+    let mut indexed: Vec<(usize, (i64, i64))> = keys.iter().enumerate().map(|(i, &k)| (i, k)).collect();
+    indexed.sort_by(|a, b| a.1.0.cmp(&b.1.0).then(a.1.1.cmp(&b.1.1)));
+    let sorted_keys: Vec<(i64, i64)> = indexed.iter().map(|(_, k)| *k).collect();
+    let sorted_result: Vec<f64> = indexed.iter().map(|(i, _)| result[*i]).collect();
+
+    *group_keys = Some(sorted_keys);
+    Ok(Array1::from_vec(sorted_result))
+}
+
 pub fn eval_group_function_vectorized(
     name: &str,
     args: &[Expr],
@@ -914,14 +1059,16 @@ pub fn eval_group_function_vectorized(
     }
 
     let name_lower = name.to_lowercase();
-    // Strip ts_ prefix if present (parser aliases sum→ts_sum, mean→ts_mean, etc.)
     let name_key = name_lower.strip_prefix("ts_").unwrap_or(&name_lower);
 
-    // Pre-estimate number of groups (assuming ~1 row per group as upper bound)
-    // Will shrink_to_fit after aggregation
-    let estimated_groups = n_rows.min(10_000_000);
+    // Sequential scan for compact mode: data is pre-sorted by (symbol, date),
+    // so we detect group boundaries without hashing.
+    if !expand {
+        return scan_compact(name_key, trading_dates, symbols, &values, group_keys);
+    }
 
-    // Threshold for parallel processing
+    // Expand mode: still uses HashMap (less common in pipeline hot path)
+    let estimated_groups = n_rows.min(10_000_000);
     let parallel_threshold = 500_000;
 
     match name_key {
