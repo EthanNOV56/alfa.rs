@@ -886,7 +886,6 @@ fn scan_compact(
     if n_rows < 100_000 {
         return scan_compact_seq(name, dates, symbols, values, group_keys);
     }
-    let t0 = std::time::Instant::now();
     // Find symbol boundary indices for parallel chunking
     let syms = symbols.as_slice().unwrap();
     let mut sym_boundaries: Vec<usize> = vec![0];
@@ -935,9 +934,6 @@ fn scan_compact(
     indexed.sort_by(|a, b| a.1.0.cmp(&b.1.0).then(a.1.1.cmp(&b.1.1)));
     let sorted_keys: Vec<(i64, i64)> = indexed.iter().map(|(_, k)| *k).collect();
     let sorted_vals: Vec<f64> = indexed.iter().map(|(i, _)| merged_vals[*i]).collect();
-
-    let t1 = t0.elapsed().as_millis();
-    eprintln!("    eval({}): n_rows={} n_chunks={} time={}ms", name, n_rows, boundaries.len()-1, t1);
 
     *group_keys = Some(sorted_keys);
     Ok(Array1::from_vec(sorted_vals))
