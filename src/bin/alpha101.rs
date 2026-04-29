@@ -95,15 +95,20 @@ fn alphas() -> Vec<(&'static str, &'static str)> {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv::dotenv().ok();
     let alphas = alphas();
-    println!("Alpha101 DAG: {} factors, loading...", alphas.len());
+    let sequential = std::env::var("ALFARS_SEQUENTIAL").is_ok();
+    let mode = if sequential { "sequential" } else { "DAG" };
+    let out = if sequential { ".tests/alpha101_seq.csv" } else { ".tests/alpha101_dag.csv" };
+    println!("Alpha101 {}: {} factors", mode, alphas.len());
+
     let mut lab = AlfarsLab::new(ClickHouseSource::from_env())
         .with_filter("symbols not like '%BJ'")
         .with_years(2024, 2024);
     for (name, expr) in &alphas { lab.register(name, expr)?; }
+
     let t0 = Instant::now();
-    let panel = lab.calc(".tests/alpha101_rs.csv")?;
+    let panel = lab.calc(out)?;
     let t = t0.elapsed();
     let records: usize = panel.slices.iter().map(|s| s.groups.len()).sum();
-    println!("Calc: {:.1}s  records={}", t.as_secs_f64(), records);
+    println!("{} Calc: {:.1}s  records={}", mode, t.as_secs_f64(), records);
     Ok(())
 }

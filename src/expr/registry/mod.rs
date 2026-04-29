@@ -10,8 +10,8 @@ pub mod parser;
 pub mod timeseries;
 
 pub use config::{
-    ColumnMeta, ComputationPlan, ComputeConfig, FactorInfo, FactorPanel, FactorResult,
-    FactorSlice, PlanNode,
+    ColumnMeta, ComputationPlan, ComputeConfig, FactorInfo, FactorPanel, FactorResult, FactorSlice,
+    PlanNode,
 };
 pub use parser::parse_expression;
 
@@ -132,7 +132,8 @@ impl FactorRegistry {
             cache.insert(hasher.finish(), vals.clone());
         }
 
-        let result = functions::eval_expr_memoized(&info.parsed_expr, &arr_data, n_rows, &mut cache)?;
+        let result =
+            functions::eval_expr_memoized(&info.parsed_expr, &arr_data, n_rows, &mut cache)?;
         let elapsed = start.elapsed().as_millis() as u64;
 
         Ok(FactorResult {
@@ -177,7 +178,9 @@ impl FactorRegistry {
         for name in names {
             let info = match self.factors.get(*name) {
                 Some(info) => info,
-                None => { continue; }
+                None => {
+                    continue;
+                }
             };
             let expr = info.parsed_expr.clone();
             collect_unique_subexpressions(&expr, &mut unique_exprs, &mut expr_hash_set);
@@ -187,8 +190,12 @@ impl FactorRegistry {
         let mut seen_names: std::collections::HashSet<&str> = std::collections::HashSet::new();
         let mut idx = 0;
         for name in names {
-            if skipped_names.contains(&name.to_string()) { continue; }
-            if seen_names.contains(name) { continue; }
+            if skipped_names.contains(&name.to_string()) {
+                continue;
+            }
+            if seen_names.contains(name) {
+                continue;
+            }
             if idx < factor_exprs_owned.len() {
                 seen_names.insert(name);
                 factor_exprs.push((name.to_string(), &factor_exprs_owned[idx]));
@@ -346,7 +353,29 @@ impl FactorRegistry {
             return Ok(results);
         }
 
-        // General path: build DAG with CSE for multi-factor evaluation
+        // Sequential fallback: evaluate each factor independently (no DAG, no CSE)
+        if !parallel {
+            let mut results = HashMap::new();
+            for &name in names {
+                let info = self.factors.get(name)
+                    .ok_or_else(|| format!("Factor '{}' not found", name))?;
+                let (arr, groups) = if compact {
+                    crate::expr::registry::functions::eval_expr_compact(
+                        &info.parsed_expr, data, &mut HashMap::new())?
+                } else {
+                    let v = eval_expr_vectorized(&info.parsed_expr, data, &mut HashMap::new())?;
+                    (v, vec![])
+                };
+                results.insert(name.to_string(), FactorResult {
+                    name: name.to_string(), values: arr.to_vec(),
+                    n_rows: arr.len(), n_cols: 1, compute_time_ms: 0,
+                    groups: if groups.is_empty() { None } else { Some(groups) },
+                });
+            }
+            return Ok(results);
+        }
+
+        // DAG path: build ComputationPlan from all factors
         let plan = ComputationPlan::build(&self.factors);
         let n = plan.nodes.len();
 
@@ -362,7 +391,8 @@ impl FactorRegistry {
             }
         }
 
-        let root_set: std::collections::HashSet<usize> = names.iter()
+        let root_set: std::collections::HashSet<usize> = names
+            .iter()
             .filter_map(|nm| plan.factor_roots.get(*nm).copied())
             .collect();
 
@@ -375,9 +405,8 @@ impl FactorRegistry {
             use rayon::prelude::*;
             let cache = std::sync::Mutex::new(HashMap::<u64, Array1<f64>>::new());
             let results_mtx = std::sync::Mutex::new(HashMap::<String, FactorResult>::new());
-            let node_refs = std::sync::Mutex::new(
-                plan.nodes.iter().map(|nd| nd.ref_count).collect::<Vec<_>>(),
-            );
+            let node_refs =
+                std::sync::Mutex::new(plan.nodes.iter().map(|nd| nd.ref_count).collect::<Vec<_>>());
             let indegree = std::sync::Mutex::new(indegree);
 
             while !ready.is_empty() {
@@ -386,10 +415,14 @@ impl FactorRegistry {
                     let node = &plan.nodes[i];
                     let val = {
                         let mut c = cache.lock().unwrap();
-                        if let Some(cached) = c.get(&node.hash) { cached.clone() }
-                        else {
+                        if let Some(cached) = c.get(&node.hash) {
+                            cached.clone()
+                        } else {
                             match eval_expr_vectorized(&node.expr, data, &mut c) {
-                                Ok(v) => { c.insert(node.hash, v.clone()); v }
+                                Ok(v) => {
+                                    c.insert(node.hash, v.clone());
+                                    v
+                                }
                                 Err(_) => return,
                             }
                         }
@@ -397,10 +430,17 @@ impl FactorRegistry {
                     if root_set.contains(&i) {
                         for name in names {
                             if plan.factor_roots.get(*name) == Some(&i) {
-                                results_mtx.lock().unwrap().insert(name.to_string(), FactorResult {
-                                    name: name.to_string(), values: val.to_vec(),
-                                    n_rows: val.len(), n_cols: 1, compute_time_ms: 0, groups: None,
-                                });
+                                results_mtx.lock().unwrap().insert(
+                                    name.to_string(),
+                                    FactorResult {
+                                        name: name.to_string(),
+                                        values: val.to_vec(),
+                                        n_rows: val.len(),
+                                        n_cols: 1,
+                                        compute_time_ms: 0,
+                                        groups: None,
+                                    },
+                                );
                             }
                         }
                     }
@@ -410,21 +450,33 @@ impl FactorRegistry {
                         let mut nrefs = node_refs.lock().unwrap();
                         for dh in deps_of(node) {
                             if let Some(dep_idx) = plan.nodes.iter().position(|nd| nd.hash == dh) {
-                                if nrefs[dep_idx] > 0 { nrefs[dep_idx] -= 1; if nrefs[dep_idx] == 0 { c.remove(&dh); } }
+                                if nrefs[dep_idx] > 0 {
+                                    nrefs[dep_idx] -= 1;
+                                    if nrefs[dep_idx] == 0 {
+                                        c.remove(&dh);
+                                    }
+                                }
                             }
                         }
                     }
                     {
                         let mut ind = indegree.lock().unwrap();
                         let mut nxt = next.lock().unwrap();
-                        for &child in &children[i] { ind[child] -= 1; if ind[child] == 0 { nxt.push(child); } }
+                        for &child in &children[i] {
+                            ind[child] -= 1;
+                            if ind[child] == 0 {
+                                nxt.push(child);
+                            }
+                        }
                     }
                 });
                 ready = next.into_inner().unwrap();
             }
             let mut results = results_mtx.into_inner().unwrap();
             let elapsed = start.elapsed().as_millis() as u64;
-            for r in results.values_mut() { r.compute_time_ms = elapsed; }
+            for r in results.values_mut() {
+                r.compute_time_ms = elapsed;
+            }
             Ok(results)
         } else {
             // ── Sequential path (no Mutex overhead) ──
@@ -436,8 +488,9 @@ impl FactorRegistry {
                 let mut next = Vec::new();
                 for &i in &ready {
                     let node = &plan.nodes[i];
-                    let val = if let Some(cached) = cache.get(&node.hash) { cached.clone() }
-                    else {
+                    let val = if let Some(cached) = cache.get(&node.hash) {
+                        cached.clone()
+                    } else {
                         let v = eval_expr_vectorized(&node.expr, data, &mut cache)?;
                         cache.insert(node.hash, v.clone());
                         v
@@ -446,36 +499,67 @@ impl FactorRegistry {
                         for name in names {
                             if plan.factor_roots.get(*name) == Some(&i) {
                                 if compact {
-                                    let (arr, groups) = crate::expr::registry::functions::eval_expr_compact(&node.expr, data, &mut cache)?;
-                                    results.insert(name.to_string(), FactorResult {
-                                        name: name.to_string(), values: arr.to_vec(),
-                                        n_rows: arr.len(), n_cols: 1, compute_time_ms: 0,
-                                        groups: if groups.is_empty() { None } else { Some(groups) },
-                                    });
+                                    let (arr, groups) =
+                                        crate::expr::registry::functions::eval_expr_compact(
+                                            &node.expr, data, &mut cache,
+                                        )?;
+                                    results.insert(
+                                        name.to_string(),
+                                        FactorResult {
+                                            name: name.to_string(),
+                                            values: arr.to_vec(),
+                                            n_rows: arr.len(),
+                                            n_cols: 1,
+                                            compute_time_ms: 0,
+                                            groups: if groups.is_empty() {
+                                                None
+                                            } else {
+                                                Some(groups)
+                                            },
+                                        },
+                                    );
                                 } else {
-                                    results.insert(name.to_string(), FactorResult {
-                                        name: name.to_string(), values: val.to_vec(),
-                                        n_rows: val.len(), n_cols: 1, compute_time_ms: 0, groups: None,
-                                    });
+                                    results.insert(
+                                        name.to_string(),
+                                        FactorResult {
+                                            name: name.to_string(),
+                                            values: val.to_vec(),
+                                            n_rows: val.len(),
+                                            n_cols: 1,
+                                            compute_time_ms: 0,
+                                            groups: None,
+                                        },
+                                    );
                                 }
                             }
                         }
                     }
                     for dh in deps_of(node) {
                         if let Some(dep_idx) = plan.nodes.iter().position(|nd| nd.hash == dh) {
-                            if node_refs[dep_idx] > 0 { node_refs[dep_idx] -= 1; if node_refs[dep_idx] == 0 { cache.remove(&dh); } }
+                            if node_refs[dep_idx] > 0 {
+                                node_refs[dep_idx] -= 1;
+                                if node_refs[dep_idx] == 0 {
+                                    cache.remove(&dh);
+                                }
+                            }
                         }
                     }
-                    for &child in &children[i] { indegree[child] -= 1; if indegree[child] == 0 { next.push(child); } }
+                    for &child in &children[i] {
+                        indegree[child] -= 1;
+                        if indegree[child] == 0 {
+                            next.push(child);
+                        }
+                    }
                 }
                 ready = next;
             }
             let elapsed = start.elapsed().as_millis() as u64;
-            for r in results.values_mut() { r.compute_time_ms = elapsed; }
+            for r in results.values_mut() {
+                r.compute_time_ms = elapsed;
+            }
             Ok(results)
         }
     }
-
 
     /// One-stop compute: factor evaluation + cross-sectional pipeline.
     ///
@@ -495,10 +579,14 @@ impl FactorRegistry {
             for col in extract_columns(&info.parsed_expr) {
                 if let Some(stripped) = col.strip_prefix("5m:") {
                     let c = stripped.to_string();
-                    if !cols_5m.contains(&c) { cols_5m.push(c); }
+                    if !cols_5m.contains(&c) {
+                        cols_5m.push(c);
+                    }
                 } else if let Some(stripped) = col.strip_prefix("1d:") {
                     let c = stripped.to_string();
-                    if !cols_1d.contains(&c) { cols_1d.push(c); }
+                    if !cols_1d.contains(&c) {
+                        cols_1d.push(c);
+                    }
                 }
             }
         }
@@ -507,14 +595,19 @@ impl FactorRegistry {
         if has_5m {
             // ── 5m path (existing) ──
             let mut query_fields = vec!["5m:trading_date".to_string(), "5m:symbol".to_string()];
-            for c in &cols_5m { query_fields.push(format!("5m:{}", c)); }
-            let data = data_layer.query(query_fields)
+            for c in &cols_5m {
+                query_fields.push(format!("5m:{}", c));
+            }
+            let data = data_layer
+                .query(query_fields)
                 .map_err(|e| format!("DataLayer query error: {:?}", e))?;
             data_layer.clear_cache_keep_symbols();
 
             let factor_names: Vec<&str> = self.factors.keys().map(|s| s.as_str()).collect();
-            let results = self.compute(&factor_names, &data, false, true)?;
-            let mktcap_map = data_layer.build_free_float_cap_map()
+            let parallel = std::env::var("ALFARS_SEQUENTIAL").is_err();
+            let results = self.compute(&factor_names, &data, parallel, true)?;
+            let mktcap_map = data_layer
+                .build_free_float_cap_map()
                 .map_err(|e| format!("build_free_float_cap_map: {:?}", e))?;
             let symbol_list = data_layer.get_symbols_5m().to_vec();
 
@@ -522,8 +615,11 @@ impl FactorRegistry {
         } else {
             // ── 1d path ──
             let mut query_fields = vec!["1d:trading_date".to_string(), "1d:symbol".to_string()];
-            for c in &cols_1d { query_fields.push(format!("1d:{}", c)); }
-            let data = data_layer.query(query_fields)
+            for c in &cols_1d {
+                query_fields.push(format!("1d:{}", c));
+            }
+            let data = data_layer
+                .query(query_fields)
                 .map_err(|e| format!("DataLayer query error: {:?}", e))?;
             data_layer.clear_cache_keep_symbols();
 
@@ -532,17 +628,18 @@ impl FactorRegistry {
             let results = self.compute(&factor_names, &data, true, false)?;
 
             // Build per-date groups from 1d trading_date and symbol columns
-            let dates = data.get("1d:trading_date")
+            let dates = data
+                .get("1d:trading_date")
                 .ok_or("1d:trading_date missing")?;
-            let symbols = data.get("1d:symbol")
-                .ok_or("1d:symbol missing")?;
+            let symbols = data.get("1d:symbol").ok_or("1d:symbol missing")?;
             let n = dates.len();
             let mut groups: Vec<(i64, i64)> = Vec::with_capacity(n);
             for i in 0..n {
                 groups.push((dates[i] as i64, symbols[i] as i64));
             }
             let symbol_list = data_layer.get_symbols_5m().to_vec();
-            let mktcap_map = data_layer.build_free_float_cap_map()
+            let mktcap_map = data_layer
+                .build_free_float_cap_map()
                 .map_err(|e| format!("build_free_float_cap_map: {:?}", e))?;
 
             // Wrap results with groups
@@ -609,12 +706,17 @@ impl FactorRegistry {
                     let mut cap = Vec::with_capacity(n);
                     let mut qc = Vec::with_capacity(n);
                     if n < 2 {
-                        for _ in 0..n { cap.push(f64::NAN); qc.push(None); }
+                        for _ in 0..n {
+                            cap.push(f64::NAN);
+                            qc.push(None);
+                        }
                         return (start, cap, qc);
                     }
                     let vals = Array1::from_vec(values[start..end].to_vec());
-                    let syms: Vec<usize> = groups[start..end].iter().map(|g| g.1 as usize).collect();
-                    let mktcaps: Array1<f64> = syms.iter()
+                    let syms: Vec<usize> =
+                        groups[start..end].iter().map(|g| g.1 as usize).collect();
+                    let mktcaps: Array1<f64> = syms
+                        .iter()
                         .map(|&s| mktcap_map.get(&(date_int, s)).copied().unwrap_or(f64::NAN))
                         .collect();
                     let ws = winsor(&vals, n);
@@ -751,27 +853,52 @@ fn hash_expr(expr: &Expr) -> u64 {
 fn hash_expr_impl(expr: &Expr, h: &mut std::collections::hash_map::DefaultHasher) {
     use std::hash::Hash;
     match expr {
-        Expr::Column(name) => { 0u8.hash(h); name.hash(h); }
+        Expr::Column(name) => {
+            0u8.hash(h);
+            name.hash(h);
+        }
         Expr::Literal(lit) => {
             1u8.hash(h);
             match lit {
-                crate::expr::ast::Literal::Boolean(b) => { 0u8.hash(h); b.hash(h); }
-                crate::expr::ast::Literal::Integer(i) => { 1u8.hash(h); i.hash(h); }
-                crate::expr::ast::Literal::Float(f) => { 2u8.hash(h); f.to_bits().hash(h); }
-                crate::expr::ast::Literal::String(s) => { 3u8.hash(h); s.hash(h); }
-                crate::expr::ast::Literal::Null => { 4u8.hash(h); }
+                crate::expr::ast::Literal::Boolean(b) => {
+                    0u8.hash(h);
+                    b.hash(h);
+                }
+                crate::expr::ast::Literal::Integer(i) => {
+                    1u8.hash(h);
+                    i.hash(h);
+                }
+                crate::expr::ast::Literal::Float(f) => {
+                    2u8.hash(h);
+                    f.to_bits().hash(h);
+                }
+                crate::expr::ast::Literal::String(s) => {
+                    3u8.hash(h);
+                    s.hash(h);
+                }
+                crate::expr::ast::Literal::Null => {
+                    4u8.hash(h);
+                }
             }
         }
         Expr::BinaryExpr { left, right, op } => {
-            2u8.hash(h); op.hash(h);
-            hash_expr_impl(left, h); hash_expr_impl(right, h);
+            2u8.hash(h);
+            op.hash(h);
+            hash_expr_impl(left, h);
+            hash_expr_impl(right, h);
         }
         Expr::UnaryExpr { op, expr: e } => {
-            3u8.hash(h); op.hash(h); hash_expr_impl(e, h);
+            3u8.hash(h);
+            op.hash(h);
+            hash_expr_impl(e, h);
         }
         Expr::FunctionCall { name, args, freq } => {
-            4u8.hash(h); name.hash(h); freq.hash(h);
-            for a in args { hash_expr_impl(a, h); }
+            4u8.hash(h);
+            name.hash(h);
+            freq.hash(h);
+            for a in args {
+                hash_expr_impl(a, h);
+            }
         }
         _ => {}
     }
@@ -1079,10 +1206,7 @@ mod tests {
 
     #[test]
     fn test_winsor() {
-        let vals = Array1::from_vec(vec![
-            1.0, 2.0, 3.0, 4.0, 5.0,
-            10.0, 20.0, 30.0, 40.0, 50.0,
-        ]);
+        let vals = Array1::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 10.0, 20.0, 30.0, 40.0, 50.0]);
         let result = timeseries::winsor(&vals, 5);
         assert_eq!(result.to_vec(), vals.to_vec());
     }
@@ -1096,10 +1220,7 @@ mod tests {
 
     #[test]
     fn test_zscore() {
-        let vals = Array1::from_vec(vec![
-            1.0, 2.0, 3.0, 4.0, 5.0,
-            2.0, 4.0, 6.0, 8.0, 10.0,
-        ]);
+        let vals = Array1::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 2.0, 4.0, 6.0, 8.0, 10.0]);
         let result = timeseries::zscore(&vals, 5);
 
         let date0 = &result.as_slice().unwrap()[0..5];
