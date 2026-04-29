@@ -30,7 +30,9 @@ __author__ = "EthanNOV56"
 
 try:
     from ._core import (
+        AlfarsLab,
         ClickHouseSource,
+        FactorPanel,
         FactorSlice,
         DataLayer,
         # Expression system
@@ -92,6 +94,8 @@ except ImportError:
     class _Stub:
         pass
 
+    AlfarsLab = _Stub
+    FactorPanel = _Stub
     Expr = _Stub
     GpEngine = _Stub
     PersistenceManager = _Stub
@@ -112,6 +116,9 @@ except ImportError:
 
 
 __all__ = [
+    # Unified lab entry point
+    "AlfarsLab",
+    "FactorPanel",
     # Data layer (ClickHouse → DataLayer → PriceMatrix pipeline)
     "ClickHouseSource",
     "FactorSlice",

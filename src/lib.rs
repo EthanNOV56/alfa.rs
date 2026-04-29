@@ -741,6 +741,10 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyFactorInfo>()?;
     m.add_class::<PyFactorResult>()?;
 
+    // Unified lab entry point
+    m.add_class::<PyAlfarsLab>()?;
+    m.add_class::<PyFactorPanel>()?;
+
     // Threading control
     m.add_function(wrap_pyfunction!(set_num_threads, m)?)?;
 
@@ -2924,5 +2928,124 @@ impl PyPositionBuilder {
 impl PyFactorCombiner {
     fn __repr__(&self) -> String {
         "FactorCombiner()".to_string()
+    }
+}
+
+// ── AlfarsLab ──────────────────────────────────────────────────────────
+
+use crate::lab::AlfarsLab;
+use crate::expr::registry::config::FactorPanel;
+
+/// Opaque FactorPanel handle returned by AlfarsLab.calc().
+/// Pass to AlfarsLab.run() for backtesting.
+#[pyclass(name = "FactorPanel")]
+struct PyFactorPanel {
+    inner: FactorPanel,
+}
+
+/// Unified factor research entry point.
+///
+/// ```python
+/// lab = AlfarsLab()
+/// lab.with_filter("symbols not like '%BJ'")
+/// lab.with_years(2010, 2025)
+/// lab.register("wcr", "1d:sum(5m:vol * 5m:close) / 1d:sum(5m:vol) / 1d:mean(5m:close)")
+/// panel = lab.calc("output.csv")
+/// result = lab.run(panel)
+/// print(f"Sharpe: {result.sharpe_ratio:.4f}")
+/// ```
+#[pyclass(name = "AlfarsLab")]
+struct PyAlfarsLab {
+    inner: std::sync::Mutex<AlfarsLab>,
+}
+
+#[pymethods]
+impl PyAlfarsLab {
+    #[new]
+    fn new() -> Self {
+        // Users should call from_env() instead to load .env
+        Self {
+            inner: std::sync::Mutex::new(
+                AlfarsLab::new(crate::data::clickhouse::ClickHouseSource::from_env()),
+            ),
+        }
+    }
+
+    #[staticmethod]
+    fn from_env() -> Self {
+        dotenv::dotenv().ok();
+        Self {
+            inner: std::sync::Mutex::new(
+                AlfarsLab::new(crate::data::clickhouse::ClickHouseSource::from_env()),
+            ),
+        }
+    }
+
+    fn with_filter(&self, filter: &str) {
+        self.inner.lock().unwrap().set_filter(filter);
+    }
+
+    fn with_years(&self, start: i32, end: i32) {
+        self.inner.lock().unwrap().set_years(start, end);
+    }
+
+    fn with_backtest_config(
+        &self,
+        quantiles: usize,
+        weight_method: &str,
+        long_top_n: usize,
+        short_top_n: usize,
+        commission_rate: f64,
+    ) -> PyResult<()> {
+        let wm = match weight_method {
+            "equal" => WeightMethod::Equal,
+            "weighted" => WeightMethod::Weighted,
+            _ => return Err(pyo3::exceptions::PyValueError::new_err(
+                "weight_method must be 'equal' or 'weighted'",
+            )),
+        };
+        let config = backtest::BacktestConfig {
+            quantiles,
+            weight_method: wm,
+            long_top_n,
+            short_top_n,
+            fee_config: backtest::FeeConfig {
+                commission_rate,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        self.inner.lock().unwrap().set_backtest_config(config);
+        Ok(())
+    }
+
+    fn register(&self, name: &str, expression: &str) -> PyResult<()> {
+        self.inner
+            .lock().unwrap()
+            .register(name, expression)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+        Ok(())
+    }
+
+    fn calc(&self, csv_path: &str) -> PyResult<PyFactorPanel> {
+        let panel = self
+            .inner
+            .lock().unwrap()
+            .calc(csv_path)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+        Ok(PyFactorPanel { inner: panel })
+    }
+
+    fn run(&self, panel: &PyFactorPanel) -> PyResult<PyBacktestResult> {
+        let result = self
+            .inner
+            .lock().unwrap()
+            .run(&panel.inner)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+        Ok(PyBacktestResult::from(result))
+    }
+
+    fn __repr__(&self) -> String {
+        "AlfarsLab()".to_string()
     }
 }

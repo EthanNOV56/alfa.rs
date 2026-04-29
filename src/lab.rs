@@ -63,6 +63,19 @@ impl AlfarsLab {
         Ok(self)
     }
 
+    pub fn set_filter(&mut self, filter: &str) {
+        self.dl.set_pre_filter(filter);
+    }
+
+    pub fn set_years(&mut self, start: i32, end: i32) {
+        self.start_year = Some(start);
+        self.end_year = Some(end);
+    }
+
+    pub fn set_backtest_config(&mut self, config: BacktestConfig) {
+        self.backtest_config = config;
+    }
+
     fn years(&self) -> Result<(i32, i32), String> {
         match (self.start_year, self.end_year) {
             (Some(s), Some(e)) if s <= e => Ok((s, e)),
