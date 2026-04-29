@@ -14,7 +14,8 @@ use arrow::datatypes::{DataType, Date32Type};
 use arrow::record_batch::RecordBatch;
 use arrow::ipc::reader::StreamReader;
 use ndarray::{Array1, Array2};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, HashSet};
+use ahash::AHashMap;
 
 /// PreFilter - parsed filter conditions from pre_filter string
 #[derive(Debug, Clone)]
@@ -247,14 +248,14 @@ impl PriceMatrix {
         let n_dates = self.dates.len();
         let n_syms = self.symbols.len();
 
-        let mut sym_to_idx: std::collections::HashMap<&str, usize> =
-            std::collections::HashMap::new();
+        let mut sym_to_idx: HashMap<&str, usize> =
+            HashMap::new();
         for (i, s) in self.symbols.iter().enumerate() {
             sym_to_idx.insert(s.as_str(), i);
         }
 
-        let mut date_to_idx: std::collections::HashMap<i64, usize> =
-            std::collections::HashMap::new();
+        let mut date_to_idx: HashMap<i64, usize> =
+            HashMap::new();
         for (i, &d) in self.dates.iter().enumerate() {
             date_to_idx.insert(d, i);
         }
@@ -289,14 +290,14 @@ impl PriceMatrix {
         let n_dates = self.dates.len();
         let n_syms = self.symbols.len();
 
-        let mut sym_to_idx: std::collections::HashMap<&str, usize> =
-            std::collections::HashMap::new();
+        let mut sym_to_idx: HashMap<&str, usize> =
+            HashMap::new();
         for (i, s) in self.symbols.iter().enumerate() {
             sym_to_idx.insert(s.as_str(), i);
         }
 
-        let mut date_to_idx: std::collections::HashMap<i64, usize> =
-            std::collections::HashMap::new();
+        let mut date_to_idx: HashMap<i64, usize> =
+            HashMap::new();
         for (i, &d) in self.dates.iter().enumerate() {
             date_to_idx.insert(d, i);
         }
@@ -537,7 +538,7 @@ impl DataLayer {
 
         // Build symbol encoding (pass 1: scan only, allocate Strings only for unique symbols)
         let t_encode = std::time::Instant::now();
-        let symbol_to_idx: HashMap<String, f64>;
+        let symbol_to_idx: AHashMap<String, f64>;
         if !self.symbols_5m.is_empty() {
             symbol_to_idx = self
                 .symbols_5m
@@ -546,7 +547,7 @@ impl DataLayer {
                 .map(|(i, s)| (s.clone(), i as f64))
                 .collect();
         } else {
-            let mut unique_set: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut unique_set: HashSet<String> = HashSet::new();
             for batch in &batches {
                 let arrays = batch.columns();
                 for &(col_idx, _, ref kind) in &col_specs {
@@ -743,7 +744,7 @@ impl DataLayer {
         let n_syms = sym_list.len();
 
         // Collect unique sorted dates
-        let mut date_set: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
+        let mut date_set: BTreeSet<i64> = BTreeSet::new();
         for i in 0..dates_arr.len() {
             if syms_arr[i].is_nan() { continue; }
             let d = dates_arr[i] as i64;
@@ -763,7 +764,7 @@ impl DataLayer {
         // Track which (date, symbol) have data, matching Python's group-by semantics
         let mut has_data = Array2::<bool>::from_elem((n_dates, n_syms), false);
 
-        let date_to_idx: std::collections::HashMap<i64, usize> = dates
+        let date_to_idx: HashMap<i64, usize> = dates
             .iter().enumerate().map(|(i, &d)| (d, i)).collect();
 
         for i in 0..dates_arr.len() {
