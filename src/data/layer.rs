@@ -32,6 +32,24 @@ pub struct PreFilter {
 const TABLE_1D: &str = "stock_1d";
 const TABLE_5M: &str = "stock_5m";
 
+/// Map canonical column name to actual DB column/expression per table.
+/// Always returns `db_expr AS col` so the Arrow result uses canonical names.
+fn canonical_to_sql(table: &str, col: &str) -> String {
+    let expr = match col {
+        "open" | "high" | "low" | "close" => col.to_string(),
+        "vol" => if table == TABLE_5M { "vol".into() } else { "volume".into() },
+        "amount" => "amount".into(),
+        "vwap" => if table == TABLE_5M {
+            format!("amount * {} / vol", 10)
+        } else {
+            format!("amount * {} / volume", 10)
+        },
+        "cap" => "close * free_float_shares".into(),
+        other => other.to_string(),
+    };
+    if expr == col { expr } else { format!("{} AS {}", expr, col) }
+}
+
 impl Default for PreFilter {
     fn default() -> Self {
         Self {
@@ -463,8 +481,12 @@ impl DataLayer {
         pre: &PreFilter,
         prefix: &str,
     ) -> Result<HashMap<String, Array1<f64>>, DataError> {
-        // Build SQL (matches query_with_filter logic)
-        let columns_str = columns.join(", ");
+        // Build SQL with canonical→DB column mapping
+        let sql_columns: Vec<String> = columns
+            .iter()
+            .map(|c| canonical_to_sql(table_name, c))
+            .collect();
+        let columns_str = sql_columns.join(", ");
         let mut where_clauses = vec!["1=1".to_string()];
 
         if let Some(ref start) = pre.start_date {

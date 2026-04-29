@@ -619,35 +619,84 @@ impl FactorRegistry {
         use crate::expr::registry::timeseries::{cap_neu, qcut, winsor, zscore};
         use rayon::prelude::*;
 
+        // Collect columns by frequency
+        let mut cols_1d: Vec<String> = Vec::new();
         let mut cols_5m: Vec<String> = Vec::new();
         for info in self.factors.values() {
             for col in extract_columns(&info.parsed_expr) {
                 if let Some(stripped) = col.strip_prefix("5m:") {
                     let c = stripped.to_string();
-                    if !cols_5m.contains(&c) {
-                        cols_5m.push(c);
-                    }
+                    if !cols_5m.contains(&c) { cols_5m.push(c); }
+                } else if let Some(stripped) = col.strip_prefix("1d:") {
+                    let c = stripped.to_string();
+                    if !cols_1d.contains(&c) { cols_1d.push(c); }
                 }
             }
         }
 
-        let mut query_fields = vec!["5m:trading_date".to_string(), "5m:symbol".to_string()];
-        for c in &cols_5m {
-            query_fields.push(format!("5m:{}", c));
+        let has_5m = !cols_5m.is_empty();
+        if has_5m {
+            // ── 5m path (existing) ──
+            let mut query_fields = vec!["5m:trading_date".to_string(), "5m:symbol".to_string()];
+            for c in &cols_5m { query_fields.push(format!("5m:{}", c)); }
+            let data = data_layer.query(query_fields)
+                .map_err(|e| format!("DataLayer query error: {:?}", e))?;
+            data_layer.clear_cache_keep_symbols();
+
+            let factor_names: Vec<&str> = self.factors.keys().map(|s| s.as_str()).collect();
+            let results = self.compute_batch_for_freq(&factor_names, &data, false, true)?;
+            let mktcap_map = data_layer.build_free_float_cap_map()
+                .map_err(|e| format!("build_free_float_cap_map: {:?}", e))?;
+            let symbol_list = data_layer.get_symbols_5m().to_vec();
+
+            self.build_slices(&results, &symbol_list, &mktcap_map)
+        } else {
+            // ── 1d path ──
+            let mut query_fields = vec!["1d:trading_date".to_string(), "1d:symbol".to_string()];
+            for c in &cols_1d { query_fields.push(format!("1d:{}", c)); }
+            let data = data_layer.query(query_fields)
+                .map_err(|e| format!("DataLayer query error: {:?}", e))?;
+            data_layer.clear_cache_keep_symbols();
+
+            let factor_names: Vec<&str> = self.factors.keys().map(|s| s.as_str()).collect();
+            // compact=false: each row is already a daily observation (no group-by needed)
+            let results = self.compute_batch_for_freq(&factor_names, &data, false, false)?;
+
+            // Build per-date groups from 1d trading_date and symbol columns
+            let dates = data.get("1d:trading_date")
+                .ok_or("1d:trading_date missing")?;
+            let symbols = data.get("1d:symbol")
+                .ok_or("1d:symbol missing")?;
+            let n = dates.len();
+            let mut groups: Vec<(i64, i64)> = Vec::with_capacity(n);
+            for i in 0..n {
+                groups.push((dates[i] as i64, symbols[i] as i64));
+            }
+            let symbol_list = data_layer.get_symbols_5m().to_vec();
+            let mktcap_map = data_layer.build_free_float_cap_map()
+                .map_err(|e| format!("build_free_float_cap_map: {:?}", e))?;
+
+            // Wrap results with groups
+            let mut grouped_results: HashMap<String, FactorResult> = HashMap::new();
+            for (name, fr) in results {
+                let values = crate::expr::registry::FactorResult {
+                    groups: Some(groups.clone()),
+                    ..fr
+                };
+                grouped_results.insert(name, values);
+            }
+            self.build_slices(&grouped_results, &symbol_list, &mktcap_map)
         }
-        let data = data_layer
-            .query(query_fields)
-            .map_err(|e| format!("DataLayer query error: {:?}", e))?;
-        data_layer.clear_cache_keep_symbols();
+    }
 
-        let factor_names: Vec<&str> = self.factors.keys().map(|s| s.as_str()).collect();
-        let results = self.compute_batch_for_freq(&factor_names, &data, false, true)?;
-
-        let mktcap_map = data_layer
-            .build_free_float_cap_map()
-            .map_err(|e| format!("build_free_float_cap_map: {:?}", e))?;
-
-        let symbol_list = data_layer.get_symbols_5m().to_vec();
+    fn build_slices(
+        &self,
+        results: &HashMap<String, FactorResult>,
+        symbol_list: &[String],
+        mktcap_map: &HashMap<(i64, usize), f64>,
+    ) -> Result<HashMap<String, FactorSlice>, String> {
+        use crate::expr::registry::timeseries::{cap_neu, qcut, winsor, zscore};
+        use rayon::prelude::*;
         let mut cs_results: HashMap<String, FactorSlice> = HashMap::new();
 
         for (name, _info) in &self.factors {
@@ -660,7 +709,7 @@ impl FactorRegistry {
             let mut slice = FactorSlice {
                 factor_name: name.clone(),
                 groups: groups.clone(),
-                symbols: symbol_list.clone(),
+                symbols: symbol_list.to_vec(),
                 #[cfg(debug_assertions)]
                 raw: Vec::with_capacity(values.len()),
                 #[cfg(debug_assertions)]

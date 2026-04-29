@@ -297,7 +297,12 @@ fn parse_primary(tokens: &[Token], start: usize) -> Result<(Expr, usize), String
             if start + 1 < tokens.len() && matches!(&tokens[start + 1], Token::LParen) {
                 parse_function(tokens, start)
             } else {
-                Ok((Expr::Column(name.clone()), start + 1))
+                let col = if name.contains(':') {
+                    name.clone()
+                } else {
+                    format!("1d:{}", name)
+                };
+                Ok((Expr::Column(col), start + 1))
             }
         }
         Token::Function(_name) => parse_function(tokens, start),
