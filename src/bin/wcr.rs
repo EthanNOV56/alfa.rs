@@ -10,6 +10,20 @@ const WCR_EXPR: &str = "1d:sum(5m:vol * 5m:close) / 1d:sum(5m:vol) / 1d:mean(5m:
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv::dotenv().ok();
 
+    // Configure rayon thread pool size
+    let num_threads: usize = std::env::var("RAYON_NUM_THREADS")
+        .unwrap_or_else(|_| "0".into())
+        .parse()
+        .unwrap_or(0);
+    if num_threads > 0 {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(num_threads)
+            .build_global()
+            .map_err(|e| format!("rayon init: {}", e))?;
+    }
+    let threads = rayon::current_num_threads();
+    eprintln!("rayon threads: {}", threads);
+
     let start_year: i32 = std::env::var("START_YEAR")
         .unwrap_or_else(|_| "2010".into())
         .parse()

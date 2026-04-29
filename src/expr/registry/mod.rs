@@ -622,6 +622,7 @@ impl FactorRegistry {
         data_layer: &mut DataLayer,
     ) -> Result<HashMap<String, FactorSlice>, String> {
         use crate::expr::registry::timeseries::{cap_neu, qcut, winsor, zscore};
+        use rayon::prelude::*;
         use std::time::Instant;
 
         let t_start = Instant::now();
@@ -687,6 +688,8 @@ impl FactorRegistry {
                 qcut: Vec::with_capacity(values.len()),
             };
 
+            // Collect per-date ranges, then process in parallel
+            let mut date_ranges: Vec<(i64, usize, usize)> = Vec::new();
             let mut i = 0;
             while i < groups.len() {
                 let date_int = groups[i].0;
@@ -694,44 +697,49 @@ impl FactorRegistry {
                 while i < groups.len() && groups[i].0 == date_int {
                     i += 1;
                 }
-                let end = i;
-                let n = end - start;
-                if n < 2 {
+                date_ranges.push((date_int, start, i));
+            }
+
+            // Process dates in parallel with rayon
+            let date_results: Vec<(usize, Vec<f64>, Vec<Option<i32>>)> = date_ranges
+                .par_iter()
+                .map(|&(date_int, start, end)| {
+                    let n = end - start;
+                    let mut cap = Vec::with_capacity(n);
+                    let mut qc = Vec::with_capacity(n);
+                    if n < 2 {
+                        for _ in 0..n { cap.push(f64::NAN); qc.push(None); }
+                        return (start, cap, qc);
+                    }
+                    let vals = Array1::from_vec(values[start..end].to_vec());
+                    let syms: Vec<usize> = groups[start..end].iter().map(|g| g.1 as usize).collect();
+                    let mktcaps: Array1<f64> = syms.iter()
+                        .map(|&s| mktcap_map.get(&(date_int, s)).copied().unwrap_or(f64::NAN))
+                        .collect();
+                    let ws = winsor(&vals, n);
+                    let zs = zscore(&ws, n);
+                    let cn = cap_neu(&zs, &mktcaps, n);
+                    let qc_vals = qcut(&cn, 10);
+                    cap.extend_from_slice(cn.as_slice().unwrap());
+                    qc.extend(qc_vals);
+                    (start, cap, qc)
+                })
+                .collect();
+
+            // Merge parallel results in order
+            for (_, cap, qc) in date_results {
+                slice.cap_neued.extend(cap);
+                slice.qcut.extend(qc);
+            }
+            // Debug columns (raw/winsored/zscored) are not parallelized
+            #[cfg(debug_assertions)]
+            {
+                for &(_, start, end) in &date_ranges {
                     for k in start..end {
-                        #[cfg(debug_assertions)]
-                        {
-                            slice.raw.push(values[k]);
-                            slice.winsored.push(f64::NAN);
-                            slice.zscored.push(f64::NAN);
-                        }
-                        slice.cap_neued.push(f64::NAN);
-                        slice.qcut.push(None);
+                        slice.raw.push(values[k]);
+                        slice.winsored.push(f64::NAN);
+                        slice.zscored.push(f64::NAN);
                     }
-                    continue;
-                }
-
-                let vals = Array1::from_vec(values[start..end].to_vec());
-                let syms: Vec<usize> = groups[start..end].iter().map(|g| g.1 as usize).collect();
-
-                let mktcaps: Array1<f64> = syms
-                    .iter()
-                    .map(|&s| mktcap_map.get(&(date_int, s)).copied().unwrap_or(f64::NAN))
-                    .collect();
-
-                let winsored = winsor(&vals, n);
-                let zscored = zscore(&winsored, n);
-                let capped = cap_neu(&zscored, &mktcaps, n);
-                let qcut_vals = qcut(&capped, 10);
-
-                for j in 0..n {
-                    #[cfg(debug_assertions)]
-                    {
-                        slice.raw.push(vals[j]);
-                        slice.winsored.push(winsored[j]);
-                        slice.zscored.push(zscored[j]);
-                    }
-                    slice.cap_neued.push(capped[j]);
-                    slice.qcut.push(qcut_vals[j]);
                 }
             }
 

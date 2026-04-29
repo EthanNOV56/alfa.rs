@@ -14,6 +14,7 @@ use arrow::datatypes::{DataType, Date32Type};
 use arrow::record_batch::RecordBatch;
 use arrow::ipc::reader::StreamReader;
 use ndarray::{Array1, Array2};
+use rayon::prelude::*;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use ahash::AHashMap;
 
@@ -579,60 +580,54 @@ impl DataLayer {
             self.symbols_5m = unique;
         }
 
-        // Process all columns with date cache (avoids 21M calendar conversions)
+        // Process columns in parallel with rayon (one thread per column)
         let t_parse = std::time::Instant::now();
-        let mut col_vecs: HashMap<String, Vec<f64>> = HashMap::new();
-        for (_, name, _) in &col_specs {
-            col_vecs.insert(name.clone(), Vec::new());
-        }
-        let mut date_cache: HashMap<i32, f64> = HashMap::with_capacity(256);
+        use std::sync::Arc;
+        let batches_arc = Arc::new(batches);
+        let symbol_to_idx_arc = Arc::new(symbol_to_idx);
 
-        for batch in &batches {
-            let arrays = batch.columns();
-            let n_rows = batch.num_rows();
-
-            for &(col_idx, ref name, ref kind) in &col_specs {
-                let array = &arrays[col_idx];
-                let vec = col_vecs.get_mut(name).unwrap();
-
-                match kind {
-                    ColKind::Float => {
-                        numeric_to_f64(array, name, vec)?;
-                    }
-                    ColKind::Date => {
-                        let arr = array
-                            .as_any()
-                            .downcast_ref::<PrimitiveArray<Date32Type>>()
-                            .ok_or_else(|| DataError::Query(format!("Column '{}' expected Date32", name)))?;
-                        for i in 0..n_rows {
-                            let epoch = arr.value(i);
-                            let ymd = *date_cache.entry(epoch).or_insert_with(|| date32_to_ymd_f64(epoch));
-                            vec.push(ymd);
+        let col_results: Vec<(String, Vec<f64>)> = col_specs
+            .par_iter()
+            .map(|(col_idx, name, kind)| {
+                let mut vec: Vec<f64> = Vec::new();
+                let mut date_cache: HashMap<i32, f64> = HashMap::with_capacity(256);
+                for batch in batches_arc.iter() {
+                    let arrays = batch.columns();
+                    let array = &arrays[*col_idx];
+                    let n_rows = batch.num_rows();
+                    match kind {
+                        ColKind::Float => {
+                            numeric_to_f64(array, name, &mut vec).ok();
                         }
-                    }
-                    ColKind::Symbol => {
-                        let arr = array
-                            .as_any()
-                            .downcast_ref::<StringArray>()
-                            .ok_or_else(|| DataError::Query(format!("Column '{}' expected StringArray", name)))?;
-                        for i in 0..n_rows {
-                            vec.push(symbol_to_idx.get(arr.value(i)).copied().unwrap_or(f64::NAN));
+                        ColKind::Date => {
+                            if let Some(arr) = array.as_any().downcast_ref::<PrimitiveArray<Date32Type>>() {
+                                for i in 0..n_rows {
+                                    let epoch = arr.value(i);
+                                    let ymd = *date_cache.entry(epoch).or_insert_with(|| date32_to_ymd_f64(epoch));
+                                    vec.push(ymd);
+                                }
+                            }
+                        }
+                        ColKind::Symbol => {
+                            if let Some(arr) = array.as_any().downcast_ref::<StringArray>() {
+                                for i in 0..n_rows {
+                                    vec.push(symbol_to_idx_arc.get(arr.value(i)).copied().unwrap_or(f64::NAN));
+                                }
+                            }
                         }
                     }
                 }
-            }
-        }
+                (name.clone(), vec)
+            })
+            .collect();
         let t_parse_ms = t_parse.elapsed().as_millis();
-        // Drop Arrow batches early to free ~680MB before building final Array1
-        drop(batches);
+        drop(batches_arc);
 
-        // Build final result (Vec → Array1 without clone via from_vec)
+        // Build final result from parallel column results
         let mut result = HashMap::new();
-        for (_, name, kind) in &col_specs {
+        for (name, vec) in col_results {
             let key = format!("{}:{}", prefix, name);
-            if let Some(vec) = col_vecs.remove(name) {
-                result.insert(key, Array1::from_vec(vec));
-            }
+            result.insert(key, Array1::from_vec(vec));
         }
         let n_rows = result.values().next().map(|v| v.len()).unwrap_or(0);
         eprintln!("    arrow parse: {}ms  encode: {}ms  rows={}", t_parse_ms, t_encode.elapsed().as_millis(), n_rows);
