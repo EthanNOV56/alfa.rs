@@ -442,15 +442,10 @@ impl FactorRegistry {
     }
 
     /// Build cache from data columns for expression evaluation
-    fn build_cache(data: &HashMap<String, Array1<f64>>) -> HashMap<u64, Array1<f64>> {
-        let mut cache = HashMap::with_capacity(data.len());
-        for name in data.keys() {
-            let mut hasher = DefaultHasher::new();
-            0u8.hash(&mut hasher);
-            name.hash(&mut hasher);
-            cache.insert(hasher.finish(), data[name].clone());
-        }
-        cache
+    fn build_cache(_data: &HashMap<String, Array1<f64>>) -> HashMap<u64, Array1<f64>> {
+        // Column lookups go through `data` directly (Expr::Column handler),
+        // not through cache. Cache is only for intermediate expression results.
+        HashMap::new()
     }
 
     /// Compute a single factor expression

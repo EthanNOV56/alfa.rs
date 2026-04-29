@@ -872,11 +872,114 @@ pub fn eval_function_vectorized(
 /// as soon as possible to free memory.
 ///
 /// When expand=false, populates `group_keys` with sorted (date_int, symbol_int) pairs.
-/// Sequential group-by scan for compact mode.
+/// Parallel group-by scan for compact mode.
 ///
-/// Data is pre-sorted by `ORDER BY symbol, trading_date`, so groups are
-/// contiguous. We scan boundaries without any hashing or sorting.
+/// Splits data at symbol boundaries and processes chunks with rayon.
 fn scan_compact(
+    name: &str,
+    dates: &Array1<f64>,
+    symbols: &Array1<f64>,
+    values: &Array1<f64>,
+    group_keys: &mut Option<Vec<(i64, i64)>>,
+) -> Result<Array1<f64>, String> {
+    let n_rows = values.len();
+    if n_rows < 100_000 {
+        return scan_compact_seq(name, dates, symbols, values, group_keys);
+    }
+    let t0 = std::time::Instant::now();
+    // Find symbol boundary indices for parallel chunking
+    let syms = symbols.as_slice().unwrap();
+    let mut sym_boundaries: Vec<usize> = vec![0];
+    for i in 1..n_rows {
+        if (syms[i] as i64) != (syms[i - 1] as i64) {
+            sym_boundaries.push(i);
+        }
+    }
+    sym_boundaries.push(n_rows);
+
+    // Merge into N equal-sized chunks (one per rayon thread)
+    let n_threads = rayon::current_num_threads().max(1);
+    let n_syms = sym_boundaries.len() - 1;
+    let chunk_size = (n_syms / n_threads).max(1);
+    let mut boundaries: Vec<usize> = vec![0];
+    let mut j = 0;
+    for t in 1..n_threads {
+        j = (j + chunk_size).min(n_syms - 1);
+        boundaries.push(sym_boundaries[j]);
+    }
+    boundaries.push(n_rows);
+    boundaries.dedup();
+
+    // Process chunks in parallel
+    let results: Vec<(Vec<f64>, Vec<(i64, i64)>)> = boundaries
+        .par_windows(2)
+        .map(|w| {
+            let start = w[0];
+            let end = w[1];
+            scan_chunk(name, &dates.as_slice().unwrap()[start..end],
+                &syms[start..end], &values.as_slice().unwrap()[start..end])
+        })
+        .collect();
+
+    // Merge results
+    let est_groups = results.iter().map(|(r, _)| r.len()).sum::<usize>();
+    let mut merged_vals: Vec<f64> = Vec::with_capacity(est_groups);
+    let mut merged_keys: Vec<(i64, i64)> = Vec::with_capacity(est_groups);
+    for (vals, keys) in results {
+        merged_vals.extend(vals);
+        merged_keys.extend(keys);
+    }
+
+    // Sort by date then symbol for downstream pipeline
+    let mut indexed: Vec<(usize, (i64, i64))> = merged_keys.iter().enumerate().map(|(i, &k)| (i, k)).collect();
+    indexed.sort_by(|a, b| a.1.0.cmp(&b.1.0).then(a.1.1.cmp(&b.1.1)));
+    let sorted_keys: Vec<(i64, i64)> = indexed.iter().map(|(_, k)| *k).collect();
+    let sorted_vals: Vec<f64> = indexed.iter().map(|(i, _)| merged_vals[*i]).collect();
+
+    let t1 = t0.elapsed().as_millis();
+    eprintln!("    eval({}): n_rows={} n_chunks={} time={}ms", name, n_rows, boundaries.len()-1, t1);
+
+    *group_keys = Some(sorted_keys);
+    Ok(Array1::from_vec(sorted_vals))
+}
+
+/// Process a single symbol chunk (sequential, no sort needed within chunk)
+fn scan_chunk(name: &str, chunk_dates: &[f64], chunk_syms: &[f64], chunk_vals: &[f64]) -> (Vec<f64>, Vec<(i64, i64)>) {
+    let n = chunk_vals.len();
+    let est = (n / 10).max(1);
+    let mut result: Vec<f64> = Vec::with_capacity(est);
+    let mut keys: Vec<(i64, i64)> = Vec::with_capacity(est);
+    let mut i = 0;
+    match name {
+        "sum" | "add" => while i < n {
+            let sd = chunk_dates[i] as i64; let ss = chunk_syms[i] as i64;
+            let mut sum = 0.0; let mut cnt = 0u32;
+            while i < n && (chunk_dates[i] as i64) == sd && (chunk_syms[i] as i64) == ss {
+                let v = chunk_vals[i]; if v.is_finite() { sum += v; cnt += 1; } i += 1;
+            }
+            result.push(if cnt > 0 { sum } else { f64::NAN }); keys.push((sd, ss));
+        },
+        "mean" | "avg" | "average" => while i < n {
+            let sd = chunk_dates[i] as i64; let ss = chunk_syms[i] as i64;
+            let mut sum = 0.0; let mut cnt = 0u32;
+            while i < n && (chunk_dates[i] as i64) == sd && (chunk_syms[i] as i64) == ss {
+                let v = chunk_vals[i]; if v.is_finite() { sum += v; cnt += 1; } i += 1;
+            }
+            result.push(if cnt > 0 { sum / cnt as f64 } else { f64::NAN }); keys.push((sd, ss));
+        },
+        "count" | "cnt" => while i < n {
+            let sd = chunk_dates[i] as i64; let ss = chunk_syms[i] as i64;
+            let mut cnt = 0u32;
+            while i < n && (chunk_dates[i] as i64) == sd && (chunk_syms[i] as i64) == ss { cnt += 1; i += 1; }
+            result.push(cnt as f64); keys.push((sd, ss));
+        },
+        _ => { /* fallback: process sequentially */ }
+    }
+    (result, keys)
+}
+
+/// Sequential group-by scan for compact mode (used for small data or fallback).
+fn scan_compact_seq(
     name: &str,
     dates: &Array1<f64>,
     symbols: &Array1<f64>,
