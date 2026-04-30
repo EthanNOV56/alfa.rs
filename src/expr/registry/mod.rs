@@ -22,11 +22,12 @@ use ndarray::Array1;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 use std::time::Instant;
 
 pub use functions::{
-    collect_frequencies, collect_unique_subexpressions, eval_expr_memoized, eval_expr_vectorized,
-    eval_function_memoized, eval_function_vectorized, eval_ts_function_memoized,
+    collect_frequencies, collect_unique_subexpressions, eval_expr_vectorized,
+    eval_expr_compact, eval_function_vectorized,
     eval_ts_function_vectorized, expr_hash, extract_columns,
 };
 
@@ -101,218 +102,7 @@ impl FactorRegistry {
         Ok(name.to_string())
     }
 
-    pub fn compute_single(
-        &self,
-        name: &str,
-        data: &HashMap<String, Vec<f64>>,
-    ) -> Result<FactorResult, String> {
-        let info = self
-            .factors
-            .get(name)
-            .ok_or_else(|| format!("Factor '{}' not found", name))?;
-
-        let n_rows = data.values().next().map(|v| v.len()).unwrap_or(0);
-        if n_rows == 0 {
-            return Err("Empty data".to_string());
-        }
-
-        let start = Instant::now();
-
-        // Convert Vec data to Array1
-        let arr_data: HashMap<String, Array1<f64>> = data
-            .iter()
-            .map(|(k, v)| (k.clone(), Array1::from_vec(v.clone())))
-            .collect();
-
-        let mut cache: HashMap<u64, Array1<f64>> = HashMap::new();
-        for (col_name, vals) in &arr_data {
-            let mut hasher = DefaultHasher::new();
-            0u8.hash(&mut hasher);
-            col_name.hash(&mut hasher);
-            cache.insert(hasher.finish(), vals.clone());
-        }
-
-        let result =
-            functions::eval_expr_memoized(&info.parsed_expr, &arr_data, n_rows, &mut cache)?;
-        let elapsed = start.elapsed().as_millis() as u64;
-
-        Ok(FactorResult {
-            name: name.to_string(),
-            values: result.to_vec(),
-            n_rows,
-            n_cols: 1,
-            compute_time_ms: elapsed,
-            groups: None,
-        })
-    }
-
-    pub fn compute_batch(
-        &self,
-        names: &[&str],
-        data: &HashMap<String, Vec<f64>>,
-        parallel: bool,
-    ) -> Result<HashMap<String, FactorResult>, String> {
-        if names.is_empty() {
-            return Ok(HashMap::new());
-        }
-
-        let n_rows = data.values().next().map(|v| v.len()).unwrap_or(0);
-        if n_rows == 0 {
-            return Err("Empty data".to_string());
-        }
-
-        // Convert Vec data to Array1
-        let arr_data: HashMap<String, Array1<f64>> = data
-            .iter()
-            .map(|(k, v)| (k.clone(), Array1::from_vec(v.clone())))
-            .collect();
-
-        let start = Instant::now();
-
-        let mut unique_exprs: Vec<Expr> = Vec::new();
-        let mut expr_hash_set: HashSet<u64> = HashSet::new();
-        let mut factor_exprs_owned: Vec<Expr> = Vec::new();
-        let mut skipped_names: Vec<String> = Vec::new();
-        let mut factor_exprs: Vec<(String, &Expr)> = Vec::new();
-
-        for name in names {
-            let info = match self.factors.get(*name) {
-                Some(info) => info,
-                None => {
-                    continue;
-                }
-            };
-            let expr = info.parsed_expr.clone();
-            collect_unique_subexpressions(&expr, &mut unique_exprs, &mut expr_hash_set);
-            factor_exprs_owned.push(expr);
-        }
-
-        let mut seen_names: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        let mut idx = 0;
-        for name in names {
-            if skipped_names.contains(&name.to_string()) {
-                continue;
-            }
-            if seen_names.contains(name) {
-                continue;
-            }
-            if idx < factor_exprs_owned.len() {
-                seen_names.insert(name);
-                factor_exprs.push((name.to_string(), &factor_exprs_owned[idx]));
-                idx += 1;
-            }
-        }
-
-        let mut cache: HashMap<u64, Array1<f64>> = HashMap::new();
-
-        for (name, vals) in &arr_data {
-            let mut hasher = DefaultHasher::new();
-            0u8.hash(&mut hasher);
-            name.hash(&mut hasher);
-            cache.insert(hasher.finish(), vals.clone());
-        }
-
-        // Step 3: Compute final factors using memoized evaluation
-        // This will automatically cache and reuse intermediate results
-        let mut results: HashMap<String, FactorResult> = HashMap::new();
-
-        if parallel && factor_exprs.len() > 1 {
-            // Parallel computation using rayon
-            use rayon::prelude::*;
-
-            // Collect errors separately using a mutex
-            use std::sync::Mutex;
-            let failed_names: Mutex<Vec<String>> = Mutex::new(Vec::new());
-
-            let results_vec: Vec<(String, FactorResult)> = factor_exprs
-                .par_iter()
-                .filter_map(|(name, expr)| {
-                    let mut thread_cache = cache.clone();
-                    let arr_data_clone = arr_data.clone();
-                    match eval_expr_memoized(expr, &arr_data_clone, n_rows, &mut thread_cache) {
-                        Ok(result) => Some((
-                            name.clone(),
-                            FactorResult {
-                                name: name.clone(),
-                                values: result.to_vec(),
-                                n_rows,
-                                n_cols: 1,
-                                compute_time_ms: 0,
-                                groups: None,
-                            },
-                        )),
-                        Err(e) => {
-                            if failed_names.lock().unwrap().len() < 20 {
-                                failed_names
-                                    .lock()
-                                    .unwrap()
-                                    .push(format!("{}: {}", name, e));
-                            }
-                            None
-                        }
-                    }
-                })
-                .collect();
-
-            let failed = failed_names.lock().unwrap();
-            if !failed.is_empty() {
-                eprintln!(
-                    "Warning: {} factors failed to compute: {:?}",
-                    failed.len(),
-                    failed
-                );
-            }
-            drop(failed);
-
-            for (name, result) in results_vec {
-                results.insert(name, result);
-            }
-        } else {
-            // Sequential computation
-            let n_total = factor_exprs.len();
-            let mut failed_names: Vec<String> = Vec::new();
-            for (name, expr) in factor_exprs.iter() {
-                match eval_expr_memoized(expr, &arr_data, n_rows, &mut cache) {
-                    Ok(result) => {
-                        results.insert(
-                            name.clone(),
-                            FactorResult {
-                                name: name.clone(),
-                                values: result.to_vec(),
-                                n_rows,
-                                n_cols: 1,
-                                compute_time_ms: 0,
-                                groups: None,
-                            },
-                        );
-                    }
-                    Err(e) => {
-                        if failed_names.len() < 20 {
-                            failed_names.push(format!("{}: {}", name, e));
-                        }
-                    }
-                }
-            }
-            if !failed_names.is_empty() {
-                eprintln!(
-                    "Warning: {} factors failed to compute: {:?}",
-                    failed_names.len(),
-                    failed_names
-                );
-            }
-        }
-
-        let elapsed = start.elapsed().as_millis() as u64;
-
-        // Update compute time
-        for result in results.values_mut() {
-            result.compute_time_ms = elapsed;
-        }
-
-        Ok(results)
-    }
-
-    /// Batch compute multiple factors with vectorized (SIMD) evaluation
+    /// Compute factors with vectorized evaluation.
     ///
     /// This method uses ndarray::Array1 for SIMD-optimized operations.
     /// It automatically fetches data based on the frequency prefix in factor names.
@@ -357,31 +147,50 @@ impl FactorRegistry {
         if parallel && names.len() > 1 {
             use parking_lot::Mutex;
             use rayon::prelude::*;
+            use std::sync::atomic::{AtomicUsize, Ordering};
             let results_mtx = Mutex::new(HashMap::<String, FactorResult>::new());
-            eprintln!("compute: parallel {} factors with rayon", names.len());
+            let failed_mtx = parking_lot::Mutex::new(Vec::<String>::new());
+            let done = AtomicUsize::new(0);
+            let total = names.len();
+            eprintln!("  compute: parallel {} factors: {:?}", total, names);
             names.par_iter().for_each(|&name| {
                 let info = match self.factors.get(name) { Some(i) => i, None => return };
                 let mut cache = HashMap::new();
-                let (arr, groups) = if compact {
-                    match crate::expr::registry::functions::eval_expr_compact(
-                        &info.parsed_expr, data, &mut cache) {
-                        Ok(v) => v, Err(_) => return,
-                    }
+                let t0 = std::time::Instant::now();
+                let eval_result = if compact {
+                    crate::expr::registry::functions::eval_expr_compact(
+                        &info.parsed_expr, data, &mut cache)
+                        .map(|v| (v.0, v.1))
                 } else {
-                    match eval_expr_vectorized(&info.parsed_expr, data, &mut cache) {
-                        Ok(v) => (v, vec![]), Err(_) => return,
+                    eval_expr_vectorized(&info.parsed_expr, data, &mut cache)
+                        .map(|v| (v, vec![]))
+                };
+                let (arr, groups) = match eval_result {
+                    Ok(v) => v,
+                    Err(e) => {
+                        let mut failed = failed_mtx.lock();
+                        if failed.len() < 30 {
+                            failed.push(format!("{}: {}", name, e));
+                        }
+                        return;
                     }
                 };
+                let t = t0.elapsed().as_millis();
+                let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                eprintln!("    [{}/{}] {} {}ms", n, total, name, t);
                 results_mtx.lock().insert(name.to_string(), FactorResult {
                     name: name.to_string(), values: arr.to_vec(),
                     n_rows: arr.len(), n_cols: 1, compute_time_ms: 0,
                     groups: if groups.is_empty() { None } else { Some(groups) },
                 });
             });
+            let failed = failed_mtx.into_inner();
+            if !failed.is_empty() {
+                eprintln!("  compute: {} factors failed: {:?}", failed.len(), &failed[..failed.len().min(20)]);
+            }
             let mut results = results_mtx.into_inner();
             let elapsed = start.elapsed().as_millis() as u64;
-            for r in results.values_mut() { r.compute_time_ms = elapsed; }
-            eprintln!("compute: done in {}ms", elapsed);
+            eprintln!("  compute: done in {}ms ({}/{} succeeded)", elapsed, results.len(), total);
             return Ok(results);
         }
 
@@ -454,7 +263,10 @@ impl FactorRegistry {
                                     c.insert(node.hash, v.clone());
                                     v
                                 }
-                                Err(_) => return,
+                                Err(e) => {
+                                    eprintln!("  DAG eval error for node {}: {}", node.hash, e);
+                                    return;
+                                }
                             }
                         }
                     };
@@ -600,9 +412,6 @@ impl FactorRegistry {
         &self,
         data_layer: &mut DataLayer,
     ) -> Result<HashMap<String, FactorSlice>, String> {
-        use crate::expr::registry::timeseries::{cap_neu, qcut, winsor, zscore};
-        use rayon::prelude::*;
-
         // Collect columns by frequency
         let mut cols_1d: Vec<String> = Vec::new();
         let mut cols_5m: Vec<String> = Vec::new();
@@ -623,8 +432,8 @@ impl FactorRegistry {
         }
 
         let has_5m = !cols_5m.is_empty();
-        if has_5m {
-            // ── 5m path (existing) ──
+
+        let (data, compact, shared_groups, perm) = if has_5m {
             let mut query_fields = vec!["5m:trading_date".to_string(), "5m:symbol".to_string()];
             for c in &cols_5m {
                 query_fields.push(format!("5m:{}", c));
@@ -632,19 +441,8 @@ impl FactorRegistry {
             let data = data_layer
                 .query(query_fields)
                 .map_err(|e| format!("DataLayer query error: {:?}", e))?;
-            data_layer.clear_cache_keep_symbols();
-
-            let factor_names: Vec<&str> = self.factors.keys().map(|s| s.as_str()).collect();
-            let parallel = std::env::var("ALFARS_SEQUENTIAL").is_err();
-            let results = self.compute(&factor_names, &data, parallel, true)?;
-            let mktcap_map = data_layer
-                .build_free_float_cap_map()
-                .map_err(|e| format!("build_free_float_cap_map: {:?}", e))?;
-            let symbol_list = data_layer.get_symbols_5m().to_vec();
-
-            self.build_slices(&results, &symbol_list, &mktcap_map)
+            (data, true, None, None)
         } else {
-            // ── 1d path ──
             let mut query_fields = vec!["1d:trading_date".to_string(), "1d:symbol".to_string()];
             for c in &cols_1d {
                 query_fields.push(format!("1d:{}", c));
@@ -652,91 +450,88 @@ impl FactorRegistry {
             let data = data_layer
                 .query(query_fields)
                 .map_err(|e| format!("DataLayer query error: {:?}", e))?;
-            data_layer.clear_cache_keep_symbols();
-
-            let factor_names: Vec<&str> = self.factors.keys().map(|s| s.as_str()).collect();
-            // compact=false: each row is already a daily observation (no group-by needed)
-            let results = self.compute(&factor_names, &data, true, false)?;
-
-            // Build per-date groups and sort by (date, symbol) for CS pipeline.
-            // Data is ORDER BY symbol, trading_date; CS pipeline expects date order.
-            let dates = data
-                .get("1d:trading_date")
-                .ok_or("1d:trading_date missing")?;
-            let symbols = data.get("1d:symbol").ok_or("1d:symbol missing")?;
+            // Build shared sort order, groups, and perm once (all factors share these)
+            let dates = data.get("1d:trading_date").ok_or("1d:trading_date missing")?;
+            let syms = data.get("1d:symbol").ok_or("1d:symbol missing")?;
             let n = dates.len();
             let mut indexed: Vec<(usize, (i64, i64))> = (0..n)
-                .map(|i| (i, (dates[i] as i64, symbols[i] as i64)))
+                .map(|i| (i, (dates[i] as i64, syms[i] as i64)))
                 .collect();
             indexed.sort_by_key(|(_, (d, s))| (*d, *s));
             let perm: Vec<usize> = indexed.iter().map(|(i, _)| *i).collect();
             let groups: Vec<(i64, i64)> = indexed.iter().map(|(_, g)| *g).collect();
-            let symbol_list = data_layer.get_symbols_5m().to_vec();
-            let mktcap_map = data_layer
-                .build_free_float_cap_map()
-                .map_err(|e| format!("build_free_float_cap_map: {:?}", e))?;
+            (data, false, Some(Arc::new(groups)), Some(perm))
+        };
+        data_layer.clear_cache_keep_symbols();
 
-            // Attach shared groups (same for all 1d factors — avoids 82x clone)
-            let mut grouped_results: HashMap<String, FactorResult> = HashMap::new();
-            for (name, fr) in results {
-                let permuted_vals: Vec<f64> = perm.iter().map(|&i| fr.values[i]).collect();
-                grouped_results.insert(name, crate::expr::registry::FactorResult {
-                    values: permuted_vals,
-                    groups: None, // shared groups passed separately below
-                    ..fr
-                });
-            }
-            self.build_slices_shared_groups(&grouped_results, &symbol_list, &mktcap_map, &groups)
+        let mktcap_map = data_layer
+            .build_free_float_cap_map()
+            .map_err(|e| format!("build_free_float_cap_map: {:?}", e))?;
+        let symbol_list = data_layer.get_symbols_5m().to_vec();
+        let symbols_arc = Arc::new(symbol_list);
+
+        let factor_names: Vec<&str> = self.factors.keys().map(|s| s.as_str()).collect();
+        let parallel = std::env::var("ALFARS_SEQUENTIAL").is_err();
+        let mut all_slices: HashMap<String, FactorSlice> = HashMap::new();
+
+        const BATCH_SIZE: usize = 80;
+        let mut batch_idx = 0usize;
+        let n_batches = factor_names.len().div_ceil(BATCH_SIZE);
+        for batch in factor_names.chunks(BATCH_SIZE) {
+            batch_idx += 1;
+            eprintln!("  batch [{}/{}] compute {} factors", batch_idx, n_batches, batch.len());
+            let t0 = std::time::Instant::now();
+            let results = self.compute(batch, &data, parallel, compact)?;
+            eprintln!("  batch [{}/{}] compute done in {}ms, building slices", batch_idx, n_batches, t0.elapsed().as_millis());
+            let names: Vec<&str> = results.keys().map(|s| s.as_str()).collect();
+            let batch_slices = self.build_slices(
+                &results, &names, &symbols_arc, &mktcap_map,
+                shared_groups.as_ref(), perm.as_deref(),
+            )?;
+            eprintln!("  batch [{}/{}] slices done in {}ms total", batch_idx, n_batches, t0.elapsed().as_millis());
+            all_slices.extend(batch_slices);
         }
+        Ok(all_slices)
     }
 
-    /// Build slices for 5m compact path (groups are per-factor in FactorResult).
     fn build_slices(
         &self,
         results: &HashMap<String, FactorResult>,
-        symbol_list: &[String],
+        names: &[&str],
+        symbols: &Arc<Vec<String>>,
         mktcap_map: &HashMap<(i64, usize), f64>,
-    ) -> Result<HashMap<String, FactorSlice>, String> {
-        self.build_slices_impl(results, symbol_list, mktcap_map, None)
-    }
-
-    /// Build slices for 1d path (shared groups for all factors).
-    fn build_slices_shared_groups(
-        &self,
-        results: &HashMap<String, FactorResult>,
-        symbol_list: &[String],
-        mktcap_map: &HashMap<(i64, usize), f64>,
-        shared_groups: &[(i64, i64)],
-    ) -> Result<HashMap<String, FactorSlice>, String> {
-        self.build_slices_impl(results, symbol_list, mktcap_map, Some(shared_groups))
-    }
-
-    fn build_slices_impl(
-        &self,
-        results: &HashMap<String, FactorResult>,
-        symbol_list: &[String],
-        mktcap_map: &HashMap<(i64, usize), f64>,
-        shared_groups: Option<&[(i64, i64)]>,
+        shared_groups: Option<&Arc<Vec<(i64, i64)>>>,
+        perm: Option<&[usize]>,
     ) -> Result<HashMap<String, FactorSlice>, String> {
         use crate::expr::registry::timeseries::{cap_neu, qcut, winsor, zscore};
         use rayon::prelude::*;
         let mut cs_results: HashMap<String, FactorSlice> = HashMap::new();
+        let n_names = names.len();
 
-        for (name, _info) in &self.factors {
+        for (fi, &name) in names.iter().enumerate() {
+            if fi % 20 == 0 && fi > 0 {
+                eprintln!("    build_slices [{}/{}]", fi, n_names);
+            }
             let result = results
                 .get(name)
                 .ok_or_else(|| format!("Factor '{}' missing from results", name))?;
-            let groups: &[(i64, i64)] = if let Some(sg) = shared_groups {
+            let groups_slice: &[(i64, i64)] = if let Some(sg) = shared_groups {
                 sg
             } else {
                 result.groups.as_deref().ok_or("Group keys missing")?
             };
             let values = &result.values;
 
+            let groups_arc: Arc<Vec<(i64, i64)>> = if let Some(sg) = shared_groups {
+                Arc::clone(sg)
+            } else {
+                Arc::new(groups_slice.to_vec())
+            };
+
             let mut slice = FactorSlice {
-                factor_name: name.clone(),
-                groups: groups.to_vec(),
-                symbols: symbol_list.to_vec(),
+                factor_name: name.to_string(),
+                groups: groups_arc,
+                symbols: Arc::clone(symbols),
                 #[cfg(debug_assertions)]
                 raw: Vec::with_capacity(values.len()),
                 #[cfg(debug_assertions)]
@@ -750,10 +545,10 @@ impl FactorRegistry {
             // Collect per-date ranges, then process in parallel
             let mut date_ranges: Vec<(i64, usize, usize)> = Vec::new();
             let mut i = 0;
-            while i < groups.len() {
-                let date_int = groups[i].0;
+            while i < groups_slice.len() {
+                let date_int = groups_slice[i].0;
                 let start = i;
-                while i < groups.len() && groups[i].0 == date_int {
+                while i < groups_slice.len() && groups_slice[i].0 == date_int {
                     i += 1;
                 }
                 date_ranges.push((date_int, start, i));
@@ -773,9 +568,13 @@ impl FactorRegistry {
                         }
                         return (start, cap, qc);
                     }
-                    let vals = Array1::from_vec(values[start..end].to_vec());
+                    let vals = if let Some(p) = perm {
+                        Array1::from_vec((start..end).map(|j| values[p[j]]).collect())
+                    } else {
+                        Array1::from_vec(values[start..end].to_vec())
+                    };
                     let syms: Vec<usize> =
-                        groups[start..end].iter().map(|g| g.1 as usize).collect();
+                        groups_slice[start..end].iter().map(|g| g.1 as usize).collect();
                     let mktcaps: Array1<f64> = syms
                         .iter()
                         .map(|&s| mktcap_map.get(&(date_int, s)).copied().unwrap_or(f64::NAN))
@@ -800,14 +599,15 @@ impl FactorRegistry {
             {
                 for &(_, start, end) in &date_ranges {
                     for k in start..end {
-                        slice.raw.push(values[k]);
+                        let val_idx = if let Some(p) = perm { p[k] } else { k };
+                        slice.raw.push(values[val_idx]);
                         slice.winsored.push(f64::NAN);
                         slice.zscored.push(f64::NAN);
                     }
                 }
             }
 
-            cs_results.insert(name.clone(), slice);
+            cs_results.insert(name.to_string(), slice);
         }
         Ok(cs_results)
     }
@@ -1021,8 +821,8 @@ mod tests {
 
         // Verify the required column is tracked
         let required = registry.required_columns();
-        assert!(required.contains("close"));
-        assert!(required.contains("volume"));
+        assert!(required.contains("1d:close"));
+        assert!(required.contains("1d:volume"));
     }
 
     #[test]
@@ -1056,14 +856,18 @@ mod tests {
 
         registry.register("alpha_001", "close * 2").unwrap();
 
-        let mut data: HashMap<String, Vec<f64>> = HashMap::new();
-        data.insert("close".to_string(), vec![1.0, 2.0, 3.0, 4.0, 5.0]);
+        let mut data: HashMap<String, Array1<f64>> = HashMap::new();
+        data.insert("1d:close".to_string(), Array1::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0]));
 
-        let result = registry.compute("alpha_001", &data);
+        let result = registry.compute(&["alpha_001"], &data, false, false);
         assert!(result.is_ok());
 
-        let result = result.unwrap();
-        assert_eq!(result.values, vec![2.0, 4.0, 6.0, 8.0, 10.0]);
+        let results = result.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results.get("alpha_001").unwrap().values,
+            vec![2.0, 4.0, 6.0, 8.0, 10.0]
+        );
     }
 
     #[test]
@@ -1074,11 +878,11 @@ mod tests {
         registry.register("alpha_001", "close * 2").unwrap();
         registry.register("alpha_002", "close + volume").unwrap();
 
-        let mut data: HashMap<String, Vec<f64>> = HashMap::new();
-        data.insert("close".to_string(), vec![1.0, 2.0, 3.0, 4.0, 5.0]);
-        data.insert("volume".to_string(), vec![10.0, 20.0, 30.0, 40.0, 50.0]);
+        let mut data: HashMap<String, Array1<f64>> = HashMap::new();
+        data.insert("1d:close".to_string(), Array1::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0]));
+        data.insert("1d:volume".to_string(), Array1::from_vec(vec![10.0, 20.0, 30.0, 40.0, 50.0]));
 
-        let result = registry.compute_batch(&["alpha_001", "alpha_002"], &data, false);
+        let result = registry.compute(&["alpha_001", "alpha_002"], &data, false, false);
         assert!(result.is_ok());
 
         let results = result.unwrap();
@@ -1100,15 +904,18 @@ mod tests {
 
         registry.register("alpha_001", "ts_mean(close, 3)").unwrap();
 
-        let mut data: HashMap<String, Vec<f64>> = HashMap::new();
-        data.insert("close".to_string(), vec![1.0, 2.0, 3.0, 4.0, 5.0]);
+        let mut data: HashMap<String, Array1<f64>> = HashMap::new();
+        data.insert("1d:close".to_string(), Array1::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0]));
 
-        let result = registry.compute("alpha_001", &data);
+        let result = registry.compute(&["alpha_001"], &data, false, false);
         assert!(result.is_ok());
 
-        let result = result.unwrap();
+        let results = result.unwrap();
         // ts_mean with window 3: [1, 1.5, 2, 3, 4]
-        assert_eq!(result.values, vec![1.0, 1.5, 2.0, 3.0, 4.0]);
+        assert_eq!(
+            results.get("alpha_001").unwrap().values,
+            vec![1.0, 1.5, 2.0, 3.0, 4.0]
+        );
     }
 
     #[test]
@@ -1120,24 +927,24 @@ mod tests {
             .register("alpha_001", "rank(ts_mean(close, 3))")
             .unwrap();
 
-        let mut data: HashMap<String, Vec<f64>> = HashMap::new();
-        data.insert("close".to_string(), vec![1.0, 5.0, 3.0, 2.0, 4.0]);
+        let mut data: HashMap<String, Array1<f64>> = HashMap::new();
+        data.insert("1d:close".to_string(), Array1::from_vec(vec![1.0, 5.0, 3.0, 2.0, 4.0]));
 
-        let result = registry.compute("alpha_001", &data);
+        let result = registry.compute(&["alpha_001"], &data, false, false);
         assert!(result.is_ok());
 
-        let result = result.unwrap();
+        let results = result.unwrap();
         // ts_mean(close, 3): [1, 3, 3, 10/3, 3]
         // rank of [1, 3, 3, 3.33, 3] = [0, 0.5, 0.5, 1, 0.5]
-        assert!(!result.values.is_empty());
+        assert!(!results.get("alpha_001").unwrap().values.is_empty());
     }
 
     #[test]
     fn test_registry_compute_empty() {
         let registry = FactorRegistry::new();
-        let data: HashMap<String, Vec<f64>> = HashMap::new();
+        let data: HashMap<String, Array1<f64>> = HashMap::new();
 
-        let result = registry.compute("nonexistent", &data);
+        let result = registry.compute(&["nonexistent"], &data, false, false);
         assert!(result.is_err());
     }
 
@@ -1183,12 +990,12 @@ mod tests {
         // Get required columns
         let cols = registry.required_columns();
 
-        // Should have close, open, volume (deduplicated)
-        assert!(cols.contains("close"));
-        assert!(cols.contains("open"));
-        assert!(cols.contains("volume"));
+        // Should have 1d:close, 1d:open, 1d:volume (deduplicated)
+        assert!(cols.contains("1d:close"));
+        assert!(cols.contains("1d:open"));
+        assert!(cols.contains("1d:volume"));
         // high and low not needed by any factor
-        assert!(!cols.contains("high"));
+        assert!(!cols.contains("1d:high"));
         assert!(!cols.contains("low"));
     }
 

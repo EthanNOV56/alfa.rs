@@ -2,6 +2,7 @@
 
 use crate::expr::ast::{Expr, Frequency};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 /// Configuration for resource limits and timeout to prevent system overload
 #[derive(Debug, Clone)]
@@ -248,9 +249,9 @@ impl FactorResult {
 pub struct FactorSlice {
     pub factor_name: String,
     /// (date_int, symbol_idx) keys, sorted by date then symbol
-    pub groups: Vec<(i64, i64)>,
+    pub groups: Arc<Vec<(i64, i64)>>,
     /// Symbol strings at each index position
-    pub symbols: Vec<String>,
+    pub symbols: Arc<Vec<String>>,
     #[cfg(debug_assertions)]
     pub raw: Vec<f64>,
     #[cfg(debug_assertions)]

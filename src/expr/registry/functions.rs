@@ -205,7 +205,7 @@ pub fn eval_function_memoized(
     if name_lower.starts_with("ts_")
         || matches!(
             name_lower.as_str(),
-            "sma" | "lowday" | "highday" | "wma" | "min" | "max" | "sum"
+            "sma" | "lowday" | "highday" | "wma"
         )
     {
         return eval_ts_function_memoized(&name_lower, args, data, n_rows, cache);
@@ -606,7 +606,7 @@ pub fn eval_function_vectorized(
     if name_lower.starts_with("ts_")
         || matches!(
             name_lower.as_str(),
-            "sma" | "lowday" | "highday" | "wma" | "min" | "max" | "sum"
+            "sma" | "lowday" | "highday" | "wma"
         )
     {
         return eval_ts_function_vectorized(&name_lower, args, data, cache);
@@ -939,6 +939,11 @@ fn scan_compact_seq(
     group_keys: &mut Option<Vec<(i64, i64)>>,
 ) -> Result<Array1<f64>, String> {
     let n_rows = values.len();
+    // Pre-convert to i64 once
+    let dates_i64: Vec<i64> = dates.iter().map(|&d| d as i64).collect();
+    let syms_i64: Vec<i64> = symbols.iter().map(|&s| s as i64).collect();
+    let vals_slice = values.as_slice().unwrap();
+
     // Pre-allocate for ~200 dates * 5000 symbols
     let est_groups = (n_rows / 10).min(2_000_000);
     let mut result: Vec<f64> = Vec::with_capacity(est_groups);
@@ -952,8 +957,8 @@ fn scan_compact_seq(
                 let ss = symbols[i] as i64;
                 let mut sum = 0.0f64;
                 let mut count = 0u32;
-                while i < n_rows && (dates[i] as i64) == sd && (symbols[i] as i64) == ss {
-                    let v = values[i];
+                while i < n_rows && dates_i64[i] == sd && syms_i64[i] == ss {
+                    let v = vals_slice[i];
                     if v.is_finite() { sum += v; count += 1; }
                     i += 1;
                 }
@@ -967,8 +972,8 @@ fn scan_compact_seq(
                 let ss = symbols[i] as i64;
                 let mut sum = 0.0f64;
                 let mut count = 0u32;
-                while i < n_rows && (dates[i] as i64) == sd && (symbols[i] as i64) == ss {
-                    let v = values[i];
+                while i < n_rows && dates_i64[i] == sd && syms_i64[i] == ss {
+                    let v = vals_slice[i];
                     if v.is_finite() { sum += v; count += 1; }
                     i += 1;
                 }
@@ -981,7 +986,7 @@ fn scan_compact_seq(
                 let sd = dates[i] as i64;
                 let ss = symbols[i] as i64;
                 let mut count = 0u32;
-                while i < n_rows && (dates[i] as i64) == sd && (symbols[i] as i64) == ss {
+                while i < n_rows && dates_i64[i] == sd && syms_i64[i] == ss {
                     count += 1;
                     i += 1;
                 }
@@ -994,8 +999,8 @@ fn scan_compact_seq(
                 let sd = dates[i] as i64;
                 let ss = symbols[i] as i64;
                 let mut min_val = f64::INFINITY;
-                while i < n_rows && (dates[i] as i64) == sd && (symbols[i] as i64) == ss {
-                    let v = values[i];
+                while i < n_rows && dates_i64[i] == sd && syms_i64[i] == ss {
+                    let v = vals_slice[i];
                     if v.is_finite() && v < min_val { min_val = v; }
                     i += 1;
                 }
@@ -1008,8 +1013,8 @@ fn scan_compact_seq(
                 let sd = dates[i] as i64;
                 let ss = symbols[i] as i64;
                 let mut max_val = f64::NEG_INFINITY;
-                while i < n_rows && (dates[i] as i64) == sd && (symbols[i] as i64) == ss {
-                    let v = values[i];
+                while i < n_rows && dates_i64[i] == sd && syms_i64[i] == ss {
+                    let v = vals_slice[i];
                     if v.is_finite() && v > max_val { max_val = v; }
                     i += 1;
                 }
@@ -1029,8 +1034,8 @@ fn scan_compact_seq(
                 group_starts.push(i);
                 let mut sum = 0.0f64;
                 let mut count = 0u32;
-                while i < n_rows && (dates[i] as i64) == sd && (symbols[i] as i64) == ss {
-                    let v = values[i];
+                while i < n_rows && dates_i64[i] == sd && syms_i64[i] == ss {
+                    let v = vals_slice[i];
                     if v.is_finite() { sum += v; count += 1; }
                     i += 1;
                 }
@@ -1061,10 +1066,9 @@ fn scan_compact_seq(
         _ => return Err(format!("Unknown group function: {}", name)),
     }
 
-    // Data is ORDER BY symbol, trading_date; pipeline expects (date, symbol) order.
-    // Sort groups by date then symbol for downstream cross-section processing.
+    // Sort by date then symbol for downstream cross-section processing.
     let mut indexed: Vec<(usize, (i64, i64))> = keys.iter().enumerate().map(|(i, &k)| (i, k)).collect();
-    indexed.sort_by(|a, b| a.1.0.cmp(&b.1.0).then(a.1.1.cmp(&b.1.1)));
+    indexed.sort_unstable_by_key(|(_, (d, s))| (*d, *s));
     let sorted_keys: Vec<(i64, i64)> = indexed.iter().map(|(_, k)| *k).collect();
     let sorted_result: Vec<f64> = indexed.iter().map(|(i, _)| result[*i]).collect();
 

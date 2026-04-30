@@ -386,10 +386,8 @@ fn parse_function(tokens: &[Token], start: usize) -> Result<(Expr, usize), Strin
         "ts_product" => "ts_product",
         "ts_count" => "ts_count",
         // backward-compat: bare names normalize to canonical
+        // max/min/sum stay as bare names: max/min = element-wise, sum = total
         "mean" | "avg" => "ts_mean",
-        "sum" => "ts_sum",
-        "max" => "ts_max",
-        "min" => "ts_min",
         "std" => "ts_std",
         "argmax" => "ts_argmax",
         "argmin" => "ts_argmin",
@@ -507,13 +505,13 @@ mod tests {
     #[test]
     fn test_parse_identifier() {
         let expr = parse_expression("close").unwrap();
-        assert!(matches!(expr, Expr::Column(name) if name == "close"));
+        assert!(matches!(expr, Expr::Column(name) if name == "1d:close"));
 
         let expr = parse_expression("volume_123").unwrap();
-        assert!(matches!(expr, Expr::Column(name) if name == "volume_123"));
+        assert!(matches!(expr, Expr::Column(name) if name == "1d:volume_123"));
 
         let expr = parse_expression("_private").unwrap();
-        assert!(matches!(expr, Expr::Column(name) if name == "_private"));
+        assert!(matches!(expr, Expr::Column(name) if name == "1d:_private"));
     }
 
     #[test]

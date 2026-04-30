@@ -10,7 +10,7 @@ pub mod gp;
 pub mod lab;
 pub mod persistence;
 
-use ndarray::Array2;
+use ndarray::{Array1, Array2};
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyArrayMethods, PyUntypedArrayMethods};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -2130,16 +2130,20 @@ impl PyFactorRegistry {
         name: &str,
         data: Bound<'_, PyDict>,
     ) -> PyResult<PyFactorResult> {
-        // Convert Python dict to HashMap
-        let mut hashmap = std::collections::HashMap::new();
+        // Convert Python dict to HashMap<String, Array1<f64>>
+        let mut arr_data = std::collections::HashMap::new();
         for (key, value) in data.iter() {
             let key_str: String = key.extract()?;
             let values: Vec<f64> = value.extract()?;
-            hashmap.insert(key_str, values);
+            arr_data.insert(key_str, Array1::from_vec(values));
         }
 
-        self.inner
-            .compute_single(name, &hashmap)
+        let results = self
+            .inner
+            .compute(&[name], &arr_data, false, false)
+            .map_err(|e| PyValueError::new_err(e))?;
+
+        results.into_values().next()
             .map(|r| PyFactorResult {
                 name: r.name,
                 values: r.values,
@@ -2147,7 +2151,7 @@ impl PyFactorRegistry {
                 n_cols: r.n_cols,
                 compute_time_ms: r.compute_time_ms,
             })
-            .map_err(|e| PyValueError::new_err(e))
+            .ok_or_else(|| PyValueError::new_err("No result returned"))
     }
 
     /// Batch compute multiple factors with shared subexpression optimization
@@ -2162,19 +2166,19 @@ impl PyFactorRegistry {
         data: Bound<'_, PyDict>,
         parallel: bool,
     ) -> PyResult<Py<PyDict>> {
-        // Convert Python dict to HashMap
-        let mut hashmap = std::collections::HashMap::new();
+        // Convert Python dict to HashMap<String, Array1<f64>>
+        let mut arr_data = std::collections::HashMap::new();
         for (key, value) in data.iter() {
             let key_str: String = key.extract()?;
             let values: Vec<f64> = value.extract()?;
-            hashmap.insert(key_str, values);
+            arr_data.insert(key_str, Array1::from_vec(values));
         }
 
         let name_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
 
         let results = self
             .inner
-            .compute_batch(&name_refs, &hashmap, parallel)
+            .compute(&name_refs, &arr_data, parallel, false)
             .map_err(|e| PyValueError::new_err(e))?;
 
         // Convert results to Python dict
@@ -2670,12 +2674,12 @@ impl PyFactorSlice {
 
     #[getter]
     fn groups(&self) -> Vec<(i64, i64)> {
-        self.inner.groups.clone()
+        (*self.inner.groups).clone()
     }
 
     #[getter]
     fn symbols(&self) -> Vec<String> {
-        self.inner.symbols.clone()
+        (*self.inner.symbols).clone()
     }
 
     #[getter]
