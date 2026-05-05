@@ -1279,15 +1279,37 @@ impl PyGpEngine {
             terminals.insert(0, Terminal::Ephemeral);
         }
 
-        // Create default functions
+        // GP operator set — unified with expr evaluator's canonical function names
         let functions = vec![
+            // Arithmetic
             Function::add(),
             Function::sub(),
             Function::mul(),
             Function::div(),
+            Function::power(),
+            // Unary
             Function::sqrt(),
             Function::abs(),
             Function::neg(),
+            Function::log(),
+            Function::sign(),
+            Function::exp(),
+            // Cross-sectional
+            Function::rank(),     // → cs_rank
+            Function::cs_scale(), // → cs_scale
+            // Rolling window
+            Function::ts_mean(),
+            Function::ts_std(),
+            Function::ts_max(),
+            Function::ts_min(),
+            Function::ts_sum(),
+            Function::delay(), // → ts_delay
+            Function::ts_delta(),
+            Function::ts_rank(),
+            Function::decay_linear(), // → ts_decay_linear
+            // Multi-series
+            Function::correlation(), // → ts_correlation
+            Function::ts_covariance(),
         ];
 
         let config = GPConfig {

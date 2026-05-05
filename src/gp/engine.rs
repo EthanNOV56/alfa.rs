@@ -304,11 +304,11 @@ impl Function {
     /// Create rank function (cross-sectional rank)
     pub fn rank() -> Self {
         Function {
-            name: "rank".to_string(),
+            name: "cs_rank".to_string(),
             arity: 1,
             builder: |args| {
                 let expr = args.into_iter().next().unwrap();
-                Expr::function("rank", vec![expr])
+                Expr::function("cs_rank", vec![expr])
             },
         }
     }
@@ -372,13 +372,13 @@ impl Function {
     /// Create delay function (time-series shift)
     pub fn delay() -> Self {
         Function {
-            name: "delay".to_string(),
+            name: "ts_delay".to_string(),
             arity: 2, // expr, periods
             builder: |args| {
                 let mut iter = args.into_iter();
                 let expr = iter.next().unwrap();
                 let periods = iter.next().unwrap_or(Expr::lit_float(1.0));
-                Expr::function("delay", vec![expr, periods])
+                Expr::function("ts_delay", vec![expr, periods])
             },
         }
     }
@@ -424,13 +424,13 @@ impl Function {
     /// Create decay_linear function (exponential decay weighted average)
     pub fn decay_linear() -> Self {
         Function {
-            name: "decay_linear".to_string(),
+            name: "ts_decay_linear".to_string(),
             arity: 2, // expr, window
             builder: |args| {
                 let mut iter = args.into_iter();
                 let expr = iter.next().unwrap();
                 let window = iter.next().unwrap_or(Expr::lit_float(20.0));
-                Expr::function("decay_linear", vec![expr, window])
+                Expr::function("ts_decay_linear", vec![expr, window])
             },
         }
     }
@@ -438,14 +438,95 @@ impl Function {
     /// Create correlation function
     pub fn correlation() -> Self {
         Function {
-            name: "correlation".to_string(),
+            name: "ts_correlation".to_string(),
             arity: 3, // expr1, expr2, window
             builder: |args| {
                 let mut iter = args.into_iter();
                 let expr1 = iter.next().unwrap();
                 let expr2 = iter.next().unwrap();
                 let window = iter.next().unwrap_or(Expr::lit_float(20.0));
-                Expr::function("correlation", vec![expr1, expr2, window])
+                Expr::function("ts_correlation", vec![expr1, expr2, window])
+            },
+        }
+    }
+
+    /// Create ts_delta function (period-over-period difference)
+    pub fn ts_delta() -> Self {
+        Function {
+            name: "ts_delta".to_string(),
+            arity: 2,
+            builder: |args| {
+                let mut iter = args.into_iter();
+                let expr = iter.next().unwrap();
+                let window = iter.next().unwrap_or(Expr::lit_float(1.0));
+                Expr::function("ts_delta", vec![expr, window])
+            },
+        }
+    }
+
+    /// Create ts_sum function (rolling sum)
+    pub fn ts_sum() -> Self {
+        Function {
+            name: "ts_sum".to_string(),
+            arity: 2,
+            builder: |args| {
+                let mut iter = args.into_iter();
+                let expr = iter.next().unwrap();
+                let window = iter.next().unwrap_or(Expr::lit_float(20.0));
+                Expr::function("ts_sum", vec![expr, window])
+            },
+        }
+    }
+
+    /// Create cs_scale function (cross-sectional normalization)
+    pub fn cs_scale() -> Self {
+        Function {
+            name: "cs_scale".to_string(),
+            arity: 1,
+            builder: |args| {
+                let expr = args.into_iter().next().unwrap();
+                Expr::function("cs_scale", vec![expr])
+            },
+        }
+    }
+
+    /// Create ts_covariance function
+    pub fn ts_covariance() -> Self {
+        Function {
+            name: "ts_covariance".to_string(),
+            arity: 3,
+            builder: |args| {
+                let mut iter = args.into_iter();
+                let expr1 = iter.next().unwrap();
+                let expr2 = iter.next().unwrap();
+                let window = iter.next().unwrap_or(Expr::lit_float(20.0));
+                Expr::function("ts_covariance", vec![expr1, expr2, window])
+            },
+        }
+    }
+
+    /// Create power function (x^y)
+    pub fn power() -> Self {
+        Function {
+            name: "power".to_string(),
+            arity: 2,
+            builder: |args| {
+                let mut iter = args.into_iter();
+                let base = iter.next().unwrap();
+                let exp = iter.next().unwrap_or(Expr::lit_float(2.0));
+                Expr::function("power", vec![base, exp])
+            },
+        }
+    }
+
+    /// Create exp function (e^x)
+    pub fn exp() -> Self {
+        Function {
+            name: "exp".to_string(),
+            arity: 1,
+            builder: |args| {
+                let expr = args.into_iter().next().unwrap();
+                Expr::function("exp", vec![expr])
             },
         }
     }
