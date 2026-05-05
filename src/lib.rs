@@ -14,7 +14,7 @@ use ndarray::{Array1, Array2};
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyArrayMethods, PyUntypedArrayMethods};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList, PyTuple};
+use pyo3::types::{PyDict, PyList, PyTuple, PyType};
 use std::sync::Arc;
 
 /// Set the number of threads for parallel processing
@@ -1280,36 +1280,30 @@ impl PyGpEngine {
             terminals.insert(0, Terminal::Ephemeral);
         }
 
-        // GP operator set — unified with expr evaluator's canonical function names
         let functions = vec![
-            // Arithmetic
             Function::add(),
             Function::sub(),
             Function::mul(),
             Function::div(),
             Function::power(),
-            // Unary
             Function::sqrt(),
             Function::abs(),
             Function::neg(),
             Function::log(),
             Function::sign(),
             Function::exp(),
-            // Cross-sectional
-            Function::rank(),     // → cs_rank
-            Function::cs_scale(), // → cs_scale
-            // Rolling window
+            Function::rank(),
+            Function::cs_scale(),
             Function::ts_mean(),
             Function::ts_std(),
             Function::ts_max(),
             Function::ts_min(),
             Function::ts_sum(),
-            Function::delay(), // → ts_delay
+            Function::delay(),
             Function::ts_delta(),
             Function::ts_rank(),
-            Function::decay_linear(), // → ts_decay_linear
-            // Multi-series
-            Function::correlation(), // → ts_correlation
+            Function::decay_linear(),
+            Function::correlation(),
             Function::ts_covariance(),
         ];
 
@@ -1336,7 +1330,6 @@ impl PyGpEngine {
         }
     }
 
-    /// Set available columns (variables) for expression generation.
     /// When use_frequencies is enabled, bare names like "close" are expanded to
     /// all available frequency-prefixed variants (e.g. "1d:close", "5m:close", "1m:close").
     /// Names already containing a freq prefix (e.g. "1d:close") are kept as-is.
@@ -1437,6 +1430,30 @@ impl PyGpEngine {
         }
 
         let returns_array = returns.readonly().as_array().to_owned();
+        let (n_days, n_assets) = returns_array.dim();
+
+        // Build PriceMatrix from data dict + returns
+        let close = data_arrays.remove("close").expect("close data required");
+        let open = data_arrays.remove("open").expect("open data required");
+        let high = data_arrays.remove("high").unwrap_or_else(|| close.clone());
+        let low = data_arrays.remove("low").unwrap_or_else(|| close.clone());
+        let vwap = data_arrays.remove("vwap").expect("vwap data required");
+        let tradable = data_arrays
+            .remove("tradable")
+            .expect("tradable data required");
+
+        use crate::data::layer::PriceMatrix;
+        let prices = PriceMatrix {
+            dates: (0..n_days as i64).collect(),
+            symbols: (0..n_assets).map(|i| i.to_string()).collect(),
+            close,
+            open,
+            high,
+            low,
+            vwap,
+            returns: returns_array,
+            tradable,
+        };
 
         let split_config = DataSplitConfig {
             train_ratio,
@@ -1445,7 +1462,7 @@ impl PyGpEngine {
         };
 
         let mut evaluator =
-            RealBacktestFitnessEvaluator::with_split(data_arrays, returns_array, split_config);
+            RealBacktestFitnessEvaluator::with_split(data_arrays, prices, split_config);
 
         let weights = HashMap::from([
             ("ic".to_string(), weight_ic),
@@ -3177,6 +3194,41 @@ impl PyAlfarsLab {
             .run_multi(&mats, &prices.inner)
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
         Ok(PyBacktestResult::from(result))
+    }
+
+    /// Run genetic programming to discover alpha factors.
+    ///
+    /// Uses the lab's configured data source and filter. Returns a list of
+    /// `(expression, fitness, ic, ir, turnover, complexity)` tuples.
+    #[pyo3(signature = (population_size=100, max_generations=50, tournament_size=7, crossover_prob=0.8, mutation_prob=0.2, max_depth=6, use_diverse_init=true, smart_mutation_ratio=0.3, num_factors=3))]
+    fn mine_factors(
+        &self,
+        population_size: usize,
+        max_generations: usize,
+        tournament_size: usize,
+        crossover_prob: f64,
+        mutation_prob: f64,
+        max_depth: usize,
+        use_diverse_init: bool,
+        smart_mutation_ratio: f64,
+        num_factors: usize,
+    ) -> PyResult<Vec<(String, f64, f64, f64, f64, usize)>> {
+        let config = GPConfig {
+            population_size,
+            max_generations,
+            tournament_size,
+            crossover_prob,
+            mutation_prob,
+            max_depth,
+            parent_diversity_penalty: 0.1,
+            use_diverse_init,
+            smart_mutation_ratio,
+            use_frequencies: false,
+        };
+        let mut inner = self.inner.lock().unwrap();
+        inner
+            .mine_factors(config, num_factors)
+            .map_err(|e| PyRuntimeError::new_err(e))
     }
 
     fn __repr__(&self) -> String {

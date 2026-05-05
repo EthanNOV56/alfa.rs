@@ -9,6 +9,7 @@
 
 use crate::WeightMethod;
 use crate::backtest::{BacktestConfig, BacktestEngine, BacktestResult, FeeConfig, PositionConfig};
+use crate::data::layer::PriceMatrix;
 use crate::expr::registry::functions::eval_expr_vectorized;
 use crate::expr::{BinaryOp, Expr, Literal, UnaryOp};
 use crate::gp::types::{
@@ -43,7 +44,7 @@ pub trait FitnessEvaluator: Send + Sync {
 /// with support for train/test/validation split
 pub struct RealBacktestFitnessEvaluator {
     data: HashMap<String, Array2<f64>>,
-    returns: Array2<f64>,
+    prices: PriceMatrix,
     weights: HashMap<String, f64>, // Feature weights for multi-objective optimization
     min_valid_days: usize,         // Minimum days required for valid backtest
     // Data split configuration
@@ -59,11 +60,11 @@ pub struct RealBacktestFitnessEvaluator {
 }
 
 impl RealBacktestFitnessEvaluator {
-    /// Create a new real backtest fitness evaluator (backward compatible)
-    pub fn new(data: HashMap<String, Array2<f64>>, returns: Array2<f64>) -> Self {
+    /// Create a new evaluator with a PriceMatrix for backtesting.
+    pub fn new(data: HashMap<String, Array2<f64>>, prices: PriceMatrix) -> Self {
         Self {
             data,
-            returns,
+            prices,
             weights: HashMap::new(),
             min_valid_days: 50,
             data_split: None,
@@ -74,18 +75,18 @@ impl RealBacktestFitnessEvaluator {
         }
     }
 
-    /// Create a new evaluator with train/test/validation split
+    /// Create a new evaluator with train/test/validation split.
     pub fn with_split(
         data: HashMap<String, Array2<f64>>,
-        returns: Array2<f64>,
+        prices: PriceMatrix,
         split_config: DataSplitConfig,
     ) -> Self {
-        let n_days = returns.shape()[0];
+        let n_days = prices.returns.shape()[0];
         let data_split = DataSplit::from_config(n_days, &split_config);
 
         Self {
             data,
-            returns,
+            prices,
             weights: HashMap::new(),
             min_valid_days: 50,
             data_split: Some(data_split),
@@ -142,7 +143,7 @@ impl RealBacktestFitnessEvaluator {
 
     /// Evaluate expression and run backtest with multiple objectives
     fn evaluate_with_backtest(&self, expr: &Expr) -> Option<MultiObjectiveFitness> {
-        let n_days = self.returns.shape()[0];
+        let n_days = self.prices.returns.shape()[0];
 
         if n_days < self.min_valid_days {
             return None; // Not enough data for valid backtest
@@ -196,8 +197,8 @@ impl RealBacktestFitnessEvaluator {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
 
-        let n_days = self.returns.shape()[0];
-        let n_assets = self.returns.shape()[1];
+        let n_days = self.prices.returns.shape()[0];
+        let n_assets = self.prices.returns.shape()[1];
 
         // Parallel evaluation across assets
         let results: Vec<Vec<f64>> = (0..n_assets)
@@ -250,15 +251,12 @@ impl RealBacktestFitnessEvaluator {
 
     /// Run backtest on factor matrix (uses training data if split is configured)
     fn run_backtest(&self, factor: &Array2<f64>) -> Option<BacktestResult> {
-        // If split is configured, use training data only
         if let Some(ref split) = self.data_split {
             let train_factor = self.extract_split_data(factor, &split.train_indices);
-            let train_returns = self.extract_split_data(&self.returns, &split.train_indices);
-            return self.run_backtest_internal(&train_factor, &train_returns);
+            let train_prices = self.split_price_matrix(&split.train_indices);
+            return self.run_backtest_internal(&train_factor, &train_prices);
         }
-
-        // No split - use all data (backward compatible)
-        self.run_backtest_internal(factor, &self.returns)
+        self.run_backtest_internal(factor, &self.prices)
     }
 
     /// Run backtest on a specific data split
@@ -268,17 +266,31 @@ impl RealBacktestFitnessEvaluator {
         indices: &[usize],
     ) -> Option<BacktestResult> {
         let split_factor = self.extract_split_data(factor, indices);
-        let split_returns = self.extract_split_data(&self.returns, indices);
-        self.run_backtest_internal(&split_factor, &split_returns)
+        let split_prices = self.split_price_matrix(indices);
+        self.run_backtest_internal(&split_factor, &split_prices)
     }
 
-    /// Internal backtest implementation using enhanced BacktestEngine
+    /// Create a PriceMatrix subset for the given day indices.
+    fn split_price_matrix(&self, indices: &[usize]) -> PriceMatrix {
+        PriceMatrix {
+            dates: indices.iter().map(|&i| self.prices.dates[i]).collect(),
+            symbols: self.prices.symbols.clone(),
+            close: self.extract_split_data(&self.prices.close, indices),
+            open: self.extract_split_data(&self.prices.open, indices),
+            high: self.extract_split_data(&self.prices.high, indices),
+            low: self.extract_split_data(&self.prices.low, indices),
+            vwap: self.extract_split_data(&self.prices.vwap, indices),
+            returns: self.extract_split_data(&self.prices.returns, indices),
+            tradable: self.extract_split_data(&self.prices.tradable, indices),
+        }
+    }
+
+    /// Internal backtest using BacktestEngine::run_with_prices.
     fn run_backtest_internal(
         &self,
         factor: &Array2<f64>,
-        returns: &Array2<f64>,
+        prices: &PriceMatrix,
     ) -> Option<BacktestResult> {
-        // Use the enhanced BacktestEngine with fee and position config
         let config = BacktestConfig {
             quantiles: 10,
             weight_method: WeightMethod::Equal,
@@ -291,25 +303,8 @@ impl RealBacktestFitnessEvaluator {
 
         let engine = BacktestEngine::with_config(config);
 
-        // Create close, open, vwap, and tradable as placeholder (using returns as proxy)
-        let close = Array2::from_elem(returns.dim(), 1.0);
-        let open = Array2::from_elem(returns.dim(), 1.0);
-        let vwap = Array2::from_elem(returns.dim(), 1.0);
-        let tradable = Array2::from_elem(returns.dim(), 1.0);
-        // adj_factor is now required - use ones as default
-        let adj_factor = Array2::from_elem(returns.dim(), 1.0);
-
-        match engine.run(
-            factor.clone(),
-            returns.clone(),
-            adj_factor,
-            close,
-            open,
-            vwap,
-            tradable,
-        ) {
+        match engine.run_with_prices(factor.clone(), prices) {
             Ok(result) => {
-                // Check for valid results
                 if result.ic_mean.is_nan() || result.ic_ir.is_nan() {
                     None
                 } else {

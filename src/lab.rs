@@ -19,9 +19,15 @@ use std::collections::HashMap;
 
 use crate::backtest::{BacktestConfig, BacktestEngine, BacktestResult};
 use crate::data::clickhouse::ClickHouseSource;
-use crate::data::layer::DataLayer;
+use crate::data::layer::{DataLayer, PriceMatrix};
 use crate::expr::registry::FactorRegistry;
 use crate::expr::registry::config::{FactorPanel, FactorSlice};
+use crate::gp::evolution::run_gp;
+use crate::gp::fitness::RealBacktestFitnessEvaluator;
+use crate::gp::types::{Function, GPConfig, Terminal, to_parseable_string};
+use ndarray::Array2;
+use rand::SeedableRng;
+use rand::rngs::StdRng;
 
 pub struct AlfarsLab {
     source: ClickHouseSource,
@@ -181,6 +187,108 @@ impl AlfarsLab {
             slices: all_slices,
         };
         Ok(panel)
+    }
+
+    /// Run genetic programming to discover alpha factors.
+    ///
+    /// Queries price data for the configured year range, runs GP evolution
+    /// with real backtest-based fitness evaluation, and returns discovered
+    /// expressions with their metrics.
+    pub fn mine_factors(
+        &self,
+        gp_config: GPConfig,
+        num_factors: usize,
+    ) -> Result<Vec<(String, f64, f64, f64, f64, usize)>, String> {
+        let (start_year, end_year) = self.years()?;
+        let base_filter = self.dl.pre_filter().to_string();
+        let start_full = format!("{}-01-01", start_year);
+        let end_full = format!("{}-01-01", end_year + 1);
+
+        let mut dl = DataLayer::new(self.source.clone());
+        dl.set_pre_filter(&format!("{}:{} {}", start_full, end_full, base_filter));
+        let prices = dl
+            .query_price_matrix()
+            .map_err(|e| format!("Price query: {:?}", e))?;
+
+        let mut data = HashMap::new();
+        if prices.close.dim() == prices.returns.dim() {
+            data.insert("close".to_string(), prices.close.clone());
+        }
+        if prices.open.dim() == prices.returns.dim() {
+            data.insert("open".to_string(), prices.open.clone());
+        }
+        if prices.high.dim() == prices.returns.dim() {
+            data.insert("high".to_string(), prices.high.clone());
+        }
+        if prices.low.dim() == prices.returns.dim() {
+            data.insert("low".to_string(), prices.low.clone());
+        }
+        if prices.vwap.dim() == prices.returns.dim() {
+            data.insert("vwap".to_string(), prices.vwap.clone());
+        }
+
+        let evaluator = RealBacktestFitnessEvaluator::new(data, prices);
+
+        let terminals = vec![
+            Terminal::Ephemeral,
+            Terminal::Constant(1.0),
+            Terminal::Constant(2.0),
+            Terminal::Variable("close".to_string()),
+            Terminal::Variable("open".to_string()),
+            Terminal::Variable("high".to_string()),
+            Terminal::Variable("low".to_string()),
+            Terminal::Variable("vwap".to_string()),
+        ];
+
+        let functions = vec![
+            Function::add(),
+            Function::sub(),
+            Function::mul(),
+            Function::div(),
+            Function::power(),
+            Function::sqrt(),
+            Function::abs(),
+            Function::neg(),
+            Function::log(),
+            Function::sign(),
+            Function::exp(),
+            Function::rank(),
+            Function::cs_scale(),
+            Function::ts_mean(),
+            Function::ts_std(),
+            Function::ts_max(),
+            Function::ts_min(),
+            Function::ts_sum(),
+            Function::delay(),
+            Function::ts_delta(),
+            Function::ts_rank(),
+            Function::decay_linear(),
+            Function::correlation(),
+            Function::ts_covariance(),
+        ];
+
+        let mut rng = StdRng::from_entropy();
+        let mut results = Vec::with_capacity(num_factors);
+
+        for _ in 0..num_factors {
+            let (best_expr, best_fitness) = run_gp(
+                &gp_config,
+                &evaluator,
+                terminals.clone(),
+                functions.clone(),
+                &mut rng,
+            );
+
+            let expr_str = to_parseable_string(&best_expr);
+            let ic = evaluator.get_last_ic();
+            let ir = evaluator.get_last_ir();
+            let turnover = evaluator.get_last_turnover();
+            let complexity = evaluator.get_last_complexity();
+
+            results.push((expr_str, best_fitness, ic, ir, turnover, complexity));
+        }
+
+        Ok(results)
     }
 
     /// Run backtest on a pre-computed FactorPanel.
