@@ -11,9 +11,10 @@ pub mod metalearning;
 
 // Re-exports from engine
 pub use engine::{
-    BacktestFitnessEvaluator, BatchFitnessEvaluator, CachedFitnessEvaluator, DataSplit,
-    DataSplitConfig, ExpressionGenerator, Function, GPConfig, MultiObjectiveFitness,
-    RealBacktestFitnessEvaluator, SplitEvaluationResult, SplitMetrics, Terminal, run_gp,
+    AdmissionResult, BacktestFitnessEvaluator, BatchFitnessEvaluator, CachedFitnessEvaluator,
+    DataSplit, DataSplitConfig, ExpressionGenerator, FactorPool, Function, GPConfig,
+    MultiObjectiveFitness, PoolEntry, RealBacktestFitnessEvaluator, SplitEvaluationResult,
+    SplitMetrics, Terminal, check_redundancy, expr_structural_similarity, run_gp,
 };
 
 // Re-exports from history

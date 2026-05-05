@@ -725,6 +725,10 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMetaLearningAnalyzer>()?;
     m.add_class::<PyGpRecommendations>()?;
 
+    // Factor pool and redundancy detection
+    m.add_class::<PyFactorPool>()?;
+    m.add_function(wrap_pyfunction!(expr_similarity, m)?)?;
+
     // Data source + pipeline (ClickHouse → DataLayer → FactorSlice → PriceMatrix)
     m.add_class::<PyClickHouseSource>()?;
     m.add_class::<PyDataLayer>()?;
@@ -1235,8 +1239,8 @@ fn compute_pearson(x: &[f64], y: &[f64]) -> f64 {
 // ============================================================================
 
 use crate::gp::{
-    BacktestFitnessEvaluator, DataSplitConfig, Function, GPConfig, RealBacktestFitnessEvaluator,
-    Terminal, run_gp,
+    BacktestFitnessEvaluator, DataSplitConfig, FactorPool, Function, GPConfig, PoolEntry,
+    RealBacktestFitnessEvaluator, Terminal, check_redundancy, expr_structural_similarity, run_gp,
 };
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -1594,6 +1598,120 @@ impl PyGpEngine {
             best_expr, fitness
         ))
     }
+}
+
+// ============================================================================
+// Factor Pool Python Bindings
+// ============================================================================
+
+/// Python-exposed factor pool for maintaining a diverse alpha zoo.
+#[pyclass(name = "FactorPool")]
+pub struct PyFactorPool {
+    inner: FactorPool,
+}
+
+#[pymethods]
+impl PyFactorPool {
+    #[new]
+    fn new(max_size: usize) -> Self {
+        Self {
+            inner: FactorPool::new(max_size),
+        }
+    }
+
+    /// Number of factors currently in the pool.
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    /// Whether the pool is empty.
+    fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    /// Attempt to admit a factor expression string into the pool.
+    /// Returns (status, similarity) where status is one of:
+    /// "added", "rejected_duplicate", "flagged", "rejected_below_min"
+    fn try_admit(
+        &mut self,
+        expr_str: &str,
+        ic: f64,
+        rank_ic: f64,
+    ) -> PyResult<(String, Option<f64>)> {
+        use crate::expr::registry::parser::parse_expression;
+
+        let expr = parse_expression(expr_str)
+            .map_err(|e| PyValueError::new_err(format!("Parse error: {}", e)))?;
+
+        let pool_exprs: Vec<crate::expr::Expr> = self
+            .inner
+            .entries()
+            .iter()
+            .filter_map(|e| parse_expression(&e.expression).ok())
+            .collect();
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        use crate::gp::engine::AdmissionResult;
+        let result = self
+            .inner
+            .try_admit_parsed(&expr, ic, rank_ic, &pool_exprs, now);
+
+        match result {
+            AdmissionResult::Added => Ok(("added".to_string(), None)),
+            AdmissionResult::RejectedDuplicate(sim) => {
+                Ok(("rejected_duplicate".to_string(), Some(sim)))
+            }
+            AdmissionResult::Flagged(sim) => Ok(("flagged".to_string(), Some(sim))),
+            AdmissionResult::RejectedBelowMinimum => Ok(("rejected_below_min".to_string(), None)),
+        }
+    }
+
+    /// Get entry count.
+    fn entry_count(&self) -> usize {
+        self.inner.len()
+    }
+
+    /// Get a specific entry by index as tuple.
+    fn get_entry(&self, idx: usize) -> PyResult<(String, f64, f64, u64, u64, u32)> {
+        let entries = self.inner.entries();
+        if idx >= entries.len() {
+            return Err(PyValueError::new_err("index out of bounds"));
+        }
+        let e = &entries[idx];
+        Ok((
+            e.expression.clone(),
+            e.ic,
+            e.rank_ic,
+            e.added_at,
+            e.last_check_at,
+            e.survival_rounds,
+        ))
+    }
+
+    /// Bump survival rounds for all entries.
+    fn bump_survival(&mut self) {
+        self.inner.bump_survival();
+    }
+
+    /// Prune pool to max capacity.
+    fn prune(&mut self) {
+        self.inner.prune();
+    }
+}
+
+/// Compute structural similarity between two expression strings.
+#[pyfunction]
+fn expr_similarity(a: &str, b: &str) -> PyResult<f64> {
+    use crate::expr::registry::parser::parse_expression;
+    let expr_a = parse_expression(a)
+        .map_err(|e| PyValueError::new_err(format!("Parse error in a: {}", e)))?;
+    let expr_b = parse_expression(b)
+        .map_err(|e| PyValueError::new_err(format!("Parse error in b: {}", e)))?;
+    Ok(expr_structural_similarity(&expr_a, &expr_b))
 }
 
 // ============================================================================

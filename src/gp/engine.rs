@@ -1152,6 +1152,328 @@ fn apply_smart_mutation<R: Rng + ?Sized>(a: &Expr, b: &Expr, rng: &mut R) -> Exp
     }
 }
 
+/// Maximum Common Isomorphic Subtree size between two expression trees.
+/// Counts the maximum number of structurally-equivalent nodes shared.
+/// Constants of the same type (Float/Integer) are considered structurally equal.
+fn mcis_size(a: &Expr, b: &Expr) -> usize {
+    if same_structure_root(a, b) {
+        match (a, b) {
+            (Expr::Literal(_), Expr::Literal(_)) => 1,
+            (Expr::Column(_), Expr::Column(_)) => 1,
+            (Expr::UnaryExpr { expr: ae, .. }, Expr::UnaryExpr { expr: be, .. }) => {
+                1 + mcis_size(ae, be)
+            }
+            (
+                Expr::BinaryExpr {
+                    left: al,
+                    op: _,
+                    right: ar,
+                },
+                Expr::BinaryExpr {
+                    left: bl,
+                    op: _,
+                    right: br,
+                },
+            ) => 1 + mcis_size(al, bl) + mcis_size(ar, br),
+            (
+                Expr::FunctionCall {
+                    name: an,
+                    args: aa,
+                    freq: _,
+                },
+                Expr::FunctionCall {
+                    name: bn,
+                    args: ba,
+                    freq: _,
+                },
+            ) if an == bn && aa.len() == ba.len() => {
+                1 + aa
+                    .iter()
+                    .zip(ba.iter())
+                    .map(|(a, b)| mcis_size(a, b))
+                    .sum::<usize>()
+            }
+            (
+                Expr::Conditional {
+                    condition: ac,
+                    then_expr: at,
+                    else_expr: ae,
+                },
+                Expr::Conditional {
+                    condition: bc,
+                    then_expr: bt,
+                    else_expr: be,
+                },
+            ) => 1 + mcis_size(ac, bc) + mcis_size(at, bt) + mcis_size(ae, be),
+            (Expr::Aggregate { expr: ae, .. }, Expr::Aggregate { expr: be, .. }) => {
+                1 + mcis_size(ae, be)
+            }
+            (Expr::Cast { expr: ae, .. }, Expr::Cast { expr: be, .. }) => 1 + mcis_size(ae, be),
+            _ => 1,
+        }
+    } else {
+        // Roots differ — find best match among child pairs
+        child_best_match(a, b)
+    }
+}
+
+/// Check if two expression roots have the same structural type.
+fn same_structure_root(a: &Expr, b: &Expr) -> bool {
+    matches!(
+        (a, b),
+        (Expr::Literal(_), Expr::Literal(_))
+            | (Expr::Column(_), Expr::Column(_))
+            | (Expr::UnaryExpr { .. }, Expr::UnaryExpr { .. })
+            | (Expr::BinaryExpr { .. }, Expr::BinaryExpr { .. })
+            | (Expr::FunctionCall { .. }, Expr::FunctionCall { .. })
+            | (Expr::Conditional { .. }, Expr::Conditional { .. })
+            | (Expr::Aggregate { .. }, Expr::Aggregate { .. })
+            | (Expr::Cast { .. }, Expr::Cast { .. })
+    )
+}
+
+/// Best MCIS match among any pair of children from two expressions.
+fn child_best_match(a: &Expr, b: &Expr) -> usize {
+    let children_a = collect_children(a);
+    let children_b = collect_children(b);
+    if children_a.is_empty() || children_b.is_empty() {
+        return 0;
+    }
+    let mut best = 0;
+    for ca in &children_a {
+        for cb in &children_b {
+            let s = mcis_size(ca, cb);
+            if s > best {
+                best = s;
+            }
+        }
+    }
+    best
+}
+
+/// Collect direct children of an expression node.
+fn collect_children(expr: &Expr) -> Vec<Expr> {
+    match expr {
+        Expr::UnaryExpr { expr, .. } => vec![(**expr).clone()],
+        Expr::BinaryExpr { left, right, .. } => vec![(**left).clone(), (**right).clone()],
+        Expr::FunctionCall { args, .. } => args.clone(),
+        Expr::Aggregate { expr, .. } => vec![(**expr).clone()],
+        Expr::Conditional {
+            condition,
+            then_expr,
+            else_expr,
+        } => vec![
+            (**condition).clone(),
+            (**then_expr).clone(),
+            (**else_expr).clone(),
+        ],
+        Expr::Cast { expr, .. } => vec![(**expr).clone()],
+        _ => vec![],
+    }
+}
+
+/// Count total nodes in an expression.
+fn expr_node_count(expr: &Expr) -> usize {
+    match expr {
+        Expr::Literal(_) | Expr::Column(_) => 1,
+        Expr::UnaryExpr { expr, .. } => 1 + expr_node_count(expr),
+        Expr::BinaryExpr { left, right, .. } => 1 + expr_node_count(left) + expr_node_count(right),
+        Expr::FunctionCall { args, .. } => {
+            1 + args.iter().map(|a| expr_node_count(a)).sum::<usize>()
+        }
+        Expr::Aggregate { expr, .. } => 1 + expr_node_count(expr),
+        Expr::Conditional {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            1 + expr_node_count(condition) + expr_node_count(then_expr) + expr_node_count(else_expr)
+        }
+        Expr::Cast { expr, .. } => 1 + expr_node_count(expr),
+    }
+}
+
+/// Structural similarity between two expressions (0.0–1.0).
+/// Ratio of maximum common isomorphic subtree size to the larger tree size.
+pub fn expr_structural_similarity(a: &Expr, b: &Expr) -> f64 {
+    let mcis = mcis_size(a, b);
+    let na = expr_node_count(a);
+    let nb = expr_node_count(b);
+    let max_n = na.max(nb);
+    if max_n == 0 {
+        0.0
+    } else {
+        mcis as f64 / max_n as f64
+    }
+}
+
+/// Check a candidate expression against a pool for structural redundancy.
+/// Returns the maximum similarity found, or None if the pool is empty.
+pub fn check_redundancy(candidate: &Expr, pool: &[Expr]) -> Option<f64> {
+    if pool.is_empty() {
+        return None;
+    }
+    let max_sim = pool
+        .iter()
+        .map(|e| expr_structural_similarity(candidate, e))
+        .fold(0.0_f64, f64::max);
+    Some(max_sim)
+}
+
+/// A single entry in the factor pool.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PoolEntry {
+    /// Human-readable expression string
+    pub expression: String,
+    /// Information Coefficient
+    pub ic: f64,
+    /// Rank IC
+    pub rank_ic: f64,
+    /// Date added (Unix timestamp)
+    pub added_at: u64,
+    /// Last validation check timestamp
+    pub last_check_at: u64,
+    /// Number of times this factor passed decay checks
+    pub survival_rounds: u32,
+}
+
+/// Result of attempting to admit a factor to the pool.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AdmissionResult {
+    /// Factor was added to the pool
+    Added,
+    /// Rejected due to high structural similarity (> 0.95)
+    RejectedDuplicate(f64),
+    /// Accepted but flagged for structural similarity (0.8–0.95)
+    Flagged(f64),
+    /// Rejected because pool is full and factor IC is below the minimum
+    RejectedBelowMinimum,
+}
+
+/// A maintained pool of diverse alpha factors with redundancy filtering and decay detection.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FactorPool {
+    /// Entries sorted by RankIC descending
+    entries: Vec<PoolEntry>,
+    /// Maximum pool capacity
+    max_size: usize,
+    /// Structural similarity threshold for outright rejection (default 0.95)
+    reject_threshold: f64,
+    /// Structural similarity threshold for flagging (default 0.80)
+    flag_threshold: f64,
+    /// Minimum correlations (absolute) for redundancy filtering
+    correlation_threshold: f64,
+}
+
+impl FactorPool {
+    /// Create a new factor pool with given max capacity.
+    pub fn new(max_size: usize) -> Self {
+        Self {
+            entries: Vec::new(),
+            max_size,
+            reject_threshold: 0.95,
+            flag_threshold: 0.80,
+            correlation_threshold: 0.7,
+        }
+    }
+
+    /// Number of entries currently in the pool.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether the pool is empty.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Get a reference to all pool entries.
+    pub fn entries(&self) -> &[PoolEntry] {
+        &self.entries
+    }
+
+    /// Attempt to admit a factor based on IC and structural similarity
+    /// against the pool's stored expressions.
+    pub fn try_admit_parsed(
+        &mut self,
+        expr: &Expr,
+        ic: f64,
+        rank_ic: f64,
+        pool_expressions: &[Expr],
+        now: u64,
+    ) -> AdmissionResult {
+        // 1. Structural redundancy check
+        if let Some(max_sim) = check_redundancy(expr, pool_expressions) {
+            if max_sim >= self.reject_threshold {
+                return AdmissionResult::RejectedDuplicate(max_sim);
+            }
+            if max_sim >= self.flag_threshold {
+                // Accept but flag
+                self.insert_entry(expr, ic, rank_ic, now);
+                return AdmissionResult::Flagged(max_sim);
+            }
+        }
+
+        // 2. Pool capacity check — if full, remove worst if new is better
+        if self.entries.len() >= self.max_size {
+            let min_rank_ic = self
+                .entries
+                .last()
+                .map(|e| e.rank_ic)
+                .unwrap_or(f64::NEG_INFINITY);
+            if rank_ic <= min_rank_ic {
+                return AdmissionResult::RejectedBelowMinimum;
+            }
+            self.entries.pop(); // remove worst
+        }
+
+        self.insert_entry(expr, ic, rank_ic, now);
+        AdmissionResult::Added
+    }
+
+    fn insert_entry(&mut self, expr: &Expr, ic: f64, rank_ic: f64, now: u64) {
+        let entry = PoolEntry {
+            expression: format!("{}", expr),
+            ic,
+            rank_ic,
+            added_at: now,
+            last_check_at: now,
+            survival_rounds: 0,
+        };
+        // Insert in descending RankIC order
+        let pos = self
+            .entries
+            .binary_search_by(|e| e.rank_ic.partial_cmp(&rank_ic).unwrap().reverse())
+            .unwrap_or_else(|i| i);
+        self.entries.insert(pos, entry);
+    }
+
+    /// Prune the pool to max_size, keeping the best by RankIC.
+    pub fn prune(&mut self) {
+        self.entries.truncate(self.max_size);
+    }
+
+    /// Mark surviving factors and remove decayed ones.
+    /// `decayed_indices` contains indices of factors that failed re-validation.
+    pub fn remove_decayed(&mut self, decayed_indices: &[usize]) {
+        // Remove in reverse order to preserve indices
+        let mut sorted: Vec<usize> = decayed_indices.to_vec();
+        sorted.sort_unstable_by(|a, b| b.cmp(a));
+        for idx in sorted {
+            if idx < self.entries.len() {
+                self.entries.remove(idx);
+            }
+        }
+    }
+
+    /// Bump survival rounds for all entries (called after a validation pass).
+    pub fn bump_survival(&mut self) {
+        for entry in &mut self.entries {
+            entry.survival_rounds += 1;
+        }
+    }
+}
+
 /// Run genetic programming
 pub fn run_gp<R: Rng + ?Sized>(
     config: &GPConfig,
