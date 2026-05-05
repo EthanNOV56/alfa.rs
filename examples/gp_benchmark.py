@@ -60,9 +60,7 @@ def run_config(name, config, lab, num_factors=3):
     elapsed = time.perf_counter() - t0
 
     print(f"\n  Time: {elapsed:.3f}s ({elapsed / num_factors:.3f}s/factor)")
-    header = (
-        f"  {'Expr':<45} {'Fit':>6} {'IC':>6} {'IR':>6} {'Cmplx':>5}"
-    )
+    header = f"  {'Expr':<45} {'Fit':>6} {'IC':>6} {'IR':>6} {'Cmplx':>5}"
     print(header)
     print(f"  {'-' * 45} {'-' * 6} {'-' * 6} {'-' * 6} {'-' * 5}")
 
@@ -70,10 +68,7 @@ def run_config(name, config, lab, num_factors=3):
     for r in results:
         expr_str, fitness, ic, ir, turnover, complexity = r
         short = expr_str[:42] + "..." if len(expr_str) > 45 else expr_str
-        print(
-            f"  {short:<45} {fitness:>6.3f} {ic:>6.4f} {ir:>6.4f} "
-            f"{complexity:>5}"
-        )
+        print(f"  {short:<45} {fitness:>6.3f} {ic:>6.4f} {ir:>6.4f} {complexity:>5}")
         fits.append(fitness)
         ics.append(ic)
         irs.append(ir)
@@ -168,13 +163,14 @@ def main():
 
     from datetime import datetime
 
-    this_year = datetime.now().year
+    this_year = 2025
     lab = al.AlfarsLab.from_env()
-    lab.with_filter("symbols not like '%BJ' symbols not like '%688%'")
+    filter = "symbols not like '%BJ'"
+    lab.with_filter(filter)
     lab.with_years(this_year - years, this_year)
     lab.with_backtest_config(10, "equal", 1, 1, 0.0003)
 
-    print(f"  Filter: {this_year - years}–{this_year}, symbols not like '%BJ', not like '%688%'")
+    print(f"  Filter: {this_year - years}–{this_year}, {filter}")
 
     # Warmup
     _ = lab.mine_factors(num_factors=1, **quick_config())
