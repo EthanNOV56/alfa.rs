@@ -11,8 +11,8 @@ use std::hash::{Hash, Hasher};
 pub use crate::expr::registry::timeseries::{
     cap_neu, decay_linear, delay, highday, lowday, quesval, quesval2, rank, scale, sign, sma,
     ts_argmax, ts_argmin, ts_correlation, ts_count, ts_cov, ts_delta, ts_max, ts_mean, ts_min,
-    ts_product, ts_quantile, ts_rank, ts_resi, ts_rsquare, ts_slope, ts_std, ts_sum, winsor,
-    wma, zscore,
+    ts_product, ts_quantile, ts_rank, ts_resi, ts_rsquare, ts_slope, ts_std, ts_sum, winsor, wma,
+    zscore,
 };
 
 /// Extract column names from an expression
@@ -165,7 +165,7 @@ pub fn eval_expr_memoized(
                     BinaryOp::Multiply => left_vals[i] * right_vals[i],
                     BinaryOp::Divide => {
                         if right_vals[i].abs() < 1e-10 {
-                            0.0
+                            f64::NAN // 0/0 → NaN, matches Python/numpy
                         } else {
                             left_vals[i] / right_vals[i]
                         }
@@ -182,9 +182,11 @@ pub fn eval_expr_memoized(
                 _ => vals,
             })
         }
-        Expr::FunctionCall { name, args, freq: _ } => {
-            eval_function_memoized(name, args, data, n_rows, cache)
-        }
+        Expr::FunctionCall {
+            name,
+            args,
+            freq: _,
+        } => eval_function_memoized(name, args, data, n_rows, cache),
         _ => Err("Unsupported expr type".to_string()),
     }?;
 
@@ -203,10 +205,7 @@ pub fn eval_function_memoized(
     let name_lower = name.to_lowercase();
 
     if name_lower.starts_with("ts_")
-        || matches!(
-            name_lower.as_str(),
-            "sma" | "lowday" | "highday" | "wma"
-        )
+        || matches!(name_lower.as_str(), "sma" | "lowday" | "highday" | "wma")
     {
         return eval_ts_function_memoized(&name_lower, args, data, n_rows, cache);
     }
@@ -220,7 +219,9 @@ pub fn eval_function_memoized(
     fn binop(a: &Array1<f64>, b: &Array1<f64>, f: impl Fn(f64, f64) -> f64) -> Array1<f64> {
         let n = a.len();
         let mut r = Array1::zeros(n);
-        for i in 0..n { r[i] = f(a[i], b[i]); }
+        for i in 0..n {
+            r[i] = f(a[i], b[i]);
+        }
         r
     }
 
@@ -265,30 +266,40 @@ pub fn eval_function_memoized(
             let n = arg_values[0].len();
             let mut r = Array1::zeros(n);
             for i in 0..n {
-                r[i] = if arg_values[0][i] > 0.0 { arg_values[1][i] } else { arg_values[2][i] };
+                r[i] = if arg_values[0][i] > 0.0 {
+                    arg_values[1][i]
+                } else {
+                    arg_values[2][i]
+                };
             }
             Ok(r)
         }
-        "gt" | "greater" => Ok(binop(&arg_values[0], &arg_values[1], |x, y| if x > y { 1.0 } else { 0.0 })),
-        "lt" | "less" => Ok(binop(&arg_values[0], &arg_values[1], |x, y| if x < y { 1.0 } else { 0.0 })),
-        "ge" | "greater_equal" | "gte" => Ok(binop(&arg_values[0], &arg_values[1], |x, y| if x >= y { 1.0 } else { 0.0 })),
-        "le" | "less_equal" | "lte" => Ok(binop(&arg_values[0], &arg_values[1], |x, y| if x <= y { 1.0 } else { 0.0 })),
-        "eq" | "equal" => Ok(binop(&arg_values[0], &arg_values[1], |x, y| if (x - y).abs() < 1e-10 { 1.0 } else { 0.0 })),
-        "ne" | "not_equal" => Ok(binop(&arg_values[0], &arg_values[1], |x, y| if (x - y).abs() >= 1e-10 { 1.0 } else { 0.0 })),
+        "gt" | "greater" => Ok(binop(&arg_values[0], &arg_values[1], |x, y| {
+            if x > y { 1.0 } else { 0.0 }
+        })),
+        "lt" | "less" => Ok(binop(&arg_values[0], &arg_values[1], |x, y| {
+            if x < y { 1.0 } else { 0.0 }
+        })),
+        "ge" | "greater_equal" | "gte" => Ok(binop(&arg_values[0], &arg_values[1], |x, y| {
+            if x >= y { 1.0 } else { 0.0 }
+        })),
+        "le" | "less_equal" | "lte" => Ok(binop(&arg_values[0], &arg_values[1], |x, y| {
+            if x <= y { 1.0 } else { 0.0 }
+        })),
+        "eq" | "equal" => Ok(binop(&arg_values[0], &arg_values[1], |x, y| {
+            if (x - y).abs() < 1e-10 { 1.0 } else { 0.0 }
+        })),
+        "ne" | "not_equal" => Ok(binop(&arg_values[0], &arg_values[1], |x, y| {
+            if (x - y).abs() >= 1e-10 { 1.0 } else { 0.0 }
+        })),
         "winsor" => {
             // winsor(alpha, n_symbols) - clip to [mean - 3*std, mean + 3*std] per date
-            let n_symbols = args
-                .get(1)
-                .and_then(|a| get_literal_int(a))
-                .unwrap_or(100); // default 100 symbols
+            let n_symbols = args.get(1).and_then(|a| get_literal_int(a)).unwrap_or(100); // default 100 symbols
             Ok(winsor(&arg_values[0], n_symbols))
         }
         "zscore" => {
             // zscore(alpha, n_symbols) - (x - mean) / std per date
-            let n_symbols = args
-                .get(1)
-                .and_then(|a| get_literal_int(a))
-                .unwrap_or(100); // default 100 symbols
+            let n_symbols = args.get(1).and_then(|a| get_literal_int(a)).unwrap_or(100); // default 100 symbols
             Ok(zscore(&arg_values[0], n_symbols))
         }
         "cap_neu" => {
@@ -296,10 +307,7 @@ pub fn eval_function_memoized(
             if args.len() < 2 {
                 return Err("cap_neu requires 2 arguments: alpha and market_cap".to_string());
             }
-            let n_symbols = args
-                .get(2)
-                .and_then(|a| get_literal_int(a))
-                .unwrap_or(100); // default 100 symbols
+            let n_symbols = args.get(2).and_then(|a| get_literal_int(a)).unwrap_or(100); // default 100 symbols
             Ok(cap_neu(&arg_values[0], &arg_values[1], n_symbols))
         }
         "quesval" => {
@@ -310,7 +318,11 @@ pub fn eval_function_memoized(
             let n = arg_values[1].len();
             let mut r = Array1::zeros(n);
             for i in 0..n {
-                r[i] = if arg_values[1][i] > threshold { arg_values[2][i] } else { arg_values[3][i] };
+                r[i] = if arg_values[1][i] > threshold {
+                    arg_values[2][i]
+                } else {
+                    arg_values[3][i]
+                };
             }
             Ok(r)
         }
@@ -321,7 +333,11 @@ pub fn eval_function_memoized(
             let n = arg_values[0].len();
             let mut r = Array1::zeros(n);
             for i in 0..n {
-                r[i] = if arg_values[0][i] > arg_values[1][i] { arg_values[2][i] } else { arg_values[3][i] };
+                r[i] = if arg_values[0][i] > arg_values[1][i] {
+                    arg_values[2][i]
+                } else {
+                    arg_values[3][i]
+                };
             }
             Ok(r)
         }
@@ -375,11 +391,18 @@ pub fn eval_ts_function_memoized(
         "ts_sma" => {
             let m = args.get(2).and_then(|a| get_literal_int(a)).unwrap_or(2);
             let alpha = m as f64 / window as f64;
-            let alpha = if alpha > 0.0 && alpha <= 1.0 { alpha } else { 0.5 };
+            let alpha = if alpha > 0.0 && alpha <= 1.0 {
+                alpha
+            } else {
+                0.5
+            };
             Ok(sma(&vals, alpha))
         }
         "ts_quantile" => {
-            let q = args.get(2).and_then(|a| get_literal_float(a)).unwrap_or(0.5);
+            let q = args
+                .get(2)
+                .and_then(|a| get_literal_float(a))
+                .unwrap_or(0.5);
             Ok(ts_quantile(&vals, window, q))
         }
         "ts_slope" => Ok(ts_slope(&vals, window)),
@@ -391,7 +414,11 @@ pub fn eval_ts_function_memoized(
         "sma" => {
             let m = args.get(2).and_then(|a| get_literal_int(a)).unwrap_or(2);
             let alpha = m as f64 / window as f64;
-            let alpha = if alpha > 0.0 && alpha <= 1.0 { alpha } else { 0.5 };
+            let alpha = if alpha > 0.0 && alpha <= 1.0 {
+                alpha
+            } else {
+                0.5
+            };
             Ok(sma(&vals, alpha))
         }
         "lowday" => Ok(lowday(&vals, window)),
@@ -481,28 +508,32 @@ fn eval_expr_impl(
             // Special case: both sides are group aggregations with same frequency
             // Compute both first, then apply the binary operation
             let left_is_group = match left.as_ref() {
-                Expr::FunctionCall { name, args, freq: Some(f) } => Some((name.clone(), args.as_slice(), f.clone())),
+                Expr::FunctionCall {
+                    name,
+                    args,
+                    freq: Some(f),
+                } => Some((name.clone(), args.as_slice(), f.clone())),
                 _ => None,
             };
             let right_is_group = match right.as_ref() {
-                Expr::FunctionCall { name, args, freq: Some(f) } => Some((name.clone(), args.as_slice(), f.clone())),
+                Expr::FunctionCall {
+                    name,
+                    args,
+                    freq: Some(f),
+                } => Some((name.clone(), args.as_slice(), f.clone())),
                 _ => None,
             };
 
-            if let (Some((left_name, left_args, left_freq)), Some((right_name, right_args, right_freq))) =
-                (left_is_group.clone(), right_is_group.clone())
+            if let (
+                Some((left_name, left_args, left_freq)),
+                Some((right_name, right_args, right_freq)),
+            ) = (left_is_group.clone(), right_is_group.clone())
             {
                 if left_freq == right_freq {
                     // Both are group aggregations with same frequency.
                     // When expand=false, both produce compact results with matching group keys.
                     let left_result = eval_group_function_vectorized(
-                        &left_name,
-                        left_args,
-                        data,
-                        cache,
-                        left_freq,
-                        expand,
-                        group_keys,
+                        &left_name, left_args, data, cache, left_freq, expand, group_keys,
                     )?;
                     let right_result = eval_group_function_vectorized(
                         &right_name,
@@ -550,11 +581,12 @@ fn eval_expr_impl(
                 BinaryOp::Subtract => &left_vals - &right_vals,
                 BinaryOp::Multiply => &left_vals * &right_vals,
                 BinaryOp::Divide => {
-                    // Handle division by zero - use element-wise safe division
+                    // 0/0 → NaN, matches Python/numpy IEEE 754 behavior.
+                    // NaN values are filtered downstream by winsor()/zscore().
                     let mut result = left_vals.clone();
                     for i in 0..result.len() {
                         if right_vals[i].abs() < 1e-10 {
-                            result[i] = 0.0;
+                            result[i] = f64::NAN;
                         } else {
                             result[i] = left_vals[i] / right_vals[i];
                         }
@@ -573,7 +605,15 @@ fn eval_expr_impl(
         }
         Expr::FunctionCall { name, args, freq } => {
             if let Some(group_freq) = freq {
-                eval_group_function_vectorized(name, args, data, cache, group_freq.clone(), expand, group_keys)?
+                eval_group_function_vectorized(
+                    name,
+                    args,
+                    data,
+                    cache,
+                    group_freq.clone(),
+                    expand,
+                    group_keys,
+                )?
             } else {
                 eval_function_vectorized(name, args, data, cache)?
             }
@@ -604,10 +644,7 @@ pub fn eval_function_vectorized(
 
     // Check for ts_ prefix OR known ts functions without prefix
     if name_lower.starts_with("ts_")
-        || matches!(
-            name_lower.as_str(),
-            "sma" | "lowday" | "highday" | "wma"
-        )
+        || matches!(name_lower.as_str(), "sma" | "lowday" | "highday" | "wma")
     {
         return eval_ts_function_vectorized(&name_lower, args, data, cache);
     }
@@ -746,19 +783,13 @@ pub fn eval_function_vectorized(
         }
         "winsor" => {
             // winsor(alpha, n_symbols) - clip to [mean - 3*std, mean + 3*std] per date
-            let n_symbols = args
-                .get(1)
-                .and_then(|a| get_literal_int(a))
-                .unwrap_or(100); // default 100 symbols
+            let n_symbols = args.get(1).and_then(|a| get_literal_int(a)).unwrap_or(100); // default 100 symbols
             let result = winsor(&arg_values[0], n_symbols);
             Ok(result)
         }
         "zscore" => {
             // zscore(alpha, n_symbols) - (x - mean) / std per date
-            let n_symbols = args
-                .get(1)
-                .and_then(|a| get_literal_int(a))
-                .unwrap_or(100); // default 100 symbols
+            let n_symbols = args.get(1).and_then(|a| get_literal_int(a)).unwrap_or(100); // default 100 symbols
             let result = zscore(&arg_values[0], n_symbols);
             Ok(result)
         }
@@ -768,10 +799,7 @@ pub fn eval_function_vectorized(
                 return Err("cap_neu requires 2 arguments: alpha and market_cap".to_string());
             }
             let market_cap = eval_expr_vectorized(&args[1], data, cache)?;
-            let n_symbols = args
-                .get(2)
-                .and_then(|a| get_literal_int(a))
-                .unwrap_or(100); // default 100 symbols
+            let n_symbols = args.get(2).and_then(|a| get_literal_int(a)).unwrap_or(100); // default 100 symbols
             let result = cap_neu(&arg_values[0], &market_cap, n_symbols);
             Ok(result)
         }
@@ -871,8 +899,12 @@ fn scan_compact(
         .map(|w| {
             let start = w[0];
             let end = w[1];
-            scan_chunk(name, &dates.as_slice().unwrap()[start..end],
-                &syms[start..end], &values.as_slice().unwrap()[start..end])
+            scan_chunk(
+                name,
+                &dates.as_slice().unwrap()[start..end],
+                &syms[start..end],
+                &values.as_slice().unwrap()[start..end],
+            )
         })
         .collect();
 
@@ -886,7 +918,11 @@ fn scan_compact(
     }
 
     // Sort by date then symbol for downstream pipeline
-    let mut indexed: Vec<(usize, (i64, i64))> = merged_keys.iter().enumerate().map(|(i, &k)| (i, k)).collect();
+    let mut indexed: Vec<(usize, (i64, i64))> = merged_keys
+        .iter()
+        .enumerate()
+        .map(|(i, &k)| (i, k))
+        .collect();
     indexed.sort_by(|a, b| a.1.0.cmp(&b.1.0).then(a.1.1.cmp(&b.1.1)));
     let sorted_keys: Vec<(i64, i64)> = indexed.iter().map(|(_, k)| *k).collect();
     let sorted_vals: Vec<f64> = indexed.iter().map(|(i, _)| merged_vals[*i]).collect();
@@ -896,35 +932,67 @@ fn scan_compact(
 }
 
 /// Process a single symbol chunk (sequential, no sort needed within chunk)
-fn scan_chunk(name: &str, chunk_dates: &[f64], chunk_syms: &[f64], chunk_vals: &[f64]) -> (Vec<f64>, Vec<(i64, i64)>) {
+fn scan_chunk(
+    name: &str,
+    chunk_dates: &[f64],
+    chunk_syms: &[f64],
+    chunk_vals: &[f64],
+) -> (Vec<f64>, Vec<(i64, i64)>) {
     let n = chunk_vals.len();
     let est = (n / 10).max(1);
     let mut result: Vec<f64> = Vec::with_capacity(est);
     let mut keys: Vec<(i64, i64)> = Vec::with_capacity(est);
     let mut i = 0;
     match name {
-        "sum" | "add" => while i < n {
-            let sd = chunk_dates[i] as i64; let ss = chunk_syms[i] as i64;
-            let mut sum = 0.0; let mut cnt = 0u32;
-            while i < n && (chunk_dates[i] as i64) == sd && (chunk_syms[i] as i64) == ss {
-                let v = chunk_vals[i]; if v.is_finite() { sum += v; cnt += 1; } i += 1;
+        "sum" | "add" => {
+            while i < n {
+                let sd = chunk_dates[i] as i64;
+                let ss = chunk_syms[i] as i64;
+                let mut sum = 0.0;
+                let mut cnt = 0u32;
+                while i < n && (chunk_dates[i] as i64) == sd && (chunk_syms[i] as i64) == ss {
+                    let v = chunk_vals[i];
+                    if v.is_finite() {
+                        sum += v;
+                        cnt += 1;
+                    }
+                    i += 1;
+                }
+                result.push(if cnt > 0 { sum } else { f64::NAN });
+                keys.push((sd, ss));
             }
-            result.push(if cnt > 0 { sum } else { f64::NAN }); keys.push((sd, ss));
-        },
-        "mean" | "avg" | "average" => while i < n {
-            let sd = chunk_dates[i] as i64; let ss = chunk_syms[i] as i64;
-            let mut sum = 0.0; let mut cnt = 0u32;
-            while i < n && (chunk_dates[i] as i64) == sd && (chunk_syms[i] as i64) == ss {
-                let v = chunk_vals[i]; if v.is_finite() { sum += v; cnt += 1; } i += 1;
+        }
+        "mean" | "avg" | "average" => {
+            while i < n {
+                let sd = chunk_dates[i] as i64;
+                let ss = chunk_syms[i] as i64;
+                let mut sum = 0.0;
+                let mut cnt = 0u32;
+                while i < n && (chunk_dates[i] as i64) == sd && (chunk_syms[i] as i64) == ss {
+                    let v = chunk_vals[i];
+                    if v.is_finite() {
+                        sum += v;
+                        cnt += 1;
+                    }
+                    i += 1;
+                }
+                result.push(if cnt > 0 { sum / cnt as f64 } else { f64::NAN });
+                keys.push((sd, ss));
             }
-            result.push(if cnt > 0 { sum / cnt as f64 } else { f64::NAN }); keys.push((sd, ss));
-        },
-        "count" | "cnt" => while i < n {
-            let sd = chunk_dates[i] as i64; let ss = chunk_syms[i] as i64;
-            let mut cnt = 0u32;
-            while i < n && (chunk_dates[i] as i64) == sd && (chunk_syms[i] as i64) == ss { cnt += 1; i += 1; }
-            result.push(cnt as f64); keys.push((sd, ss));
-        },
+        }
+        "count" | "cnt" => {
+            while i < n {
+                let sd = chunk_dates[i] as i64;
+                let ss = chunk_syms[i] as i64;
+                let mut cnt = 0u32;
+                while i < n && (chunk_dates[i] as i64) == sd && (chunk_syms[i] as i64) == ss {
+                    cnt += 1;
+                    i += 1;
+                }
+                result.push(cnt as f64);
+                keys.push((sd, ss));
+            }
+        }
         _ => { /* fallback: process sequentially */ }
     }
     (result, keys)
@@ -959,7 +1027,10 @@ fn scan_compact_seq(
                 let mut count = 0u32;
                 while i < n_rows && dates_i64[i] == sd && syms_i64[i] == ss {
                     let v = vals_slice[i];
-                    if v.is_finite() { sum += v; count += 1; }
+                    if v.is_finite() {
+                        sum += v;
+                        count += 1;
+                    }
                     i += 1;
                 }
                 result.push(if count > 0 { sum } else { f64::NAN });
@@ -974,10 +1045,17 @@ fn scan_compact_seq(
                 let mut count = 0u32;
                 while i < n_rows && dates_i64[i] == sd && syms_i64[i] == ss {
                     let v = vals_slice[i];
-                    if v.is_finite() { sum += v; count += 1; }
+                    if v.is_finite() {
+                        sum += v;
+                        count += 1;
+                    }
                     i += 1;
                 }
-                result.push(if count > 0 { sum / count as f64 } else { f64::NAN });
+                result.push(if count > 0 {
+                    sum / count as f64
+                } else {
+                    f64::NAN
+                });
                 keys.push((sd, ss));
             }
         }
@@ -1001,10 +1079,16 @@ fn scan_compact_seq(
                 let mut min_val = f64::INFINITY;
                 while i < n_rows && dates_i64[i] == sd && syms_i64[i] == ss {
                     let v = vals_slice[i];
-                    if v.is_finite() && v < min_val { min_val = v; }
+                    if v.is_finite() && v < min_val {
+                        min_val = v;
+                    }
                     i += 1;
                 }
-                result.push(if min_val.is_finite() { min_val } else { f64::NAN });
+                result.push(if min_val.is_finite() {
+                    min_val
+                } else {
+                    f64::NAN
+                });
                 keys.push((sd, ss));
             }
         }
@@ -1015,10 +1099,16 @@ fn scan_compact_seq(
                 let mut max_val = f64::NEG_INFINITY;
                 while i < n_rows && dates_i64[i] == sd && syms_i64[i] == ss {
                     let v = vals_slice[i];
-                    if v.is_finite() && v > max_val { max_val = v; }
+                    if v.is_finite() && v > max_val {
+                        max_val = v;
+                    }
                     i += 1;
                 }
-                result.push(if max_val.is_finite() { max_val } else { f64::NAN });
+                result.push(if max_val.is_finite() {
+                    max_val
+                } else {
+                    f64::NAN
+                });
                 keys.push((sd, ss));
             }
         }
@@ -1036,7 +1126,10 @@ fn scan_compact_seq(
                 let mut count = 0u32;
                 while i < n_rows && dates_i64[i] == sd && syms_i64[i] == ss {
                     let v = vals_slice[i];
-                    if v.is_finite() { sum += v; count += 1; }
+                    if v.is_finite() {
+                        sum += v;
+                        count += 1;
+                    }
                     i += 1;
                 }
                 sums.push(sum);
@@ -1054,10 +1147,16 @@ fn scan_compact_seq(
                 let mean = sums[g] / counts[g] as f64;
                 let mut sq_diff = 0.0f64;
                 let start = group_starts[g];
-                let end = if g + 1 < n_groups { group_starts[g + 1] } else { n_rows };
+                let end = if g + 1 < n_groups {
+                    group_starts[g + 1]
+                } else {
+                    n_rows
+                };
                 for j in start..end {
                     let v = values[j];
-                    if v.is_finite() { sq_diff += (v - mean).powi(2); }
+                    if v.is_finite() {
+                        sq_diff += (v - mean).powi(2);
+                    }
                 }
                 let var = sq_diff / (counts[g] - 1) as f64; // sample variance
                 result.push(if is_std { var.sqrt() } else { var });
@@ -1067,7 +1166,8 @@ fn scan_compact_seq(
     }
 
     // Sort by date then symbol for downstream cross-section processing.
-    let mut indexed: Vec<(usize, (i64, i64))> = keys.iter().enumerate().map(|(i, &k)| (i, k)).collect();
+    let mut indexed: Vec<(usize, (i64, i64))> =
+        keys.iter().enumerate().map(|(i, &k)| (i, k)).collect();
     indexed.sort_unstable_by_key(|(_, (d, s))| (*d, *s));
     let sorted_keys: Vec<(i64, i64)> = indexed.iter().map(|(_, k)| *k).collect();
     let sorted_result: Vec<f64> = indexed.iter().map(|(i, _)| result[*i]).collect();
@@ -1104,7 +1204,12 @@ pub fn eval_group_function_vectorized(
         .get(&trading_date_col)
         .or_else(|| data.get("5m:trading_date"))
         .or_else(|| data.get("1m:trading_date"))
-        .ok_or_else(|| format!("Column '{}' (or finer) not found for grouping", trading_date_col))?;
+        .ok_or_else(|| {
+            format!(
+                "Column '{}' (or finer) not found for grouping",
+                trading_date_col
+            )
+        })?;
     let symbols = data
         .get(&symbol_col)
         .or_else(|| data.get("5m:symbol"))
@@ -1159,7 +1264,8 @@ pub fn eval_group_function_vectorized(
                 for i in 0..n_rows {
                     let v = values[i];
                     if v.is_finite() {
-                        *agg.entry((trading_dates[i] as i64, symbols[i] as i64)).or_insert(0.0) += v;
+                        *agg.entry((trading_dates[i] as i64, symbols[i] as i64))
+                            .or_insert(0.0) += v;
                     }
                 }
                 agg
@@ -1169,11 +1275,13 @@ pub fn eval_group_function_vectorized(
             unique_groups.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
             let n_groups = unique_groups.len();
 
-            let group_index: AHashMap<(i64, i64), usize> = unique_groups.iter()
+            let group_index: AHashMap<(i64, i64), usize> = unique_groups
+                .iter()
                 .enumerate()
                 .map(|(i, g)| (*g, i))
                 .collect();
-            let result: Vec<f64> = unique_groups.iter()
+            let result: Vec<f64> = unique_groups
+                .iter()
                 .map(|g| *aggregation.get(g).unwrap_or(&0.0))
                 .collect();
 
@@ -1242,17 +1350,25 @@ pub fn eval_group_function_vectorized(
             let mut unique_groups: Vec<(i64, i64)> = agg_sum.keys().copied().collect();
             unique_groups.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
 
-            let means: Vec<f64> = unique_groups.iter().map(|g| {
-                let sum = *agg_sum.get(g).unwrap_or(&0.0);
-                let count = *agg_count.get(g).unwrap_or(&0);
-                if count > 0 { sum / count as f64 } else { f64::NAN }
-            }).collect();
+            let means: Vec<f64> = unique_groups
+                .iter()
+                .map(|g| {
+                    let sum = *agg_sum.get(g).unwrap_or(&0.0);
+                    let count = *agg_count.get(g).unwrap_or(&0);
+                    if count > 0 {
+                        sum / count as f64
+                    } else {
+                        f64::NAN
+                    }
+                })
+                .collect();
 
             drop(agg_sum);
             drop(agg_count);
 
             if expand {
-                let group_index: AHashMap<(i64, i64), usize> = unique_groups.iter()
+                let group_index: AHashMap<(i64, i64), usize> = unique_groups
+                    .iter()
                     .enumerate()
                     .map(|(i, g)| (*g, i))
                     .collect();
@@ -1260,7 +1376,10 @@ pub fn eval_group_function_vectorized(
                 let expanded_result: Vec<f64> = (0..n_rows)
                     .map(|i| {
                         let key = (trading_dates[i] as i64, symbols[i] as i64);
-                        group_index.get(&key).map(|&idx| means[idx]).unwrap_or(f64::NAN)
+                        group_index
+                            .get(&key)
+                            .map(|&idx| means[idx])
+                            .unwrap_or(f64::NAN)
                     })
                     .collect();
                 Ok(Array1::from_vec(expanded_result))
@@ -1295,7 +1414,8 @@ pub fn eval_group_function_vectorized(
             } else {
                 let mut agg = AHashMap::with_capacity(estimated_groups);
                 for i in 0..n_rows {
-                    *agg.entry((trading_dates[i] as i64, symbols[i] as i64)).or_insert(0) += 1;
+                    *agg.entry((trading_dates[i] as i64, symbols[i] as i64))
+                        .or_insert(0) += 1;
                 }
                 agg
             };
@@ -1303,13 +1423,15 @@ pub fn eval_group_function_vectorized(
             let mut unique_groups: Vec<(i64, i64)> = agg_count.keys().copied().collect();
             unique_groups.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
 
-            let counts: Vec<f64> = unique_groups.iter()
+            let counts: Vec<f64> = unique_groups
+                .iter()
                 .map(|g| *agg_count.get(g).unwrap_or(&0) as f64)
                 .collect();
             drop(agg_count);
 
             if expand {
-                let group_index: HashMap<(i64, i64), usize> = unique_groups.iter()
+                let group_index: HashMap<(i64, i64), usize> = unique_groups
+                    .iter()
                     .enumerate()
                     .map(|(i, g)| (*g, i))
                     .collect();
@@ -1317,7 +1439,12 @@ pub fn eval_group_function_vectorized(
                 let mut expanded_result: Vec<f64> = Vec::with_capacity(n_rows);
                 for i in 0..n_rows {
                     let key = (trading_dates[i] as i64, symbols[i] as i64);
-                    expanded_result.push(group_index.get(&key).map(|idx| counts[*idx]).unwrap_or(f64::NAN));
+                    expanded_result.push(
+                        group_index
+                            .get(&key)
+                            .map(|idx| counts[*idx])
+                            .unwrap_or(f64::NAN),
+                    );
                 }
                 Ok(Array1::from_vec(expanded_result))
             } else {
@@ -1334,7 +1461,9 @@ pub fn eval_group_function_vectorized(
                 let symbol_int = symbols[i] as i64;
                 let v = values[i];
                 if v.is_finite() {
-                    agg_min.entry((date_int, symbol_int)).or_insert(f64::INFINITY);
+                    agg_min
+                        .entry((date_int, symbol_int))
+                        .or_insert(f64::INFINITY);
                     if v < *agg_min.get(&(date_int, symbol_int)).unwrap() {
                         *agg_min.get_mut(&(date_int, symbol_int)).unwrap() = v;
                     }
@@ -1358,7 +1487,8 @@ pub fn eval_group_function_vectorized(
             drop(agg_min);
 
             if expand {
-                let group_index: HashMap<(i64, i64), usize> = unique_groups.iter()
+                let group_index: HashMap<(i64, i64), usize> = unique_groups
+                    .iter()
                     .enumerate()
                     .map(|(i, g)| (*g, i))
                     .collect();
@@ -1366,7 +1496,12 @@ pub fn eval_group_function_vectorized(
                 let mut expanded_result: Vec<f64> = Vec::with_capacity(n_rows);
                 for i in 0..n_rows {
                     let key = (trading_dates[i] as i64, symbols[i] as i64);
-                    expanded_result.push(group_index.get(&key).map(|idx| mins[*idx]).unwrap_or(f64::NAN));
+                    expanded_result.push(
+                        group_index
+                            .get(&key)
+                            .map(|idx| mins[*idx])
+                            .unwrap_or(f64::NAN),
+                    );
                 }
                 Ok(Array1::from_vec(expanded_result))
             } else {
@@ -1383,7 +1518,9 @@ pub fn eval_group_function_vectorized(
                 let symbol_int = symbols[i] as i64;
                 let v = values[i];
                 if v.is_finite() {
-                    agg_max.entry((date_int, symbol_int)).or_insert(f64::NEG_INFINITY);
+                    agg_max
+                        .entry((date_int, symbol_int))
+                        .or_insert(f64::NEG_INFINITY);
                     if v > *agg_max.get(&(date_int, symbol_int)).unwrap() {
                         *agg_max.get_mut(&(date_int, symbol_int)).unwrap() = v;
                     }
@@ -1407,7 +1544,8 @@ pub fn eval_group_function_vectorized(
             drop(agg_max);
 
             if expand {
-                let group_index: HashMap<(i64, i64), usize> = unique_groups.iter()
+                let group_index: HashMap<(i64, i64), usize> = unique_groups
+                    .iter()
                     .enumerate()
                     .map(|(i, g)| (*g, i))
                     .collect();
@@ -1415,7 +1553,12 @@ pub fn eval_group_function_vectorized(
                 let mut expanded_result: Vec<f64> = Vec::with_capacity(n_rows);
                 for i in 0..n_rows {
                     let key = (trading_dates[i] as i64, symbols[i] as i64);
-                    expanded_result.push(group_index.get(&key).map(|idx| maxs[*idx]).unwrap_or(f64::NAN));
+                    expanded_result.push(
+                        group_index
+                            .get(&key)
+                            .map(|idx| maxs[*idx])
+                            .unwrap_or(f64::NAN),
+                    );
                 }
                 Ok(Array1::from_vec(expanded_result))
             } else {
@@ -1428,7 +1571,8 @@ pub fn eval_group_function_vectorized(
         "std" | "stdev" => {
             // Two-pass: first compute means, then variance
             let mut agg_sum: HashMap<(i64, i64), f64> = HashMap::with_capacity(estimated_groups);
-            let mut agg_count: HashMap<(i64, i64), usize> = HashMap::with_capacity(estimated_groups);
+            let mut agg_count: HashMap<(i64, i64), usize> =
+                HashMap::with_capacity(estimated_groups);
 
             for i in 0..n_rows {
                 let date_int = trading_dates[i] as i64;
@@ -1451,16 +1595,22 @@ pub fn eval_group_function_vectorized(
             });
 
             // Compute means
-            let means: Vec<f64> = unique_groups.iter()
+            let means: Vec<f64> = unique_groups
+                .iter()
                 .map(|g| {
                     let sum = *agg_sum.get(g).unwrap_or(&0.0);
                     let count = *agg_count.get(g).unwrap_or(&0);
-                    if count > 0 { sum / count as f64 } else { f64::NAN }
+                    if count > 0 {
+                        sum / count as f64
+                    } else {
+                        f64::NAN
+                    }
                 })
                 .collect();
 
             // Second pass: compute variance
-            let mut agg_var: HashMap<(i64, i64), (f64, usize)> = HashMap::with_capacity(estimated_groups);
+            let mut agg_var: HashMap<(i64, i64), (f64, usize)> =
+                HashMap::with_capacity(estimated_groups);
             for i in 0..n_rows {
                 let date_int = trading_dates[i] as i64;
                 let symbol_int = symbols[i] as i64;
@@ -1478,14 +1628,19 @@ pub fn eval_group_function_vectorized(
             let mut stds: Vec<f64> = Vec::with_capacity(unique_groups.len());
             for g in &unique_groups {
                 let &(var_sum, count) = agg_var.get(g).unwrap_or(&(0.0, 0));
-                stds.push(if count > 1 { (var_sum / (count - 1) as f64).sqrt() } else { f64::NAN });
+                stds.push(if count > 1 {
+                    (var_sum / (count - 1) as f64).sqrt()
+                } else {
+                    f64::NAN
+                });
             }
             drop(agg_sum);
             drop(agg_count);
             drop(agg_var);
 
             if expand {
-                let group_index: HashMap<(i64, i64), usize> = unique_groups.iter()
+                let group_index: HashMap<(i64, i64), usize> = unique_groups
+                    .iter()
                     .enumerate()
                     .map(|(i, g)| (*g, i))
                     .collect();
@@ -1493,7 +1648,12 @@ pub fn eval_group_function_vectorized(
                 let mut expanded_result: Vec<f64> = Vec::with_capacity(n_rows);
                 for i in 0..n_rows {
                     let key = (trading_dates[i] as i64, symbols[i] as i64);
-                    expanded_result.push(group_index.get(&key).map(|idx| stds[*idx]).unwrap_or(f64::NAN));
+                    expanded_result.push(
+                        group_index
+                            .get(&key)
+                            .map(|idx| stds[*idx])
+                            .unwrap_or(f64::NAN),
+                    );
                 }
                 Ok(Array1::from_vec(expanded_result))
             } else {
@@ -1505,7 +1665,8 @@ pub fn eval_group_function_vectorized(
         }
         _ => {
             // Default to sum
-            let mut aggregation: HashMap<(i64, i64), f64> = HashMap::with_capacity(estimated_groups);
+            let mut aggregation: HashMap<(i64, i64), f64> =
+                HashMap::with_capacity(estimated_groups);
             for i in 0..n_rows {
                 let date_int = trading_dates[i] as i64;
                 let symbol_int = symbols[i] as i64;
@@ -1534,7 +1695,8 @@ pub fn eval_group_function_vectorized(
             drop(aggregation);
 
             if expand {
-                let group_index: HashMap<(i64, i64), usize> = unique_groups.iter()
+                let group_index: HashMap<(i64, i64), usize> = unique_groups
+                    .iter()
                     .enumerate()
                     .map(|(i, g)| (*g, i))
                     .collect();
@@ -1542,7 +1704,12 @@ pub fn eval_group_function_vectorized(
                 let mut expanded_result: Vec<f64> = Vec::with_capacity(n_rows);
                 for i in 0..n_rows {
                     let key = (trading_dates[i] as i64, symbols[i] as i64);
-                    expanded_result.push(group_index.get(&key).map(|idx| result[*idx]).unwrap_or(f64::NAN));
+                    expanded_result.push(
+                        group_index
+                            .get(&key)
+                            .map(|idx| result[*idx])
+                            .unwrap_or(f64::NAN),
+                    );
                 }
                 Ok(Array1::from_vec(expanded_result))
             } else {
@@ -1591,7 +1758,11 @@ pub fn eval_ts_function_vectorized(
         "ts_sma" => {
             let m = args.get(2).and_then(|a| get_literal_int(a)).unwrap_or(2);
             let alpha = m as f64 / window as f64;
-            let alpha = if alpha > 0.0 && alpha <= 1.0 { alpha } else { 0.5 };
+            let alpha = if alpha > 0.0 && alpha <= 1.0 {
+                alpha
+            } else {
+                0.5
+            };
             Ok(sma(&vals, alpha))
         }
         "ts_quantile" => {
@@ -1611,7 +1782,11 @@ pub fn eval_ts_function_vectorized(
         "sma" => {
             let m = args.get(2).and_then(|a| get_literal_int(a)).unwrap_or(2);
             let alpha = m as f64 / window as f64;
-            let alpha = if alpha > 0.0 && alpha <= 1.0 { alpha } else { 0.5 };
+            let alpha = if alpha > 0.0 && alpha <= 1.0 {
+                alpha
+            } else {
+                0.5
+            };
             Ok(sma(&vals, alpha))
         }
         "lowday" => Ok(lowday(&vals, window)),
