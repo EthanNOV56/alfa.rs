@@ -44,9 +44,12 @@ try:
         FactorRegistry,
         FactorResult,
         # Genetic Programming
+        FactorPool,
         GpEngine,
         GPHistoryRecord,
         GPRecommendations,
+        # Expression similarity
+        expr_similarity,
         # Meta-learning system
         MetaLearningAnalyzer,
         # Persistence system

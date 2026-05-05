@@ -1350,6 +1350,84 @@ pub enum AdmissionResult {
     RejectedBelowMinimum,
 }
 
+/// Convert an expression to a parseable string (unlike Debug which uses #name).
+fn to_parseable_string(expr: &Expr) -> String {
+    match expr {
+        Expr::Literal(Literal::Float(v)) => format!("{}", v),
+        Expr::Literal(Literal::Integer(v)) => format!("{}", v),
+        Expr::Literal(Literal::Boolean(v)) => format!("{}", v),
+        Expr::Literal(Literal::String(s)) => format!("{:?}", s),
+        Expr::Literal(Literal::Null) => "null".to_string(),
+        Expr::Column(name) => name.clone(),
+        Expr::BinaryExpr { left, op, right } => {
+            let op_str = match op {
+                BinaryOp::Add => "+",
+                BinaryOp::Subtract => "-",
+                BinaryOp::Multiply => "*",
+                BinaryOp::Divide => "/",
+                BinaryOp::Modulo => "%",
+                BinaryOp::Equal => "==",
+                BinaryOp::NotEqual => "!=",
+                BinaryOp::GreaterThan => ">",
+                BinaryOp::GreaterThanOrEqual => ">=",
+                BinaryOp::LessThan => "<",
+                BinaryOp::LessThanOrEqual => "<=",
+                BinaryOp::And => "&",
+                BinaryOp::Or => "|",
+            };
+            format!(
+                "({} {} {})",
+                to_parseable_string(left),
+                op_str,
+                to_parseable_string(right)
+            )
+        }
+        Expr::UnaryExpr { op, expr } => {
+            let op_str = match op {
+                UnaryOp::Negate => "-",
+                UnaryOp::Not => "!",
+                UnaryOp::Abs => "abs",
+                UnaryOp::Sqrt => "sqrt",
+                UnaryOp::Log => "log",
+                UnaryOp::Exp => "exp",
+            };
+            format!("{}({})", op_str, to_parseable_string(expr))
+        }
+        Expr::FunctionCall { name, args, freq } => {
+            let args_str: Vec<String> = args.iter().map(|a| to_parseable_string(a)).collect();
+            let inner = format!("{}({})", name, args_str.join(", "));
+            if let Some(f) = freq {
+                format!("{}:{}", f.as_str(), inner)
+            } else {
+                inner
+            }
+        }
+        Expr::Aggregate { op, expr, distinct } => {
+            let inner = to_parseable_string(expr);
+            if *distinct {
+                format!("{:?}_distinct({})", op, inner)
+            } else {
+                format!("{:?}({})", op, inner)
+            }
+        }
+        Expr::Conditional {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            format!(
+                "if({}, {}, {})",
+                to_parseable_string(condition),
+                to_parseable_string(then_expr),
+                to_parseable_string(else_expr)
+            )
+        }
+        Expr::Cast { expr, data_type } => {
+            format!("cast({} as {:?})", to_parseable_string(expr), data_type)
+        }
+    }
+}
+
 /// A maintained pool of diverse alpha factors with redundancy filtering and decay detection.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FactorPool {
@@ -1433,7 +1511,7 @@ impl FactorPool {
 
     fn insert_entry(&mut self, expr: &Expr, ic: f64, rank_ic: f64, now: u64) {
         let entry = PoolEntry {
-            expression: format!("{}", expr),
+            expression: to_parseable_string(expr),
             ic,
             rank_ic,
             added_at: now,
