@@ -285,18 +285,30 @@ impl RealBacktestFitnessEvaluator {
     }
 
     /// Compute IC mean and IR from ic_series sliced by indices.
-    fn compute_split_metrics(&self, ic_series: &ndarray::Array1<f64>, indices: &[usize]) -> SplitMetrics {
+    fn compute_split_metrics(
+        &self,
+        ic_series: &ndarray::Array1<f64>,
+        indices: &[usize],
+    ) -> SplitMetrics {
         let n = indices.len() as f64;
         if n < 2.0 {
             return SplitMetrics::default();
         }
         let sum: f64 = indices.iter().map(|&i| ic_series[i]).sum();
         let mean = sum / n;
-        let variance: f64 = indices.iter().map(|&i| {
-            let diff = ic_series[i] - mean;
-            diff * diff
-        }).sum::<f64>() / (n - 1.0);
-        let ir = if variance > 0.0 { mean / variance.sqrt() } else { 0.0 };
+        let variance: f64 = indices
+            .iter()
+            .map(|&i| {
+                let diff = ic_series[i] - mean;
+                diff * diff
+            })
+            .sum::<f64>()
+            / (n - 1.0);
+        let ir = if variance > 0.0 {
+            mean / variance.sqrt()
+        } else {
+            0.0
+        };
         SplitMetrics {
             ic_mean: mean,
             ic_ir: ir,

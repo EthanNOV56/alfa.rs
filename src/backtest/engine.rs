@@ -283,10 +283,8 @@ impl BacktestEngine {
         let (n_days, n_assets) = factor.dim();
         let quantiles = self.config.quantiles;
 
-        let group_labels =
-            super::portfolio::compute_quantile_groups(&factor, quantiles)?;
-        let (ic_series, ic_mean, ic_ir) =
-            super::metrics::compute_ic_series(&factor, &returns)?;
+        let group_labels = super::portfolio::compute_quantile_groups(&factor, quantiles)?;
+        let (ic_series, ic_mean, ic_ir) = super::metrics::compute_ic_series(&factor, &returns)?;
         let turnover = super::metrics::compute_turnover(&group_labels);
 
         Ok(BacktestResult {
