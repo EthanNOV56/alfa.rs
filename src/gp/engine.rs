@@ -11,6 +11,8 @@
 
 use crate::WeightMethod;
 use crate::backtest::{BacktestConfig, BacktestEngine, BacktestResult, FeeConfig, PositionConfig};
+use crate::data::frequency;
+use crate::expr::ast::Frequency;
 use crate::expr::registry::functions::eval_expr_vectorized;
 use crate::expr::{BinaryOp, Expr, Literal, UnaryOp};
 use lru::LruCache;
@@ -188,6 +190,8 @@ pub struct GPConfig {
     /// Smart mutations use constrained A-B templates that preserve semantic roles.
     #[serde(default)]
     pub smart_mutation_ratio: f64,
+    #[serde(default)]
+    pub use_frequencies: bool,
 }
 
 impl Default for GPConfig {
@@ -202,6 +206,7 @@ impl Default for GPConfig {
             parent_diversity_penalty: 0.1,
             use_diverse_init: false,
             smart_mutation_ratio: 0.3,
+            use_frequencies: false,
         }
     }
 }
@@ -790,7 +795,28 @@ impl<'a> ExpressionGenerator<'a> {
             args.push(self.generate_random_expr(max_depth, rng));
         }
         let function = &self.functions[function_idx];
-        (function.builder)(args)
+        let mut expr = (function.builder)(args);
+
+        // Frequency-aware: randomly annotate aggregation calls with freq
+        if self.config.use_frequencies {
+            if let Expr::FunctionCall { freq, args, .. } = &mut expr {
+                if !args.is_empty() {
+                    if let Some(data_freq) =
+                        args.first().and_then(|a| frequency::infer_frequency(a))
+                    {
+                        if rng.gen_bool(0.4) {
+                            let candidates = frequency::valid_agg_freqs(&data_freq);
+                            if !candidates.is_empty() {
+                                *freq =
+                                    Some(candidates[rng.gen_range(0..candidates.len())].clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        expr
     }
 
     /// Generate initial population (uniform).
@@ -1116,6 +1142,51 @@ pub mod tree_ops {
         let new_subtree = generator.generate_feedback_expr(feedback, max_depth, rng);
 
         replace_node_at_path(e.clone(), &p, new_subtree).unwrap_or_else(|| e.clone())
+    }
+
+    /// Frequency mutation: change the freq annotation on a random FunctionCall.
+    pub fn mutate_frequency<R: Rng + ?Sized>(e: &Expr, rng: &mut R) -> Expr {
+        let mut paths = Vec::new();
+        collect_paths(e, &mut Vec::new(), &mut paths);
+        let funcs: Vec<&Vec<usize>> = paths
+            .iter()
+            .filter(|p| {
+                !p.is_empty() && matches!(get_node_at_path(e, p), Some(Expr::FunctionCall { .. }))
+            })
+            .collect();
+        if funcs.is_empty() {
+            return e.clone();
+        }
+        let p = funcs[rng.gen_range(0..funcs.len())].clone();
+        if let Some(Expr::FunctionCall {
+            name,
+            args,
+            freq: old,
+        }) = get_node_at_path(e, &p)
+        {
+            let mut candidates: Vec<Option<Frequency>> = Vec::new();
+            if let Some(df) = args.first().and_then(|a| frequency::infer_frequency(a)) {
+                for f in frequency::all_frequencies() {
+                    if frequency::can_aggregate(f, &df) {
+                        candidates.push(Some(f.clone()));
+                    }
+                }
+            }
+            candidates.push(None);
+            if candidates.len() <= 1 {
+                return e.clone();
+            }
+            let new_freq = candidates[rng.gen_range(0..candidates.len())].clone();
+            if &new_freq != old {
+                let node = Expr::FunctionCall {
+                    name: name.clone(),
+                    args: args.clone(),
+                    freq: new_freq,
+                };
+                return replace_node_at_path(e.clone(), &p, node).unwrap_or_else(|| e.clone());
+            }
+        }
+        e.clone()
     }
 }
 
@@ -1732,6 +1803,11 @@ pub fn run_gp<R: Rng + ?Sized>(
                         rng,
                     );
                 }
+            }
+
+            // Frequency mutation (~10% chance per individual)
+            if config.use_frequencies && rng.gen_bool(0.1) {
+                next_population[i] = tree_ops::mutate_frequency(&next_population[i], rng);
             }
         }
 

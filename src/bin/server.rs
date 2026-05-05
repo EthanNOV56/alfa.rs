@@ -2940,6 +2940,7 @@ fn run_real_gp(
         parent_diversity_penalty: 0.1,
         use_diverse_init: false,
         smart_mutation_ratio: 0.3,
+        use_frequencies: false,
     };
 
     // Create terminals (variables) from the provided terminal_set

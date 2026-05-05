@@ -909,6 +909,7 @@ impl GPRecommendations {
             parent_diversity_penalty: 0.1,
             use_diverse_init: false,
             smart_mutation_ratio: 0.3,
+            use_frequencies: false,
         }
     }
 
@@ -931,6 +932,7 @@ impl GPRecommendations {
             parent_diversity_penalty: 0.1,
             use_diverse_init: false,
             smart_mutation_ratio: 0.3,
+            use_frequencies: false,
         }
     }
 

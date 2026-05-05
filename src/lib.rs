@@ -1259,7 +1259,7 @@ pub struct PyGpEngine {
 #[pymethods]
 impl PyGpEngine {
     #[new]
-    #[pyo3(signature = (population_size=100, max_generations=50, tournament_size=7, crossover_prob=0.8, mutation_prob=0.2, max_depth=6, allow_ephemeral=true, parent_diversity_penalty=0.1, use_diverse_init=false, smart_mutation_ratio=0.3))]
+    #[pyo3(signature = (population_size=100, max_generations=50, tournament_size=7, crossover_prob=0.8, mutation_prob=0.2, max_depth=6, allow_ephemeral=true, parent_diversity_penalty=0.1, use_diverse_init=false, smart_mutation_ratio=0.3, use_frequencies=false))]
     fn new(
         population_size: usize,
         max_generations: usize,
@@ -1271,6 +1271,7 @@ impl PyGpEngine {
         parent_diversity_penalty: f64,
         use_diverse_init: bool,
         smart_mutation_ratio: f64,
+        use_frequencies: bool,
     ) -> Self {
         // Create default terminals (will be updated later)
         let mut terminals = vec![Terminal::Constant(1.0), Terminal::Constant(2.0)];
@@ -1322,6 +1323,7 @@ impl PyGpEngine {
             parent_diversity_penalty,
             use_diverse_init,
             smart_mutation_ratio,
+            use_frequencies,
         };
 
         let rng = StdRng::from_entropy();
@@ -1334,7 +1336,10 @@ impl PyGpEngine {
         }
     }
 
-    /// Set available columns (variables) for expression generation
+    /// Set available columns (variables) for expression generation.
+    /// When use_frequencies is enabled, bare names like "close" are expanded to
+    /// all available frequency-prefixed variants (e.g. "1d:close", "5m:close", "1m:close").
+    /// Names already containing a freq prefix (e.g. "1d:close") are kept as-is.
     #[pyo3(signature = (columns, allow_ephemeral = None))]
     fn set_columns(
         &mut self,
@@ -1342,19 +1347,32 @@ impl PyGpEngine {
         columns: Bound<'_, PyList>,
         allow_ephemeral: Option<bool>,
     ) {
-        // Check if ephemeral is allowed (default to true if not specified)
         let allow_ephemeral = allow_ephemeral.unwrap_or(true);
-
-        // Update terminals with column variables
         let mut new_terminals = vec![Terminal::Constant(1.0), Terminal::Constant(2.0)];
-
         if allow_ephemeral {
             new_terminals.insert(0, Terminal::Ephemeral);
         }
 
         for item in columns.iter() {
             let col: String = item.extract().unwrap_or_default();
-            new_terminals.push(Terminal::Variable(col));
+            if self.config.use_frequencies && !col.contains(':') {
+                let mut expanded = false;
+                for freq in crate::data::frequency::all_frequencies() {
+                    if crate::data::frequency::field_at_frequency(&col, freq) {
+                        new_terminals.push(Terminal::Variable(format!(
+                            "{}:{}",
+                            freq.as_str(),
+                            col
+                        )));
+                        expanded = true;
+                    }
+                }
+                if !expanded {
+                    new_terminals.push(Terminal::Variable(col));
+                }
+            } else {
+                new_terminals.push(Terminal::Variable(col));
+            }
         }
 
         self.terminals = new_terminals;

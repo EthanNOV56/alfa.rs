@@ -6,6 +6,7 @@
 pub mod clickhouse;
 pub mod convention;
 pub mod derivation;
+pub mod frequency;
 pub mod layer;
 pub mod source;
 
