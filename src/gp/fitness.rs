@@ -513,9 +513,7 @@ impl RealBacktestFitnessEvaluator {
     /// Window must be >= 2 for rolling stats, >= 1 for delay/delta.
     fn check_valid_windows(&self, expr: &Expr) -> bool {
         match expr {
-            Expr::FunctionCall { name, args, .. }
-                if name.starts_with("ts_") || name == "delay" =>
-            {
+            Expr::FunctionCall { name, args, .. } if name.starts_with("ts_") || name == "delay" => {
                 // Second argument is the window/periods parameter
                 if args.len() >= 2 {
                     let window_expr = &args[1];
@@ -525,9 +523,7 @@ impl RealBacktestFitnessEvaluator {
                 }
                 args.iter().all(|a| self.check_valid_windows(a))
             }
-            Expr::FunctionCall { args, .. } => {
-                args.iter().all(|a| self.check_valid_windows(a))
-            }
+            Expr::FunctionCall { args, .. } => args.iter().all(|a| self.check_valid_windows(a)),
             Expr::UnaryExpr { expr, .. } => self.check_valid_windows(expr),
             Expr::BinaryExpr { left, right, .. } => {
                 self.check_valid_windows(left) && self.check_valid_windows(right)
