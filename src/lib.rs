@@ -1254,7 +1254,7 @@ pub struct PyGpEngine {
 #[pymethods]
 impl PyGpEngine {
     #[new]
-    #[pyo3(signature = (population_size=100, max_generations=50, tournament_size=7, crossover_prob=0.8, mutation_prob=0.2, max_depth=6, allow_ephemeral=true, parent_diversity_penalty=0.1))]
+    #[pyo3(signature = (population_size=100, max_generations=50, tournament_size=7, crossover_prob=0.8, mutation_prob=0.2, max_depth=6, allow_ephemeral=true, parent_diversity_penalty=0.1, use_diverse_init=false, smart_mutation_ratio=0.3))]
     fn new(
         population_size: usize,
         max_generations: usize,
@@ -1264,6 +1264,8 @@ impl PyGpEngine {
         max_depth: usize,
         allow_ephemeral: bool,
         parent_diversity_penalty: f64,
+        use_diverse_init: bool,
+        smart_mutation_ratio: f64,
     ) -> Self {
         // Create default terminals (will be updated later)
         let mut terminals = vec![Terminal::Constant(1.0), Terminal::Constant(2.0)];
@@ -1291,6 +1293,8 @@ impl PyGpEngine {
             mutation_prob,
             max_depth,
             parent_diversity_penalty,
+            use_diverse_init,
+            smart_mutation_ratio,
         };
 
         let rng = StdRng::from_entropy();

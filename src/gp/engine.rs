@@ -181,6 +181,13 @@ pub struct GPConfig {
     /// Higher values discourage re-selecting structurally similar parents.
     #[serde(default)]
     pub parent_diversity_penalty: f64,
+    /// Use diverse niche-based initialization instead of uniform random.
+    #[serde(default)]
+    pub use_diverse_init: bool,
+    /// Ratio of smart template mutations vs random subtree mutations (0.0-1.0).
+    /// Smart mutations use constrained A-B templates that preserve semantic roles.
+    #[serde(default)]
+    pub smart_mutation_ratio: f64,
 }
 
 impl Default for GPConfig {
@@ -193,6 +200,8 @@ impl Default for GPConfig {
             mutation_prob: 0.1,
             max_depth: 5,
             parent_diversity_penalty: 0.1,
+            use_diverse_init: false,
+            smart_mutation_ratio: 0.3,
         }
     }
 }
@@ -453,6 +462,92 @@ pub enum Terminal {
     Ephemeral,
 }
 
+/// Population niches for diverse initialization.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Niche {
+    /// Price/volume-based: prefers rolling stats, value columns
+    PriceVolume,
+    /// Momentum/trend: prefers delay, delta, rank, correlation
+    MomentumTS,
+    /// Cross-sectional comparison: prefers rank, ratio, subtraction
+    CrossSectional,
+    /// Unbiased: uniform random (classic behaviour)
+    Mixed,
+}
+
+impl Niche {
+    /// All four niches
+    pub const ALL: [Niche; 4] = [
+        Niche::PriceVolume,
+        Niche::MomentumTS,
+        Niche::CrossSectional,
+        Niche::Mixed,
+    ];
+
+    /// Weight for a terminal in this niche (1.0 = base).
+    fn terminal_weight(&self, terminal: &Terminal) -> f64 {
+        match terminal {
+            Terminal::Variable(name) => {
+                let lower = name.to_lowercase();
+                match self {
+                    Niche::PriceVolume
+                        if lower.contains("close")
+                            || lower.contains("open")
+                            || lower.contains("high")
+                            || lower.contains("low")
+                            || lower.contains("price")
+                            || lower.contains("vol")
+                            || lower.contains("amount") =>
+                    {
+                        3.0
+                    }
+                    Niche::MomentumTS
+                        if lower.contains("return")
+                            || lower.contains("ret")
+                            || lower.contains("close") =>
+                    {
+                        2.5
+                    }
+                    Niche::CrossSectional => 1.5, // slight pref for all columns
+                    Niche::Mixed => 1.0,
+                    _ => 1.0,
+                }
+            }
+            Terminal::Constant(_) => match self {
+                Niche::CrossSectional => 1.5, // consts useful in ratios
+                _ => 1.0,
+            },
+            Terminal::Ephemeral => match self {
+                Niche::MomentumTS => 0.5, // fewer free params in momentum
+                _ => 1.0,
+            },
+        }
+    }
+
+    /// Weight for a function in this niche (1.0 = base).
+    fn function_weight(&self, name: &str) -> f64 {
+        match self {
+            Niche::PriceVolume => match name {
+                "ts_mean" | "ts_std" | "ts_max" | "ts_min" => 3.0,
+                "delay" | "log" | "sqrt" | "abs" => 2.0,
+                "decay_linear" | "correlation" => 1.5,
+                _ => 1.0,
+            },
+            Niche::MomentumTS => match name {
+                "delay" | "ts_delta" | "ts_rank" | "decay_linear" | "correlation" => 3.0,
+                "sign" | "ts_mean" | "ts_std" => 2.0,
+                _ => 1.0,
+            },
+            Niche::CrossSectional => match name {
+                "rank" | "div" | "sub" | "abs" | "neg" => 3.0,
+                "sqrt" | "add" | "mul" => 2.0,
+                _ => 1.0,
+            },
+            Niche::Mixed => 1.0,
+        }
+    }
+}
+
 /// Expression generator
 pub struct ExpressionGenerator<'a> {
     config: &'a GPConfig,
@@ -470,7 +565,7 @@ impl<'a> ExpressionGenerator<'a> {
         }
     }
 
-    /// Generate a random expression
+    /// Generate a random expression (uniform distribution).
     pub fn generate_random_expr<R: Rng + ?Sized>(&self, max_depth: usize, rng: &mut R) -> Expr {
         if max_depth == 0 || (!self.functions.is_empty() && rng.gen_bool(0.3)) {
             self.generate_random_terminal(rng)
@@ -479,10 +574,90 @@ impl<'a> ExpressionGenerator<'a> {
         }
     }
 
-    /// Generate a random terminal
+    /// Generate expression using operator feedback weights for function selection.
+    /// Falls back to uniform random if feedback is None or all weights are zero.
+    pub fn generate_feedback_expr<R: Rng + ?Sized>(
+        &self,
+        feedback: &OperatorFeedback,
+        max_depth: usize,
+        rng: &mut R,
+    ) -> Expr {
+        if max_depth == 0 || (!self.functions.is_empty() && rng.gen_bool(0.3)) {
+            self.generate_random_terminal(rng)
+        } else {
+            self.generate_feedback_function(feedback, max_depth - 1, rng)
+        }
+    }
+
+    /// Generate a function with operator-feedback-biased selection.
+    fn generate_feedback_function<R: Rng + ?Sized>(
+        &self,
+        feedback: &OperatorFeedback,
+        max_depth: usize,
+        rng: &mut R,
+    ) -> Expr {
+        // Compute weights: max(avg_fitness, 0.01) to keep all operators reachable
+        let weights: Vec<f64> = self
+            .functions
+            .iter()
+            .map(|f| feedback.avg_fitness(&f.name).max(0.01))
+            .collect();
+        let total: f64 = weights.iter().sum();
+        if total <= 0.0 {
+            return self.generate_random_function(max_depth, rng);
+        }
+        let mut r = rng.gen_range(0.0..total);
+        for (i, w) in weights.iter().enumerate() {
+            r -= w;
+            if r <= 0.0 {
+                return self.build_function(i, max_depth, rng);
+            }
+        }
+        self.build_function(0, max_depth, rng)
+    }
+
+    /// Generate an expression biased toward a niche.
+    pub fn generate_niche_expr<R: Rng + ?Sized>(
+        &self,
+        niche: Niche,
+        max_depth: usize,
+        rng: &mut R,
+    ) -> Expr {
+        if max_depth == 0 || (!self.functions.is_empty() && rng.gen_bool(0.3)) {
+            self.generate_weighted_terminal(niche, rng)
+        } else {
+            self.generate_weighted_function(niche, max_depth - 1, rng)
+        }
+    }
+
+    /// Generate a random terminal (uniform).
     pub fn generate_random_terminal<R: Rng + ?Sized>(&self, rng: &mut R) -> Expr {
         let terminal = &self.terminals[rng.gen_range(0..self.terminals.len())];
+        self.build_terminal(terminal, rng)
+    }
 
+    /// Generate a terminal with niche-biased weights.
+    fn generate_weighted_terminal<R: Rng + ?Sized>(&self, niche: Niche, rng: &mut R) -> Expr {
+        if niche == Niche::Mixed {
+            return self.generate_random_terminal(rng);
+        }
+        let weights: Vec<f64> = self
+            .terminals
+            .iter()
+            .map(|t| niche.terminal_weight(t))
+            .collect();
+        let total: f64 = weights.iter().sum();
+        let mut r = rng.gen_range(0.0..total);
+        for (i, w) in weights.iter().enumerate() {
+            r -= w;
+            if r <= 0.0 {
+                return self.build_terminal(&self.terminals[i], rng);
+            }
+        }
+        self.build_terminal(&self.terminals[0], rng)
+    }
+
+    fn build_terminal<R: Rng + ?Sized>(&self, terminal: &Terminal, rng: &mut R) -> Expr {
         match terminal {
             Terminal::Variable(name) => Expr::Column(name.clone()),
             Terminal::Constant(value) => Expr::Literal(Literal::Float(*value)),
@@ -490,21 +665,54 @@ impl<'a> ExpressionGenerator<'a> {
         }
     }
 
-    /// Generate a random function
+    /// Generate a random function (uniform).
     pub fn generate_random_function<R: Rng + ?Sized>(&self, max_depth: usize, rng: &mut R) -> Expr {
         let function_idx = rng.gen_range(0..self.functions.len());
+        self.build_function(function_idx, max_depth, rng)
+    }
+
+    /// Generate a function with niche-biased weights.
+    fn generate_weighted_function<R: Rng + ?Sized>(
+        &self,
+        niche: Niche,
+        max_depth: usize,
+        rng: &mut R,
+    ) -> Expr {
+        if niche == Niche::Mixed {
+            return self.generate_random_function(max_depth, rng);
+        }
+        let weights: Vec<f64> = self
+            .functions
+            .iter()
+            .map(|f| niche.function_weight(&f.name))
+            .collect();
+        let total: f64 = weights.iter().sum();
+        let mut r = rng.gen_range(0.0..total);
+        for (i, w) in weights.iter().enumerate() {
+            r -= w;
+            if r <= 0.0 {
+                return self.build_function(i, max_depth, rng);
+            }
+        }
+        self.build_function(0, max_depth, rng)
+    }
+
+    fn build_function<R: Rng + ?Sized>(
+        &self,
+        function_idx: usize,
+        max_depth: usize,
+        rng: &mut R,
+    ) -> Expr {
         let arity = self.functions[function_idx].arity;
         let mut args = Vec::with_capacity(arity);
-
         for _ in 0..arity {
             args.push(self.generate_random_expr(max_depth, rng));
         }
-
         let function = &self.functions[function_idx];
         (function.builder)(args)
     }
 
-    /// Generate initial population
+    /// Generate initial population (uniform).
     pub fn generate_initial_population<R: Rng + ?Sized>(
         &self,
         size: usize,
@@ -514,6 +722,35 @@ impl<'a> ExpressionGenerator<'a> {
         for _ in 0..size {
             population.push(self.generate_random_expr(self.config.max_depth, rng));
         }
+        population
+    }
+
+    /// Generate a diverse initial population with equal representation across niches.
+    pub fn generate_diverse_population<R: Rng + ?Sized>(
+        &self,
+        size: usize,
+        rng: &mut R,
+    ) -> Vec<Expr> {
+        let n_niches = Niche::ALL.len();
+        let per_niche = size / n_niches;
+        let remainder = size % n_niches;
+        let mut population = Vec::with_capacity(size);
+
+        for (i, &niche) in Niche::ALL.iter().enumerate() {
+            let count = if i < remainder {
+                per_niche + 1
+            } else {
+                per_niche
+            };
+            for _ in 0..count {
+                population.push(self.generate_niche_expr(niche, self.config.max_depth, rng));
+            }
+        }
+
+        // Shuffle to mix niches
+        use rand::seq::SliceRandom;
+        population.shuffle(rng);
+
         population
     }
 }
@@ -777,6 +1014,28 @@ pub mod tree_ops {
 
         replace_node_at_path(e.clone(), &p, new_subtree).unwrap_or_else(|| e.clone())
     }
+
+    /// Subtree mutation with operator-feedback-biased subtree generation.
+    pub fn subtree_mutate_feedback<R: Rng + ?Sized>(
+        e: &Expr,
+        generator: &ExpressionGenerator<'_>,
+        feedback: &OperatorFeedback,
+        max_depth: usize,
+        rng: &mut R,
+    ) -> Expr {
+        let mut paths = Vec::new();
+        collect_paths(e, &mut Vec::new(), &mut paths);
+        paths.retain(|p| !p.is_empty());
+
+        if paths.is_empty() {
+            return e.clone();
+        }
+
+        let p = paths[rng.gen_range(0..paths.len())].clone();
+        let new_subtree = generator.generate_feedback_expr(feedback, max_depth, rng);
+
+        replace_node_at_path(e.clone(), &p, new_subtree).unwrap_or_else(|| e.clone())
+    }
 }
 
 /// Compute a family hash for structural deduplication.
@@ -790,6 +1049,109 @@ fn family_hash(expr: &Expr) -> u64 {
     hasher.finish()
 }
 
+/// Per-generation feedback tracking operator performance during a GP run.
+#[derive(Default)]
+struct OperatorFeedback {
+    /// (cumulative fitness, appearance count) per function name
+    func_stats: HashMap<String, (f64, u32)>,
+}
+
+impl OperatorFeedback {
+    /// Attribute an individual's fitness to the functions it contains.
+    fn record(&mut self, expr: &Expr, fitness: f64) {
+        let mut funcs = Vec::new();
+        collect_function_names(expr, &mut funcs);
+        for name in funcs {
+            let entry = self.func_stats.entry(name).or_insert((0.0, 0));
+            entry.0 += fitness;
+            entry.1 += 1;
+        }
+    }
+
+    /// Get average fitness per function (0.0 if unseen).
+    fn avg_fitness(&self, func_name: &str) -> f64 {
+        self.func_stats
+            .get(func_name)
+            .map(|(total, count)| {
+                if *count > 0 {
+                    total / *count as f64
+                } else {
+                    0.0
+                }
+            })
+            .unwrap_or(0.0)
+    }
+
+    /// Clear for next generation.
+    fn reset(&mut self) {
+        self.func_stats.clear();
+    }
+}
+
+/// Collect function names used in an expression (DFS).
+fn collect_function_names(expr: &Expr, out: &mut Vec<String>) {
+    match expr {
+        Expr::FunctionCall { name, args, .. } => {
+            out.push(name.clone());
+            for arg in args {
+                collect_function_names(arg, out);
+            }
+        }
+        Expr::UnaryExpr { expr, .. } => collect_function_names(expr, out),
+        Expr::BinaryExpr { left, right, .. } => {
+            collect_function_names(left, out);
+            collect_function_names(right, out);
+        }
+        Expr::Aggregate { expr, .. } => collect_function_names(expr, out),
+        Expr::Conditional {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_function_names(condition, out);
+            collect_function_names(then_expr, out);
+            collect_function_names(else_expr, out);
+        }
+        Expr::Cast { expr, .. } => collect_function_names(expr, out),
+        _ => {}
+    }
+}
+
+/// Apply a constrained smart mutation template.
+/// A is the current expression (main signal), B is a random peer from the population (modifier).
+/// Returns the mutated expression.
+fn apply_smart_mutation<R: Rng + ?Sized>(a: &Expr, b: &Expr, rng: &mut R) -> Expr {
+    match rng.gen_range(0..4) {
+        // Weak gate: rank(B) > 0.55 ? A : -1
+        0 => {
+            let rank_b = Expr::function("rank", vec![b.clone()]);
+            let cond = rank_b.gt(Expr::lit_float(0.55));
+            Expr::conditional(cond, a.clone(), Expr::lit_float(-1.0))
+        }
+        // Regime conditional: if_else(ts_rank(B, 20) > 0.5, A, 0.5*A)
+        1 => {
+            let ts_rank_b = Expr::function("ts_rank", vec![b.clone(), Expr::lit_int(20)]);
+            let cond = ts_rank_b.gt(Expr::lit_float(0.5));
+            let damped = a.clone().mul(Expr::lit_float(0.5));
+            Expr::conditional(cond, a.clone(), damped)
+        }
+        // Heterogeneous injection: A + 0.1 * rank(B)
+        2 => {
+            let rank_b = Expr::function("rank", vec![b.clone()]);
+            let weak = rank_b.mul(Expr::lit_float(0.1));
+            a.clone().add(weak)
+        }
+        // Cross-family combination: rank(A) * 0.9 + rank(B) * 0.1
+        _ => {
+            let rank_a = Expr::function("rank", vec![a.clone()]);
+            let rank_b = Expr::function("rank", vec![b.clone()]);
+            rank_a
+                .mul(Expr::lit_float(0.9))
+                .add(rank_b.mul(Expr::lit_float(0.1)))
+        }
+    }
+}
+
 /// Run genetic programming
 pub fn run_gp<R: Rng + ?Sized>(
     config: &GPConfig,
@@ -801,7 +1163,11 @@ pub fn run_gp<R: Rng + ?Sized>(
     // Generate initial population
     let generator = ExpressionGenerator::new(config, terminals, functions);
 
-    let mut population = generator.generate_initial_population(config.population_size, rng);
+    let mut population = if config.use_diverse_init {
+        generator.generate_diverse_population(config.population_size, rng)
+    } else {
+        generator.generate_initial_population(config.population_size, rng)
+    };
     let pop_size = population.len();
 
     // Evaluate initial population (using batch if supported)
@@ -820,6 +1186,12 @@ pub fn run_gp<R: Rng + ?Sized>(
         if scores[i] > scores[best_idx] {
             best_idx = i;
         }
+    }
+
+    // Initialize operator feedback from initial population
+    let mut feedback = OperatorFeedback::default();
+    for (expr, &score) in population.iter().zip(scores.iter()) {
+        feedback.record(expr, score);
     }
 
     // Main evolution loop
@@ -859,10 +1231,26 @@ pub fn run_gp<R: Rng + ?Sized>(
             }
         }
 
-        // Mutation
-        for expr in next_population.iter_mut() {
+        // Mutation (with operator feedback and smart templates)
+        for i in 0..pop_size {
             if rng.gen_bool(config.mutation_prob) {
-                *expr = tree_ops::subtree_mutate(expr, &generator, config.max_depth, rng);
+                if config.smart_mutation_ratio > 0.0 && rng.gen_bool(config.smart_mutation_ratio) {
+                    // Smart template mutation: use a random peer as B
+                    let mut b_idx = rng.gen_range(0..pop_size);
+                    while b_idx == i && pop_size > 1 {
+                        b_idx = rng.gen_range(0..pop_size);
+                    }
+                    next_population[i] =
+                        apply_smart_mutation(&next_population[i], &next_population[b_idx], rng);
+                } else {
+                    next_population[i] = tree_ops::subtree_mutate_feedback(
+                        &next_population[i],
+                        &generator,
+                        &feedback,
+                        config.max_depth,
+                        rng,
+                    );
+                }
             }
         }
 
@@ -877,6 +1265,12 @@ pub fn run_gp<R: Rng + ?Sized>(
                 .map(|e| evaluator.fitness(e))
                 .collect()
         };
+
+        // Update operator feedback for next generation
+        feedback.reset();
+        for (expr, &score) in population.iter().zip(scores.iter()) {
+            feedback.record(expr, score);
+        }
 
         // Update best individual
         for i in 0..pop_size {

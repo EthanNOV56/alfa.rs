@@ -2938,6 +2938,8 @@ fn run_real_gp(
         mutation_prob: 0.1,
         max_depth: 4,
         parent_diversity_penalty: 0.1,
+        use_diverse_init: false,
+        smart_mutation_ratio: 0.3,
     };
 
     // Create terminals (variables) from the provided terminal_set

@@ -907,6 +907,8 @@ impl GPRecommendations {
             mutation_prob: (mutation_range.0 + mutation_range.1) / 2.0,
             max_depth: ((depth_range.0 + depth_range.1) / 2) as usize,
             parent_diversity_penalty: 0.1,
+            use_diverse_init: false,
+            smart_mutation_ratio: 0.3,
         }
     }
 
@@ -927,6 +929,8 @@ impl GPRecommendations {
             mutation_prob: rng.gen_range(mutation_range.0..=mutation_range.1),
             max_depth: rng.gen_range(depth_range.0..=depth_range.1),
             parent_diversity_penalty: 0.1,
+            use_diverse_init: false,
+            smart_mutation_ratio: 0.3,
         }
     }
 
