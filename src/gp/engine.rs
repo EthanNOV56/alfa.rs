@@ -11,14 +11,15 @@
 
 use crate::WeightMethod;
 use crate::backtest::{BacktestConfig, BacktestEngine, BacktestResult, FeeConfig, PositionConfig};
-use crate::expr::{BinaryOp, Expr, Literal, UnaryOp};
 use crate::expr::registry::functions::eval_expr_vectorized;
+use crate::expr::{BinaryOp, Expr, Literal, UnaryOp};
 use lru::LruCache;
 use ndarray::Array2;
 use rand::Rng;
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
+use std::sync::atomic;
 use std::sync::{Arc, Mutex, RwLock};
 
 /// Data split configuration for train/test/validation
@@ -175,6 +176,11 @@ pub struct GPConfig {
     pub mutation_prob: f64,
     /// Maximum tree depth
     pub max_depth: usize,
+    /// Diversity penalty factor for parent usage (0.0 = disabled).
+    /// Effective score = raw_score / (1 + family_usage * penalty).
+    /// Higher values discourage re-selecting structurally similar parents.
+    #[serde(default)]
+    pub parent_diversity_penalty: f64,
 }
 
 impl Default for GPConfig {
@@ -186,6 +192,7 @@ impl Default for GPConfig {
             crossover_prob: 0.8,
             mutation_prob: 0.1,
             max_depth: 5,
+            parent_diversity_penalty: 0.1,
         }
     }
 }
@@ -772,6 +779,17 @@ pub mod tree_ops {
     }
 }
 
+/// Compute a family hash for structural deduplication.
+/// Two expressions that differ only in numeric constants produce the same hash.
+fn family_hash(expr: &Expr) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let normalized = normalize_expression(expr);
+    let mut hasher = DefaultHasher::new();
+    normalized.hash(&mut hasher);
+    hasher.finish()
+}
+
 /// Run genetic programming
 pub fn run_gp<R: Rng + ?Sized>(
     config: &GPConfig,
@@ -806,18 +824,28 @@ pub fn run_gp<R: Rng + ?Sized>(
 
     // Main evolution loop
     for generation in 0..config.max_generations {
+        // Compute family hashes for diversity-aware selection
+        let family_hashes: Vec<u64> = population.iter().map(|e| family_hash(e)).collect();
+        let mut family_usage: HashMap<u64, u32> = HashMap::new();
+
         // Selection and reproduction
         let mut next_population = Vec::with_capacity(pop_size);
+        let penalty = config.parent_diversity_penalty;
 
         while next_population.len() < pop_size {
-            // Tournament selection
+            // Tournament selection with diversity pressure
             let mut best = rng.gen_range(0..pop_size);
             for _ in 1..config.tournament_size {
                 let cand = rng.gen_range(0..pop_size);
-                if scores[cand] > scores[best] {
+                let best_family_used = *family_usage.get(&family_hashes[best]).unwrap_or(&0) as f64;
+                let cand_family_used = *family_usage.get(&family_hashes[cand]).unwrap_or(&0) as f64;
+                let best_eff = scores[best] / (1.0 + best_family_used * penalty);
+                let cand_eff = scores[cand] / (1.0 + cand_family_used * penalty);
+                if cand_eff > best_eff {
                     best = cand;
                 }
             }
+            *family_usage.entry(family_hashes[best]).or_insert(0) += 1;
             next_population.push(population[best].clone());
         }
 
@@ -859,13 +887,39 @@ pub fn run_gp<R: Rng + ?Sized>(
 
         if generation % 10 == 0 {
             println!(
-                "Generation {}: best fitness = {:.6}",
-                generation, scores[best_idx]
+                "Generation {}: best fitness = {:.6}, unique families = {}",
+                generation,
+                scores[best_idx],
+                family_usage.len()
             );
         }
     }
 
     (population[best_idx].clone(), scores[best_idx])
+}
+
+/// Multi-factor expression complexity.
+///
+/// Combines structural size, parameter count, and feature diversity
+/// to provide a richer overfitting signal than node count alone.
+#[derive(Debug, Clone)]
+pub struct Complexity {
+    /// Total node count in the expression tree
+    pub node_count: usize,
+    /// Number of free (non-column) constants (literal numbers + ephemerals)
+    pub free_param_count: usize,
+    /// Number of distinct columns referenced
+    pub unique_column_count: usize,
+}
+
+impl Complexity {
+    /// Weighted complexity score. Default weights: (0.5, 0.3, 0.2).
+    pub fn score(&self, weights: Option<(f64, f64, f64)>) -> f64 {
+        let (w1, w2, w3) = weights.unwrap_or((0.5, 0.3, 0.2));
+        w1 * self.node_count as f64
+            + w2 * self.free_param_count as f64
+            + w3 * self.unique_column_count as f64
+    }
 }
 
 /// Multi-objective fitness metrics for factor evaluation
@@ -884,12 +938,13 @@ pub struct MultiObjectiveFitness {
 }
 
 impl MultiObjectiveFitness {
-    /// Create a new multi-objective fitness with weighted sum
+    /// Create a new multi-objective fitness with weighted sum.
+    /// Complexity penalty uses the weighted multi-factor score.
     pub fn new(
         ic_score: f64,
         ir_score: f64,
         turnover: f64,
-        complexity: usize,
+        complexity: &Complexity,
         weights: Option<(f64, f64, f64, f64)>, // (ic_weight, ir_weight, turnover_weight, complexity_weight)
     ) -> Self {
         let (w_ic, w_ir, w_to, w_comp) = weights.unwrap_or((0.5, 0.3, 0.1, 0.1));
@@ -897,7 +952,6 @@ impl MultiObjectiveFitness {
         // Minimum IC threshold - penalize factors with near-zero IC
         let min_ic_threshold = 0.001;
         let ic_penalty = if ic_score < min_ic_threshold {
-            // Heavily penalize factors with IC below threshold
             (min_ic_threshold - ic_score) * 100.0
         } else {
             0.0
@@ -911,10 +965,15 @@ impl MultiObjectiveFitness {
         };
 
         // Normalize turnover (exponential penalty for high turnover)
-        let turnover_penalty = (-turnover / 0.1).exp(); // Decay factor
+        let turnover_penalty = (-turnover / 0.1).exp();
 
-        // Complexity penalty (logarithmic scaling)
-        let complexity_penalty = (complexity as f64).ln() / 10.0;
+        // Complexity penalty using multi-factor score (logarithmic on weighted score)
+        let complexity_score = complexity.score(None);
+        let complexity_penalty = if complexity_score > 1.0 {
+            complexity_score.ln() / 10.0
+        } else {
+            0.0
+        };
 
         // Combined weighted score
         let combined_score = w_ic * (ic_score - ic_penalty) + w_ir * effective_ir
@@ -1068,7 +1127,7 @@ impl RealBacktestFitnessEvaluator {
             backtest_result.ic_mean.abs(),
             backtest_result.ic_ir.abs(),
             turnover,
-            complexity,
+            complexity.node_count,
         );
 
         // Get weights
@@ -1082,7 +1141,7 @@ impl RealBacktestFitnessEvaluator {
             backtest_result.ic_mean.abs(), // Use absolute IC (direction doesn't matter)
             backtest_result.ic_ir.abs(),   // Use absolute IR
             turnover,
-            complexity,
+            &complexity,
             Some((w_ic, w_ir, w_to, w_comp)),
         ))
     }
@@ -1340,32 +1399,67 @@ impl RealBacktestFitnessEvaluator {
         }
     }
 
-    /// Compute complexity of an expression (number of nodes)
-    fn compute_complexity(&self, expr: &Expr) -> usize {
+    /// Compute multi-factor complexity of an expression.
+    fn compute_complexity(&self, expr: &Expr) -> Complexity {
+        let mut cols = std::collections::HashSet::new();
+        let (node_count, free_params) = self.compute_complexity_inner(expr, &mut cols);
+        Complexity {
+            node_count,
+            free_param_count: free_params,
+            unique_column_count: cols.len(),
+        }
+    }
+
+    /// Walk the tree, counting nodes and free parameters. Collects column names.
+    fn compute_complexity_inner(
+        &self,
+        expr: &Expr,
+        cols: &mut std::collections::HashSet<String>,
+    ) -> (usize, usize) {
         match expr {
-            Expr::Literal(_) => 1,
-            Expr::Column(_) => 1,
-            Expr::UnaryExpr { expr, .. } => 1 + self.compute_complexity(expr),
+            Expr::Literal(Literal::Float(_) | Literal::Integer(_)) => (1, 1),
+            Expr::Literal(_) => (1, 0),
+            Expr::Column(name) => {
+                cols.insert(name.clone());
+                (1, 0)
+            }
+            Expr::UnaryExpr { expr, .. } => {
+                let (n, p) = self.compute_complexity_inner(expr, cols);
+                (1 + n, p)
+            }
             Expr::BinaryExpr { left, right, .. } => {
-                1 + self.compute_complexity(left) + self.compute_complexity(right)
+                let (nl, pl) = self.compute_complexity_inner(left, cols);
+                let (nr, pr) = self.compute_complexity_inner(right, cols);
+                (1 + nl + nr, pl + pr)
             }
             Expr::FunctionCall { args, .. } => {
-                1 + args
-                    .iter()
-                    .map(|arg| self.compute_complexity(arg))
-                    .sum::<usize>()
+                let mut total_n = 1;
+                let mut total_p = 0;
+                for arg in args {
+                    let (n, p) = self.compute_complexity_inner(arg, cols);
+                    total_n += n;
+                    total_p += p;
+                }
+                (total_n, total_p)
             }
-            Expr::Aggregate { expr, .. } => 1 + self.compute_complexity(expr),
+            Expr::Aggregate { expr, .. } => {
+                let (n, p) = self.compute_complexity_inner(expr, cols);
+                (1 + n, p)
+            }
             Expr::Conditional {
                 condition,
                 then_expr,
                 else_expr,
             } => {
-                1 + self.compute_complexity(condition)
-                    + self.compute_complexity(then_expr)
-                    + self.compute_complexity(else_expr)
+                let (nc, pc) = self.compute_complexity_inner(condition, cols);
+                let (nt, pt) = self.compute_complexity_inner(then_expr, cols);
+                let (ne, pe) = self.compute_complexity_inner(else_expr, cols);
+                (1 + nc + nt + ne, pc + pt + pe)
             }
-            Expr::Cast { expr, .. } => 1 + self.compute_complexity(expr),
+            Expr::Cast { expr, .. } => {
+                let (n, p) = self.compute_complexity_inner(expr, cols);
+                (1 + n, p)
+            }
         }
     }
 
@@ -1529,7 +1623,7 @@ impl FitnessEvaluator for RealBacktestFitnessEvaluator {
 
                 // Apply penalty for extreme complexity
                 let complexity = self.compute_complexity(expr);
-                let complexity_penalty = (complexity as f64).powi(2) / 1000.0;
+                let complexity_penalty = (complexity.node_count as f64).powi(2) / 1000.0;
 
                 base_fitness - complexity_penalty
             }
@@ -1592,10 +1686,69 @@ impl FitnessEvaluator for BacktestFitnessEvaluator {
     }
 }
 
-/// Cached fitness evaluator with LRU cache for performance
+/// Normalize an expression for semantic deduplication.
+/// Replaces all numeric constants with a placeholder to group structurally similar
+/// expressions that only differ in constant values (e.g. `rank(close/5)` vs `rank(close/10)`).
+fn normalize_expression(expr: &Expr) -> String {
+    match expr {
+        Expr::Literal(Literal::Float(_)) => "#".to_string(),
+        Expr::Literal(Literal::Integer(_)) => "#".to_string(),
+        Expr::Literal(lit) => format!("{:?}", lit),
+        Expr::Column(name) => format!("#{}", name),
+        Expr::BinaryExpr { left, op, right } => {
+            format!(
+                "({} {:?} {})",
+                normalize_expression(left),
+                op,
+                normalize_expression(right)
+            )
+        }
+        Expr::UnaryExpr { op, expr } => {
+            format!("({:?} {})", op, normalize_expression(expr))
+        }
+        Expr::FunctionCall { name, args, freq } => {
+            let args_str: Vec<String> = args.iter().map(|a| normalize_expression(a)).collect();
+            if let Some(f) = freq {
+                format!("{}:{}({})", f.as_str(), name, args_str.join(","))
+            } else {
+                format!("{}({})", name, args_str.join(","))
+            }
+        }
+        Expr::Aggregate { op, expr, distinct } => {
+            if *distinct {
+                format!("{:?}_distinct({})", op, normalize_expression(expr))
+            } else {
+                format!("{:?}({})", op, normalize_expression(expr))
+            }
+        }
+        Expr::Conditional {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            format!(
+                "if {} then {} else {}",
+                normalize_expression(condition),
+                normalize_expression(then_expr),
+                normalize_expression(else_expr)
+            )
+        }
+        Expr::Cast { expr, data_type } => {
+            format!("cast({} as {:?})", normalize_expression(expr), data_type)
+        }
+    }
+}
+
+/// Cached fitness evaluator with LRU cache and semantic deduplication.
 pub struct CachedFitnessEvaluator<E: FitnessEvaluator> {
     evaluator: E,
     cache: Mutex<LruCache<String, f64>>,
+    /// Maps normalized expression strings to fitness values for deduplication
+    dedup: Mutex<HashMap<String, f64>>,
+    /// Count of evaluations skipped due to semantic deduplication
+    dedup_hits: atomic::AtomicU64,
+    /// Count of total fitness evaluations (cache misses only)
+    total_evals: atomic::AtomicU64,
 }
 
 impl<E: FitnessEvaluator> CachedFitnessEvaluator<E> {
@@ -1605,12 +1758,16 @@ impl<E: FitnessEvaluator> CachedFitnessEvaluator<E> {
         Self {
             evaluator,
             cache: Mutex::new(LruCache::new(cap)),
+            dedup: Mutex::new(HashMap::new()),
+            dedup_hits: atomic::AtomicU64::new(0),
+            total_evals: atomic::AtomicU64::new(0),
         }
     }
 
     /// Clear the cache
     pub fn clear_cache(&self) {
         self.cache.lock().unwrap().clear();
+        self.dedup.lock().unwrap().clear();
     }
 
     /// Get cache size
@@ -1618,9 +1775,18 @@ impl<E: FitnessEvaluator> CachedFitnessEvaluator<E> {
         self.cache.lock().unwrap().len()
     }
 
+    /// Get deduplication hit count
+    pub fn dedup_hits(&self) -> u64 {
+        self.dedup_hits.load(atomic::Ordering::Relaxed)
+    }
+
+    /// Get total evaluations (cache misses)
+    pub fn total_evals(&self) -> u64 {
+        self.total_evals.load(atomic::Ordering::Relaxed)
+    }
+
     /// Get cache hit rate statistics
     pub fn cache_stats(&self) -> (usize, usize) {
-        // For simplicity, just return cache size and capacity
         let cache = self.cache.lock().unwrap();
         (cache.len(), cache.cap().get())
     }
@@ -1630,7 +1796,7 @@ impl<E: FitnessEvaluator> FitnessEvaluator for CachedFitnessEvaluator<E> {
     fn fitness(&self, expr: &Expr) -> f64 {
         let key = format!("{:?}", expr);
 
-        // Check cache first
+        // Check exact cache first
         {
             let mut cache = self.cache.lock().unwrap();
             if let Some(&cached) = cache.get(&key) {
@@ -1638,52 +1804,87 @@ impl<E: FitnessEvaluator> FitnessEvaluator for CachedFitnessEvaluator<E> {
             }
         }
 
+        // Check semantic deduplication
+        let normalized = normalize_expression(expr);
+        {
+            let dedup = self.dedup.lock().unwrap();
+            if let Some(&cached) = dedup.get(&normalized) {
+                // Found structurally equivalent expression — reuse fitness
+                self.dedup_hits.fetch_add(1, atomic::Ordering::Relaxed);
+                let mut cache = self.cache.lock().unwrap();
+                cache.put(key, cached);
+                return cached;
+            }
+        }
+
         // Compute fitness
+        self.total_evals.fetch_add(1, atomic::Ordering::Relaxed);
         let fitness = self.evaluator.fitness(expr);
 
-        // Store in cache
+        // Store in both caches
         {
             let mut cache = self.cache.lock().unwrap();
             cache.put(key, fitness);
+        }
+        {
+            let mut dedup = self.dedup.lock().unwrap();
+            dedup.insert(normalized, fitness);
         }
 
         fitness
     }
 
     fn fitness_batch(&self, exprs: &[Expr]) -> Vec<f64> {
-        let mut results = Vec::with_capacity(exprs.len());
-        let mut to_compute = Vec::new();
+        let mut results = vec![0.0; exprs.len()];
+        let mut to_compute: Vec<(usize, Expr, String, String)> = Vec::new();
 
-        // First pass: check cache
+        // First pass: check both caches
         {
             let mut cache = self.cache.lock().unwrap();
+            let dedup = self.dedup.lock().unwrap();
 
             for (idx, expr) in exprs.iter().enumerate() {
                 let key = format!("{:?}", expr);
                 if let Some(&cached) = cache.get(&key) {
-                    results.push(cached);
+                    results[idx] = cached;
                 } else {
-                    results.push(0.0); // placeholder
-                    to_compute.push((idx, expr.clone(), key));
+                    let normalized = normalize_expression(expr);
+                    if let Some(&cached) = dedup.get(&normalized) {
+                        cache.put(key, cached);
+                        self.dedup_hits.fetch_add(1, atomic::Ordering::Relaxed);
+                        results[idx] = cached;
+                    } else {
+                        to_compute.push((idx, expr.clone(), key, normalized));
+                    }
                 }
             }
         }
 
         // Compute missing fitness values
         if !to_compute.is_empty() {
-            let exprs_to_compute: Vec<Expr> =
-                to_compute.iter().map(|(_, expr, _)| expr.clone()).collect();
+            let exprs_to_compute: Vec<Expr> = to_compute
+                .iter()
+                .map(|(_, expr, _, _)| expr.clone())
+                .collect();
             let computed = self.evaluator.fitness_batch(&exprs_to_compute);
+            let n_computed = computed.len();
 
-            // Update cache and results
+            // Update caches and results
             {
                 let mut cache = self.cache.lock().unwrap();
+                let mut dedup = self.dedup.lock().unwrap();
 
-                for ((idx, _, key), fitness) in to_compute.into_iter().zip(computed.into_iter()) {
+                for ((idx, _, key, normalized), fitness) in
+                    to_compute.into_iter().zip(computed.into_iter())
+                {
                     cache.put(key, fitness);
+                    dedup.insert(normalized, fitness);
                     results[idx] = fitness;
                 }
             }
+
+            self.total_evals
+                .fetch_add(n_computed as u64, atomic::Ordering::Relaxed);
         }
 
         results

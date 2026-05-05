@@ -906,6 +906,7 @@ impl GPRecommendations {
             crossover_prob: (crossover_range.0 + crossover_range.1) / 2.0,
             mutation_prob: (mutation_range.0 + mutation_range.1) / 2.0,
             max_depth: ((depth_range.0 + depth_range.1) / 2) as usize,
+            parent_diversity_penalty: 0.1,
         }
     }
 
@@ -925,6 +926,7 @@ impl GPRecommendations {
             crossover_prob: rng.gen_range(crossover_range.0..=crossover_range.1),
             mutation_prob: rng.gen_range(mutation_range.0..=mutation_range.1),
             max_depth: rng.gen_range(depth_range.0..=depth_range.1),
+            parent_diversity_penalty: 0.1,
         }
     }
 

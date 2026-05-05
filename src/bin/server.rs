@@ -651,11 +651,29 @@ async fn run_backtest(
             let factor_nan = flat_factor.iter().filter(|v| v.is_nan()).count();
             let returns_valid = flat_returns.iter().filter(|v| v.is_finite()).count();
             let returns_nan = flat_returns.iter().filter(|v| v.is_nan()).count();
-            let returns_zero = flat_returns.iter().filter(|v| (*v - 0.0).abs() < 1e-10).count();
-            eprintln!("[run_backtest] Factor: valid={}, nan={}, shape={}x{}", factor_valid, factor_nan, cached.factor.len(), cached.factor.first().map(|r| r.len()).unwrap_or(0));
-            eprintln!("[run_backtest] Returns: valid={}, nan={}, zero={}", returns_valid, returns_nan, returns_zero);
-            eprintln!("[run_backtest] Factor day0 first 5: {:?}", &cached.factor[0][..5]);
-            eprintln!("[run_backtest] Returns day0 first 5: {:?}", &cached.returns[0][..5]);
+            let returns_zero = flat_returns
+                .iter()
+                .filter(|v| (*v - 0.0).abs() < 1e-10)
+                .count();
+            eprintln!(
+                "[run_backtest] Factor: valid={}, nan={}, shape={}x{}",
+                factor_valid,
+                factor_nan,
+                cached.factor.len(),
+                cached.factor.first().map(|r| r.len()).unwrap_or(0)
+            );
+            eprintln!(
+                "[run_backtest] Returns: valid={}, nan={}, zero={}",
+                returns_valid, returns_nan, returns_zero
+            );
+            eprintln!(
+                "[run_backtest] Factor day0 first 5: {:?}",
+                &cached.factor[0][..5]
+            );
+            eprintln!(
+                "[run_backtest] Returns day0 first 5: {:?}",
+                &cached.returns[0][..5]
+            );
 
             (
                 cached.factor.clone(),
@@ -744,7 +762,8 @@ async fn run_backtest(
             }
 
             // Compute factor using vectorized batch computation
-            let results = registry.compute(&["factor"], &data_array1, true, false)
+            let results = registry
+                .compute(&["factor"], &data_array1, true, false)
                 .map_err(|e| {
                     (
                         StatusCode::BAD_REQUEST,
@@ -765,12 +784,21 @@ async fn run_backtest(
             let valid_count = result.values.iter().filter(|v| v.is_finite()).count();
             let nan_count = result.values.iter().filter(|v| v.is_nan()).count();
             let inf_count = result.values.iter().filter(|v| v.is_infinite()).count();
-            eprintln!("[run_backtest] Computed factor stats: valid={}, nan={}, inf={}", valid_count, nan_count, inf_count);
-            eprintln!("[run_backtest] Computed factor first 10: {:?}", &result.values[..10]);
+            eprintln!(
+                "[run_backtest] Computed factor stats: valid={}, nan={}, inf={}",
+                valid_count, nan_count, inf_count
+            );
+            eprintln!(
+                "[run_backtest] Computed factor first 10: {:?}",
+                &result.values[..10]
+            );
             let valid_count = result.values.iter().filter(|v| v.is_finite()).count();
             let nan_count = result.values.iter().filter(|v| v.is_nan()).count();
             let inf_count = result.values.iter().filter(|v| v.is_infinite()).count();
-            eprintln!("[run_backtest] Factor stats: valid={}, nan={}, inf={}", valid_count, nan_count, inf_count);
+            eprintln!(
+                "[run_backtest] Factor stats: valid={}, nan={}, inf={}",
+                valid_count, nan_count, inf_count
+            );
             if let Some(first) = result.values.first() {
                 eprintln!("[run_backtest] First 5 values: {:?}", &result.values[..5]);
             }
@@ -880,28 +908,30 @@ async fn run_backtest(
             "Close data is required".to_string(),
         )
     })?;
-    let close_array = Array2::from_shape_vec((n_days, n_assets), close_array.into_iter().flatten().collect())
-        .map_err(|e| {
-            (
-                StatusCode::BAD_REQUEST,
-                format!("Invalid close shape: {}", e),
-            )
-        })?;
-
-    // Convert vwap to ndarray (required)
-    let vwap_array = vwap_data.ok_or_else(|| {
+    let close_array = Array2::from_shape_vec(
+        (n_days, n_assets),
+        close_array.into_iter().flatten().collect(),
+    )
+    .map_err(|e| {
         (
             StatusCode::BAD_REQUEST,
-            "VWAP data is required".to_string(),
+            format!("Invalid close shape: {}", e),
         )
     })?;
-    let vwap_array = Array2::from_shape_vec((n_days, n_assets), vwap_array.into_iter().flatten().collect())
-        .map_err(|e| {
-            (
-                StatusCode::BAD_REQUEST,
-                format!("Invalid vwap shape: {}", e),
-            )
-        })?;
+
+    // Convert vwap to ndarray (required)
+    let vwap_array =
+        vwap_data.ok_or_else(|| (StatusCode::BAD_REQUEST, "VWAP data is required".to_string()))?;
+    let vwap_array = Array2::from_shape_vec(
+        (n_days, n_assets),
+        vwap_array.into_iter().flatten().collect(),
+    )
+    .map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("Invalid vwap shape: {}", e),
+        )
+    })?;
 
     // Open data is required for position sizing
     let open_array = open_data.ok_or_else(|| {
@@ -910,36 +940,47 @@ async fn run_backtest(
             "Open data is required for backtest (needed for position sizing)".to_string(),
         )
     })?;
-    let open_array = Array2::from_shape_vec((n_days, n_assets), open_array.into_iter().flatten().collect())
-        .map_err(|e| {
-            (
-                StatusCode::BAD_REQUEST,
-                format!("Invalid open shape: {}", e),
-            )
-        })?;
+    let open_array = Array2::from_shape_vec(
+        (n_days, n_assets),
+        open_array.into_iter().flatten().collect(),
+    )
+    .map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("Invalid open shape: {}", e),
+        )
+    })?;
 
     // High and low data are required for tradable calculation
     let (high_data, low_data) = match (high_data, low_data) {
         (Some(h), Some(l)) => (h, l),
-        (None, _) => return Err((
-            StatusCode::BAD_REQUEST,
-            "High price data is required for tradable calculation (high > low)".to_string(),
-        )),
-        (_, None) => return Err((
-            StatusCode::BAD_REQUEST,
-            "Low price data is required for tradable calculation (high > low)".to_string(),
-        )),
+        (None, _) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "High price data is required for tradable calculation (high > low)".to_string(),
+            ));
+        }
+        (_, None) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "Low price data is required for tradable calculation (high > low)".to_string(),
+            ));
+        }
     };
 
     // Compute tradable: high > low means the stock can be traded
-    let tradable_flat: Vec<f64> = high_data.iter()
+    let tradable_flat: Vec<f64> = high_data
+        .iter()
         .zip(low_data.iter())
         .flat_map(|(h_row, l_row)| {
-            h_row.iter().zip(l_row.iter()).map(|(&h, &l)| if h > l { 1.0 } else { 0.0 })
+            h_row
+                .iter()
+                .zip(l_row.iter())
+                .map(|(&h, &l)| if h > l { 1.0 } else { 0.0 })
         })
         .collect();
-    let tradable_array = Array2::from_shape_vec((n_days, n_assets), tradable_flat)
-        .map_err(|e| {
+    let tradable_array =
+        Array2::from_shape_vec((n_days, n_assets), tradable_flat).map_err(|e| {
             (
                 StatusCode::BAD_REQUEST,
                 format!("Invalid tradable shape: {}", e),
@@ -984,14 +1025,42 @@ async fn run_backtest(
     let adj_factor = Array2::from_elem(factor_array.dim(), 1.0);
 
     eprintln!("[run_backtest] Running backtest engine...");
-    eprintln!("[run_backtest] factor_array: {}x{}", factor_array.dim().0, factor_array.dim().1);
-    eprintln!("[run_backtest] returns_array: {}x{}", returns_array.dim().0, returns_array.dim().1);
-    eprintln!("[run_backtest] close_array: {}x{}", close_array.dim().0, close_array.dim().1);
-    eprintln!("[run_backtest] vwap_array: {}x{}", vwap_array.dim().0, vwap_array.dim().1);
-    eprintln!("[run_backtest] factor_array sample [0,:5]: {:?}", factor_array.row(0).slice(ndarray::s![..5]));
-    eprintln!("[run_backtest] returns_array sample [0,:5]: {:?}", returns_array.row(0).slice(ndarray::s![..5]));
-    eprintln!("[run_backtest] returns_array sample [1,:5]: {:?}", returns_array.row(1).slice(ndarray::s![..5]));
-    eprintln!("[run_backtest] close_array sample [0,:5]: {:?}", close_array.row(0).slice(ndarray::s![..5]));
+    eprintln!(
+        "[run_backtest] factor_array: {}x{}",
+        factor_array.dim().0,
+        factor_array.dim().1
+    );
+    eprintln!(
+        "[run_backtest] returns_array: {}x{}",
+        returns_array.dim().0,
+        returns_array.dim().1
+    );
+    eprintln!(
+        "[run_backtest] close_array: {}x{}",
+        close_array.dim().0,
+        close_array.dim().1
+    );
+    eprintln!(
+        "[run_backtest] vwap_array: {}x{}",
+        vwap_array.dim().0,
+        vwap_array.dim().1
+    );
+    eprintln!(
+        "[run_backtest] factor_array sample [0,:5]: {:?}",
+        factor_array.row(0).slice(ndarray::s![..5])
+    );
+    eprintln!(
+        "[run_backtest] returns_array sample [0,:5]: {:?}",
+        returns_array.row(0).slice(ndarray::s![..5])
+    );
+    eprintln!(
+        "[run_backtest] returns_array sample [1,:5]: {:?}",
+        returns_array.row(1).slice(ndarray::s![..5])
+    );
+    eprintln!(
+        "[run_backtest] close_array sample [0,:5]: {:?}",
+        close_array.row(0).slice(ndarray::s![..5])
+    );
 
     // Check for NaN/Inf in arrays
     let factor_nan = factor_array.iter().filter(|v| v.is_nan()).count();
@@ -1000,9 +1069,14 @@ async fn run_backtest(
     let returns_inf = returns_array.iter().filter(|v| v.is_infinite()).count();
     let close_nan = close_array.iter().filter(|v| v.is_nan()).count();
     let close_inf = close_array.iter().filter(|v| v.is_infinite()).count();
-    let close_zero = close_array.iter().filter(|v| (*v - 0.0).abs() < 1e-10).count();
-    eprintln!("[run_backtest] NaN/Inf: factor={}/{}, returns={}/{}, close={}/{}, close_zero={}",
-        factor_nan, factor_inf, returns_nan, returns_inf, close_nan, close_inf, close_zero);
+    let close_zero = close_array
+        .iter()
+        .filter(|v| (*v - 0.0).abs() < 1e-10)
+        .count();
+    eprintln!(
+        "[run_backtest] NaN/Inf: factor={}/{}, returns={}/{}, close={}/{}, close_zero={}",
+        factor_nan, factor_inf, returns_nan, returns_inf, close_nan, close_inf, close_zero
+    );
 
     let result = engine
         .run(
@@ -1055,7 +1129,10 @@ fn convert_to_nav_data(
     let group_cum_returns = result.group_cum_returns;
     let n_quantile_days = group_cum_returns.nrows();
     let n_quantiles = group_cum_returns.ncols();
-    eprintln!("[convert_to_nav_data] n_quantile_days={}, n_quantiles={}", n_quantile_days, n_quantiles);
+    eprintln!(
+        "[convert_to_nav_data] n_quantile_days={}, n_quantiles={}",
+        n_quantile_days, n_quantiles
+    );
 
     // Debug: check group_cum_returns values
     let first_col = group_cum_returns.column(0);
@@ -2860,6 +2937,7 @@ fn run_real_gp(
         crossover_prob: 0.8,
         mutation_prob: 0.1,
         max_depth: 4,
+        parent_diversity_penalty: 0.1,
     };
 
     // Create terminals (variables) from the provided terminal_set

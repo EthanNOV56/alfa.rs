@@ -282,7 +282,6 @@ impl PyExpr {
     }
 }
 
-
 /// Parse expression string into Expr AST
 #[pyfunction]
 fn parse_expression(expression: &str) -> PyResult<PyExpr> {
@@ -935,7 +934,15 @@ impl PyBacktestEngine {
 
         let engine = BacktestEngine::with_config(self.config.clone());
 
-        match engine.run(factor_array, returns_array, adj_factor_array, close_array, open_array, vwap_array, tradable_array) {
+        match engine.run(
+            factor_array,
+            returns_array,
+            adj_factor_array,
+            close_array,
+            open_array,
+            vwap_array,
+            tradable_array,
+        ) {
             Ok(result) => Ok(PyBacktestResult::from(result)),
             Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(e)),
         }
@@ -1131,7 +1138,7 @@ fn quantile_backtest(
         short_top_n,
         fee_config,
         position_config: Default::default(),
-            limit_up_down_config: Default::default(),
+        limit_up_down_config: Default::default(),
     };
 
     let engine = BacktestEngine::with_config(config);
@@ -1144,7 +1151,15 @@ fn quantile_backtest(
     let vwap_array = vwap.readonly().as_array().to_owned();
     let tradable_array = tradable.readonly().as_array().to_owned();
 
-    match engine.run(factor_array, returns_array, adj_factor_array, close_array, open_array, vwap_array, tradable_array) {
+    match engine.run(
+        factor_array,
+        returns_array,
+        adj_factor_array,
+        close_array,
+        open_array,
+        vwap_array,
+        tradable_array,
+    ) {
         Ok(result) => Ok(PyBacktestResult::from(result)),
         Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(e)),
     }
@@ -1239,7 +1254,7 @@ pub struct PyGpEngine {
 #[pymethods]
 impl PyGpEngine {
     #[new]
-    #[pyo3(signature = (population_size=100, max_generations=50, tournament_size=7, crossover_prob=0.8, mutation_prob=0.2, max_depth=6, allow_ephemeral=true))]
+    #[pyo3(signature = (population_size=100, max_generations=50, tournament_size=7, crossover_prob=0.8, mutation_prob=0.2, max_depth=6, allow_ephemeral=true, parent_diversity_penalty=0.1))]
     fn new(
         population_size: usize,
         max_generations: usize,
@@ -1248,6 +1263,7 @@ impl PyGpEngine {
         mutation_prob: f64,
         max_depth: usize,
         allow_ephemeral: bool,
+        parent_diversity_penalty: f64,
     ) -> Self {
         // Create default terminals (will be updated later)
         let mut terminals = vec![Terminal::Constant(1.0), Terminal::Constant(2.0)];
@@ -1274,6 +1290,7 @@ impl PyGpEngine {
             crossover_prob,
             mutation_prob,
             max_depth,
+            parent_diversity_penalty,
         };
 
         let rng = StdRng::from_entropy();
@@ -2143,7 +2160,9 @@ impl PyFactorRegistry {
             .compute(&[name], &arr_data, false, false)
             .map_err(|e| PyValueError::new_err(e))?;
 
-        results.into_values().next()
+        results
+            .into_values()
+            .next()
             .map(|r| PyFactorResult {
                 name: r.name,
                 values: r.values,
@@ -2235,10 +2254,7 @@ impl PyFactorRegistry {
         let names = self.inner.list();
 
         // 2. Build query fields with 1d: prefix
-        let mut query_fields = vec![
-            "1d:trading_date".to_string(),
-            "1d:symbol".to_string(),
-        ];
+        let mut query_fields = vec!["1d:trading_date".to_string(), "1d:symbol".to_string()];
         for c in col_set {
             query_fields.push(format!("1d:{}", c));
         }
@@ -2304,8 +2320,7 @@ impl PyFactorRegistry {
         // 8. Reshape each factor result to 2D
         let result_dict = PyDict::new(py);
         for (name, fr) in &results {
-            let mut mat =
-                Array2::<f64>::from_elem((n_dates, n_symbols), f64::NAN);
+            let mut mat = Array2::<f64>::from_elem((n_dates, n_symbols), f64::NAN);
 
             for i in 0..fr.values.len() {
                 if i >= dates_arr.len() || i >= syms_arr.len() {
@@ -2318,9 +2333,7 @@ impl PyFactorRegistry {
                     continue;
                 }
 
-                if let (Some(&di), Some(&si)) =
-                    (date_to_idx.get(&d), sym_to_idx.get(&s))
-                {
+                if let (Some(&di), Some(&si)) = (date_to_idx.get(&d), sym_to_idx.get(&s)) {
                     mat[[di, si]] = fr.values[i];
                 }
             }
@@ -2485,7 +2498,13 @@ impl PyClickHouseSource {
 
     #[new]
     #[pyo3(signature = (host, port, database, username, password=None))]
-    fn new(host: &str, port: u16, database: &str, username: &str, password: Option<String>) -> Self {
+    fn new(
+        host: &str,
+        port: u16,
+        database: &str,
+        username: &str,
+        password: Option<String>,
+    ) -> Self {
         Self {
             inner: ClickHouseSource::with_units(host, port, database, username, 100, 1000),
         }
@@ -2638,10 +2657,8 @@ impl PyPriceMatrix {
         py: Python<'_>,
         slices: Vec<Py<PyFactorSlice>>,
     ) -> PyResult<Py<PyArray2<f64>>> {
-        let rust_slices: Vec<FactorSlice> = slices
-            .iter()
-            .map(|s| s.borrow(py).inner.clone())
-            .collect();
+        let rust_slices: Vec<FactorSlice> =
+            slices.iter().map(|s| s.borrow(py).inner.clone()).collect();
         let mat = self.inner.build_factor_matrix(&rust_slices);
         Ok(mat.into_pyarray(py).into())
     }
@@ -2693,7 +2710,11 @@ impl PyFactorSlice {
     }
 
     fn __repr__(&self) -> String {
-        format!("FactorSlice({}, n={})", self.inner.factor_name, self.inner.groups.len())
+        format!(
+            "FactorSlice({}, n={})",
+            self.inner.factor_name,
+            self.inner.groups.len()
+        )
     }
 }
 
@@ -2748,7 +2769,11 @@ impl PyFactorCombiner {
                         count += 1;
                     }
                 }
-                combined[[i, j]] = if count > 0 { sum / count as f64 } else { f64::NAN };
+                combined[[i, j]] = if count > 0 {
+                    sum / count as f64
+                } else {
+                    f64::NAN
+                };
             }
         }
         Ok(combined.into_pyarray(py).into())
@@ -2836,10 +2861,7 @@ impl PyFactorCombiner {
                     continue;
                 }
                 let mean = valid.iter().map(|(_, v)| *v).sum::<f64>() / valid.len() as f64;
-                let std = (valid
-                    .iter()
-                    .map(|(_, v)| (*v - mean).powi(2))
-                    .sum::<f64>()
+                let std = (valid.iter().map(|(_, v)| (*v - mean).powi(2)).sum::<f64>()
                     / valid.len() as f64)
                     .sqrt();
                 if std < 1e-12 {
@@ -2937,8 +2959,8 @@ impl PyFactorCombiner {
 
 // ── AlfarsLab ──────────────────────────────────────────────────────────
 
-use crate::lab::AlfarsLab;
 use crate::expr::registry::config::FactorPanel;
+use crate::lab::AlfarsLab;
 
 /// Opaque FactorPanel handle returned by AlfarsLab.calc().
 /// Pass to AlfarsLab.run() for backtesting.
@@ -2969,9 +2991,9 @@ impl PyAlfarsLab {
     fn new() -> Self {
         // Users should call from_env() instead to load .env
         Self {
-            inner: std::sync::Mutex::new(
-                AlfarsLab::new(crate::data::clickhouse::ClickHouseSource::from_env()),
-            ),
+            inner: std::sync::Mutex::new(AlfarsLab::new(
+                crate::data::clickhouse::ClickHouseSource::from_env(),
+            )),
         }
     }
 
@@ -2979,9 +3001,9 @@ impl PyAlfarsLab {
     fn from_env() -> Self {
         dotenv::dotenv().ok();
         Self {
-            inner: std::sync::Mutex::new(
-                AlfarsLab::new(crate::data::clickhouse::ClickHouseSource::from_env()),
-            ),
+            inner: std::sync::Mutex::new(AlfarsLab::new(
+                crate::data::clickhouse::ClickHouseSource::from_env(),
+            )),
         }
     }
 
@@ -3004,9 +3026,11 @@ impl PyAlfarsLab {
         let wm = match weight_method {
             "equal" => WeightMethod::Equal,
             "weighted" => WeightMethod::Weighted,
-            _ => return Err(pyo3::exceptions::PyValueError::new_err(
-                "weight_method must be 'equal' or 'weighted'",
-            )),
+            _ => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "weight_method must be 'equal' or 'weighted'",
+                ));
+            }
         };
         let config = backtest::BacktestConfig {
             quantiles,
@@ -3025,7 +3049,8 @@ impl PyAlfarsLab {
 
     fn register(&self, name: &str, expression: &str) -> PyResult<()> {
         self.inner
-            .lock().unwrap()
+            .lock()
+            .unwrap()
             .register(name, expression)
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
         Ok(())
@@ -3034,7 +3059,8 @@ impl PyAlfarsLab {
     fn calc(&self, csv_path: &str) -> PyResult<PyFactorPanel> {
         let panel = self
             .inner
-            .lock().unwrap()
+            .lock()
+            .unwrap()
             .calc(csv_path)
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
         Ok(PyFactorPanel { inner: panel })
@@ -3043,7 +3069,8 @@ impl PyAlfarsLab {
     fn run(&self, panel: &PyFactorPanel) -> PyResult<PyBacktestResult> {
         let result = self
             .inner
-            .lock().unwrap()
+            .lock()
+            .unwrap()
             .run(&panel.inner)
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
         Ok(PyBacktestResult::from(result))
@@ -3052,7 +3079,9 @@ impl PyAlfarsLab {
     fn evaluate(&self, py: Python<'_>) -> PyResult<(Py<PyDict>, Py<PyAny>)> {
         py.check_signals()?;
         let (matrices, prices) = self
-            .inner.lock().unwrap()
+            .inner
+            .lock()
+            .unwrap()
             .evaluate()
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
         py.check_signals()?;
@@ -3070,11 +3099,14 @@ impl PyAlfarsLab {
         factor_mats: Vec<Bound<'_, PyArray2<f64>>>,
         prices: &PyPriceMatrix,
     ) -> PyResult<PyBacktestResult> {
-        let mats: Vec<_> = factor_mats.iter()
+        let mats: Vec<_> = factor_mats
+            .iter()
             .map(|m| m.readonly().as_array().to_owned())
             .collect();
         let result = self
-            .inner.lock().unwrap()
+            .inner
+            .lock()
+            .unwrap()
             .run_multi(&mats, &prices.inner)
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
         Ok(PyBacktestResult::from(result))
