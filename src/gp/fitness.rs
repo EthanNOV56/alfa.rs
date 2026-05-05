@@ -43,7 +43,8 @@ pub trait FitnessEvaluator: Send + Sync {
 /// Fitness evaluator for factor mining based on actual backtest performance
 /// with support for train/test/validation split
 pub struct RealBacktestFitnessEvaluator {
-    data: HashMap<String, Array2<f64>>,
+    /// Pre-built per-asset columns: asset_columns[asset_idx][col_name] = time series
+    asset_columns: Vec<HashMap<String, ndarray::Array1<f64>>>,
     prices: PriceMatrix,
     weights: HashMap<String, f64>, // Feature weights for multi-objective optimization
     min_valid_days: usize,         // Minimum days required for valid backtest
@@ -62,8 +63,9 @@ pub struct RealBacktestFitnessEvaluator {
 impl RealBacktestFitnessEvaluator {
     /// Create a new evaluator with a PriceMatrix for backtesting.
     pub fn new(data: HashMap<String, Array2<f64>>, prices: PriceMatrix) -> Self {
+        let asset_columns = Self::build_asset_columns(&data);
         Self {
-            data,
+            asset_columns,
             prices,
             weights: HashMap::new(),
             min_valid_days: 50,
@@ -83,9 +85,10 @@ impl RealBacktestFitnessEvaluator {
     ) -> Self {
         let n_days = prices.returns.shape()[0];
         let data_split = DataSplit::from_config(n_days, &split_config);
+        let asset_columns = Self::build_asset_columns(&data);
 
         Self {
-            data,
+            asset_columns,
             prices,
             weights: HashMap::new(),
             min_valid_days: 50,
@@ -95,6 +98,23 @@ impl RealBacktestFitnessEvaluator {
             last_metrics: RwLock::new((0.0, 0.0, 0.0, 0)),
             last_split_result: RwLock::new(None),
         }
+    }
+
+    /// Pre-build per-asset column slices (done once at construction).
+    fn build_asset_columns(
+        data: &HashMap<String, Array2<f64>>,
+    ) -> Vec<HashMap<String, ndarray::Array1<f64>>> {
+        let first = data.values().next();
+        let n_assets = first.map(|a| a.shape()[1]).unwrap_or(0);
+        let mut result = Vec::with_capacity(n_assets);
+        for asset_idx in 0..n_assets {
+            let mut cols = HashMap::new();
+            for (name, array) in data {
+                cols.insert(name.clone(), array.column(asset_idx).to_owned());
+            }
+            result.push(cols);
+        }
+        result
     }
 
     /// Set fee configuration
@@ -141,39 +161,55 @@ impl RealBacktestFitnessEvaluator {
         self
     }
 
-    /// Evaluate expression and run backtest with multiple objectives
+    /// Evaluate expression and run backtest (one full backtest, slice for train/val/test).
     fn evaluate_with_backtest(&self, expr: &Expr) -> Option<MultiObjectiveFitness> {
         let n_days = self.prices.returns.shape()[0];
 
         if n_days < self.min_valid_days {
-            return None; // Not enough data for valid backtest
+            return None;
         }
 
-        // Evaluate expression to get factor matrix (full data)
+        use std::time::Instant;
+        let t0 = Instant::now();
         let factor_matrix = self.evaluate_expression(expr)?;
+        let t_eval = t0.elapsed();
 
-        // Run backtest on the factor matrix (uses training data if split is configured)
-        let backtest_result = self.run_backtest(&factor_matrix)?;
+        let result = self.run_backtest(&factor_matrix)?;
+        let t_bt = t0.elapsed();
 
-        // Evaluate on all splits if configured (for tracking purposes)
-        if self.data_split.is_some() {
-            // Evaluate on all splits and store results
-            let _ = self.evaluate_on_all_splits(&factor_matrix);
-        }
-
-        // Compute turnover (simplified - based on factor value changes)
         let turnover = self.compute_turnover(&factor_matrix);
-
-        // Compute complexity
         let complexity = self.compute_complexity(expr);
 
-        // Store last computed metrics
+        // Slice IC from train indices for fitness (if split configured)
+        let (train_ic, train_ir) = if let Some(ref split) = self.data_split {
+            let metrics = self.compute_split_metrics(&result.ic_series, &split.train_indices);
+            (metrics.ic_mean, metrics.ic_ir)
+        } else {
+            (result.ic_mean, result.ic_ir)
+        };
+
+        // Store last computed metrics (train only for fitness)
         *self.last_metrics.write().unwrap() = (
-            backtest_result.ic_mean.abs(),
-            backtest_result.ic_ir.abs(),
+            train_ic.abs(),
+            train_ir.abs(),
             turnover,
             complexity.node_count,
         );
+
+        // Compute split metrics from the same full backtest result
+        if let Some(split_result) = self.evaluate_split_metrics(&result) {
+            *self.last_split_result.write().unwrap() = Some(split_result);
+        }
+
+        let total = t0.elapsed();
+        if total.as_millis() > 100 {
+            println!(
+                "[perf] fitness eval={:.0}ms bt={:.0}ms total={:.0}ms",
+                t_eval.as_millis(),
+                (t_bt - t_eval).as_millis(),
+                total.as_millis()
+            );
+        }
 
         // Get weights
         let w_ic = *self.weights.get("ic").unwrap_or(&0.4);
@@ -181,116 +217,49 @@ impl RealBacktestFitnessEvaluator {
         let w_to = *self.weights.get("turnover").unwrap_or(&0.15);
         let w_comp = *self.weights.get("complexity").unwrap_or(&0.15);
 
-        // Create multi-objective fitness
+        // Create multi-objective fitness (uses train-sliced IC/IR)
         Some(MultiObjectiveFitness::new(
-            backtest_result.ic_mean.abs(), // Use absolute IC (direction doesn't matter)
-            backtest_result.ic_ir.abs(),   // Use absolute IR
+            train_ic.abs(),
+            train_ir.abs(),
             turnover,
             &complexity,
             Some((w_ic, w_ir, w_to, w_comp)),
         ))
     }
 
-    /// Evaluate expression to get factor matrix
+    /// Evaluate expression to get factor matrix.
+    ///
+    /// Uses pre-built per-asset columns and caches. Sequential loop per asset
+    /// avoids nested parallelism (outer `par_iter` already saturates threads).
     fn evaluate_expression(&self, expr: &Expr) -> Option<Array2<f64>> {
-        use ndarray::Array1;
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-
         let n_days = self.prices.returns.shape()[0];
-        let n_assets = self.prices.returns.shape()[1];
+        let n_assets = self.asset_columns.len();
+        let mut factor_matrix = Array2::<f64>::zeros((n_days, n_assets));
 
-        // Parallel evaluation across assets
-        let results: Vec<Vec<f64>> = (0..n_assets)
-            .into_par_iter()
-            .map(|asset_idx| {
-                let mut columns: HashMap<String, Array1<f64>> = HashMap::new();
+        for (asset_idx, columns) in self.asset_columns.iter().enumerate() {
+            let mut cache = HashMap::new();
 
-                for (col_name, array) in &self.data {
-                    let column_data = array.column(asset_idx).to_owned();
-                    columns.insert(col_name.clone(), column_data);
-                }
+            let values = match eval_expr_vectorized(expr, columns, &mut cache) {
+                Ok(arr) => arr,
+                Err(_) => continue,
+            };
 
-                // Pre-populate cache with column hashes
-                let mut cache: HashMap<u64, Array1<f64>> = HashMap::new();
-                for (name, arr) in &columns {
-                    let mut hasher = DefaultHasher::new();
-                    0u8.hash(&mut hasher);
-                    name.hash(&mut hasher);
-                    cache.insert(hasher.finish(), arr.clone());
-                }
-
-                match eval_expr_vectorized(expr, &columns, &mut cache) {
-                    Ok(arr) => arr.to_vec(),
-                    Err(_) => vec![f64::NAN; n_days],
-                }
-            })
-            .collect();
-
-        // Check if we have enough valid values
-        let valid_count = results
-            .iter()
-            .flat_map(|v| v.iter())
-            .filter(|&&v| !v.is_nan())
-            .count();
-
-        if valid_count < self.min_valid_days * n_assets / 2 {
-            return None; // Too many NaN values
+            for (day_idx, &v) in values.iter().enumerate() {
+                factor_matrix[[day_idx, asset_idx]] = v;
+            }
         }
 
-        // Convert to Array2
-        let mut factor_matrix = Array2::<f64>::zeros((n_days, n_assets));
-        for (asset_idx, values) in results.iter().enumerate() {
-            for (day_idx, &value) in values.iter().enumerate() {
-                factor_matrix[[day_idx, asset_idx]] = value;
-            }
+        let nan_count = factor_matrix.iter().filter(|&&v| v.is_nan()).count();
+        let total = n_days * n_assets;
+        if total - nan_count < self.min_valid_days * n_assets / 2 {
+            return None;
         }
 
         Some(factor_matrix)
     }
 
-    /// Run backtest on factor matrix (uses training data if split is configured)
+    /// Run IC-only backtest on the full factor matrix (skips P&L simulation).
     fn run_backtest(&self, factor: &Array2<f64>) -> Option<BacktestResult> {
-        if let Some(ref split) = self.data_split {
-            let train_factor = self.extract_split_data(factor, &split.train_indices);
-            let train_prices = self.split_price_matrix(&split.train_indices);
-            return self.run_backtest_internal(&train_factor, &train_prices);
-        }
-        self.run_backtest_internal(factor, &self.prices)
-    }
-
-    /// Run backtest on a specific data split
-    fn run_backtest_on_split(
-        &self,
-        factor: &Array2<f64>,
-        indices: &[usize],
-    ) -> Option<BacktestResult> {
-        let split_factor = self.extract_split_data(factor, indices);
-        let split_prices = self.split_price_matrix(indices);
-        self.run_backtest_internal(&split_factor, &split_prices)
-    }
-
-    /// Create a PriceMatrix subset for the given day indices.
-    fn split_price_matrix(&self, indices: &[usize]) -> PriceMatrix {
-        PriceMatrix {
-            dates: indices.iter().map(|&i| self.prices.dates[i]).collect(),
-            symbols: self.prices.symbols.clone(),
-            close: self.extract_split_data(&self.prices.close, indices),
-            open: self.extract_split_data(&self.prices.open, indices),
-            high: self.extract_split_data(&self.prices.high, indices),
-            low: self.extract_split_data(&self.prices.low, indices),
-            vwap: self.extract_split_data(&self.prices.vwap, indices),
-            returns: self.extract_split_data(&self.prices.returns, indices),
-            tradable: self.extract_split_data(&self.prices.tradable, indices),
-        }
-    }
-
-    /// Internal backtest using BacktestEngine::run_with_prices.
-    fn run_backtest_internal(
-        &self,
-        factor: &Array2<f64>,
-        prices: &PriceMatrix,
-    ) -> Option<BacktestResult> {
         let config = BacktestConfig {
             quantiles: 10,
             weight_method: WeightMethod::Equal,
@@ -303,7 +272,7 @@ impl RealBacktestFitnessEvaluator {
 
         let engine = BacktestEngine::with_config(config);
 
-        match engine.run_with_prices(factor.clone(), prices) {
+        match engine.run_ic_only_with_prices(factor.clone(), &self.prices) {
             Ok(result) => {
                 if result.ic_mean.is_nan() || result.ic_ir.is_nan() {
                     None
@@ -315,46 +284,34 @@ impl RealBacktestFitnessEvaluator {
         }
     }
 
-    /// Extract data for a specific set of indices
-    fn extract_split_data(&self, data: &Array2<f64>, indices: &[usize]) -> Array2<f64> {
-        let n_cols = data.shape()[1];
-        let mut result = Array2::<f64>::zeros((indices.len(), n_cols));
-
-        for (i, &idx) in indices.iter().enumerate() {
-            for j in 0..n_cols {
-                result[[i, j]] = data[[idx, j]];
-            }
+    /// Compute IC mean and IR from ic_series sliced by indices.
+    fn compute_split_metrics(&self, ic_series: &ndarray::Array1<f64>, indices: &[usize]) -> SplitMetrics {
+        let n = indices.len() as f64;
+        if n < 2.0 {
+            return SplitMetrics::default();
         }
-
-        result
+        let sum: f64 = indices.iter().map(|&i| ic_series[i]).sum();
+        let mean = sum / n;
+        let variance: f64 = indices.iter().map(|&i| {
+            let diff = ic_series[i] - mean;
+            diff * diff
+        }).sum::<f64>() / (n - 1.0);
+        let ir = if variance > 0.0 { mean / variance.sqrt() } else { 0.0 };
+        SplitMetrics {
+            ic_mean: mean,
+            ic_ir: ir,
+            ..Default::default()
+        }
     }
 
-    /// Evaluate factor on all splits and return comprehensive results
-    pub fn evaluate_on_all_splits(&self, factor: &Array2<f64>) -> Option<SplitEvaluationResult> {
+    /// Evaluate factor on all splits (from a single full backtest result).
+    pub fn evaluate_split_metrics(&self, result: &BacktestResult) -> Option<SplitEvaluationResult> {
         let split = self.data_split.as_ref()?;
-
-        // Evaluate on training set
-        let train_result = self.run_backtest_on_split(factor, &split.train_indices)?;
-        let train_metrics = SplitMetrics::from_backtest(&train_result);
-
-        // Evaluate on validation set
-        let validation_result = self.run_backtest_on_split(factor, &split.validation_indices)?;
-        let validation_metrics = SplitMetrics::from_backtest(&validation_result);
-
-        // Evaluate on test set
-        let test_result = self.run_backtest_on_split(factor, &split.test_indices)?;
-        let test_metrics = SplitMetrics::from_backtest(&test_result);
-
-        let result = SplitEvaluationResult {
-            train: train_metrics,
-            validation: validation_metrics,
-            test: test_metrics,
-        };
-
-        // Store the result
-        *self.last_split_result.write().unwrap() = Some(result.clone());
-
-        Some(result)
+        Some(SplitEvaluationResult {
+            train: self.compute_split_metrics(&result.ic_series, &split.train_indices),
+            validation: self.compute_split_metrics(&result.ic_series, &split.validation_indices),
+            test: self.compute_split_metrics(&result.ic_series, &split.test_indices),
+        })
     }
 
     /// Get last split evaluation result

@@ -272,6 +272,56 @@ impl BacktestEngine {
         Ok(result)
     }
 
+    /// IC-only backtest: skip P&L simulation, compute only IC series and turnover.
+    /// Much faster than `run()` because it avoids NAV simulation on all assets.
+    pub fn run_ic_only(
+        &self,
+        factor: Array2<f64>,
+        returns: Array2<f64>,
+    ) -> Result<BacktestResult, String> {
+        assert_eq!(factor.shape(), returns.shape());
+        let (n_days, n_assets) = factor.dim();
+        let quantiles = self.config.quantiles;
+
+        let group_labels =
+            super::portfolio::compute_quantile_groups(&factor, quantiles)?;
+        let (ic_series, ic_mean, ic_ir) =
+            super::metrics::compute_ic_series(&factor, &returns)?;
+        let turnover = super::metrics::compute_turnover(&group_labels);
+
+        Ok(BacktestResult {
+            dates: vec![],
+            group_returns: Array2::zeros((0, 0)),
+            group_cum_returns: Array2::zeros((0, 0)),
+            long_short_returns: Array1::zeros(0),
+            long_short_cum_return: 0.0,
+            long_short_cum_returns: Array1::zeros(0),
+            long_cum_returns: Array1::zeros(0),
+            short_cum_returns: Array1::zeros(0),
+            ic_series,
+            ic_mean,
+            ic_ir,
+            total_return: 0.0,
+            annualized_return: 0.0,
+            sharpe_ratio: 0.0,
+            max_drawdown: 0.0,
+            turnover,
+            long_returns: Array1::zeros(0),
+            short_returns: Array1::zeros(0),
+        })
+    }
+
+    /// IC-only backtest with PriceMatrix (auto-extracts returns).
+    pub fn run_ic_only_with_prices(
+        &self,
+        factor: Array2<f64>,
+        prices: &PriceMatrix,
+    ) -> Result<BacktestResult, String> {
+        let mut result = self.run_ic_only(factor, prices.returns.clone())?;
+        result.dates = prices.dates.clone();
+        Ok(result)
+    }
+
     /// Multi-factor equal-weight combination backtest.
     ///
     /// Takes a list of factor matrices (all same shape), averages them

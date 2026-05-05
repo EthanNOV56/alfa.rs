@@ -57,6 +57,7 @@ pub fn run_gp<R: Rng + ?Sized>(
 
     // Main evolution loop
     for generation in 0..config.max_generations {
+        let gen_t0 = std::time::Instant::now();
         // Compute family hashes for diversity-aware selection
         let family_hashes: Vec<u64> = population.iter().map(|e| family_hash(e)).collect();
         let mut family_usage: HashMap<u64, u32> = HashMap::new();
@@ -149,12 +150,14 @@ pub fn run_gp<R: Rng + ?Sized>(
             }
         }
 
-        if generation % 10 == 0 {
+        let gen_elapsed = gen_t0.elapsed();
+        if generation % 5 == 0 {
             println!(
-                "Generation {}: best fitness = {:.6}, unique families = {}",
+                "Generation {}: best fitness = {:.6}, unique families = {}, time = {:.1}s",
                 generation,
                 scores[best_idx],
-                family_usage.len()
+                family_usage.len(),
+                gen_elapsed.as_secs_f64()
             );
         }
     }
