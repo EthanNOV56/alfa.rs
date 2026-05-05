@@ -3200,7 +3200,7 @@ impl PyAlfarsLab {
     ///
     /// Uses the lab's configured data source and filter. Returns a list of
     /// `(expression, fitness, ic, ir, turnover, complexity)` tuples.
-    #[pyo3(signature = (population_size=100, max_generations=50, tournament_size=7, crossover_prob=0.8, mutation_prob=0.2, max_depth=6, use_diverse_init=true, smart_mutation_ratio=0.3, num_factors=3))]
+    #[pyo3(signature = (population_size=100, max_generations=50, tournament_size=7, crossover_prob=0.8, mutation_prob=0.2, max_depth=6, use_diverse_init=true, smart_mutation_ratio=0.3, num_factors=3, max_symbols=0))]
     fn mine_factors(
         &self,
         population_size: usize,
@@ -3212,6 +3212,7 @@ impl PyAlfarsLab {
         use_diverse_init: bool,
         smart_mutation_ratio: f64,
         num_factors: usize,
+        max_symbols: usize,
     ) -> PyResult<Vec<(String, f64, f64, f64, f64, usize)>> {
         let config = GPConfig {
             population_size,
@@ -3227,7 +3228,7 @@ impl PyAlfarsLab {
         };
         let mut inner = self.inner.lock().unwrap();
         inner
-            .mine_factors(config, num_factors)
+            .mine_factors(config, num_factors, max_symbols)
             .map_err(|e| PyRuntimeError::new_err(e))
     }
 

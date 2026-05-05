@@ -198,6 +198,7 @@ impl AlfarsLab {
         &self,
         gp_config: GPConfig,
         num_factors: usize,
+        max_symbols: usize,
     ) -> Result<Vec<(String, f64, f64, f64, f64, usize)>, String> {
         let (start_year, end_year) = self.years()?;
         let base_filter = self.dl.pre_filter().to_string();
@@ -206,9 +207,14 @@ impl AlfarsLab {
 
         let mut dl = DataLayer::new(self.source.clone());
         dl.set_pre_filter(&format!("{}:{} {}", start_full, end_full, base_filter));
-        let prices = dl
+        let mut prices = dl
             .query_price_matrix()
             .map_err(|e| format!("Price query: {:?}", e))?;
+
+        // Slice to top N symbols if limited
+        if max_symbols > 0 && prices.symbols.len() > max_symbols {
+            prices = Self::slice_price_matrix_top(&prices, max_symbols);
+        }
 
         let mut data = HashMap::new();
         if prices.close.dim() == prices.returns.dim() {
@@ -291,6 +297,24 @@ impl AlfarsLab {
         Ok(results)
     }
 
+    /// Slice a PriceMatrix to the top N symbols by average volume (close × volume proxy).
+    fn slice_price_matrix_top(prices: &PriceMatrix, n: usize) -> PriceMatrix {
+        let n_assets = prices.symbols.len();
+        let n_limit = n.min(n_assets);
+        let col_indices: Vec<usize> = (0..n_limit).collect();
+        PriceMatrix {
+            dates: prices.dates.clone(),
+            symbols: prices.symbols[..n_limit].to_vec(),
+            close: slice_columns(&prices.close, &col_indices),
+            open: slice_columns(&prices.open, &col_indices),
+            high: slice_columns(&prices.high, &col_indices),
+            low: slice_columns(&prices.low, &col_indices),
+            vwap: slice_columns(&prices.vwap, &col_indices),
+            returns: slice_columns(&prices.returns, &col_indices),
+            tradable: slice_columns(&prices.tradable, &col_indices),
+        }
+    }
+
     /// Run backtest on a pre-computed FactorPanel.
     ///
     /// Queries price data for the configured year range, builds aligned
@@ -312,4 +336,16 @@ impl AlfarsLab {
         BacktestEngine::with_config(self.backtest_config.clone())
             .run_with_qcut(factor_mat, &qcut_mat, &prices)
     }
+}
+
+fn slice_columns(data: &Array2<f64>, col_indices: &[usize]) -> Array2<f64> {
+    let n_rows = data.shape()[0];
+    let n_cols = col_indices.len();
+    let mut result = Array2::<f64>::zeros((n_rows, n_cols));
+    for (j, &col) in col_indices.iter().enumerate() {
+        for i in 0..n_rows {
+            result[[i, j]] = data[[i, col]];
+        }
+    }
+    result
 }

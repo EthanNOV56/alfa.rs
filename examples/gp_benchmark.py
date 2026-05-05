@@ -48,7 +48,7 @@ def enhanced_config():
 # ── Benchmark Runner ──────────────────────────────────────────────────────
 
 
-def run_config(name, config, lab, num_factors=3):
+def run_config(name, config, lab, num_factors=3, max_symbols=0):
     print(f"\n{'=' * 60}")
     print(f"  Config: {name}")
     print(f"{'=' * 60}")
@@ -56,7 +56,7 @@ def run_config(name, config, lab, num_factors=3):
         print(f"    {k}: {v}")
 
     t0 = time.perf_counter()
-    results = lab.mine_factors(num_factors=num_factors, **config)
+    results = lab.mine_factors(num_factors=num_factors, max_symbols=max_symbols, **config)
     elapsed = time.perf_counter() - t0
 
     print(f"\n  Time: {elapsed:.3f}s ({elapsed / num_factors:.3f}s/factor)")
@@ -107,14 +107,14 @@ def demo_structural_similarity():
         print(f"  sim({a}, {b}) = {sim:.4f}")
 
 
-def demo_factor_pool(lab):
+def demo_factor_pool(lab, max_symbols=0):
     print(f"\n{'=' * 60}")
     print(f"  FactorPool — Redundancy Filtering")
     print(f"{'=' * 60}")
 
     pool = al.FactorPool(max_size=5)
 
-    results = lab.mine_factors(num_factors=3, **quick_config())
+    results = lab.mine_factors(num_factors=3, max_symbols=max_symbols, **quick_config())
     admitted = rejected_dup = flagged = rejected_min = 0
     for r in results:
         expr_str, fitness, ic, ir, _, _ = r
@@ -153,10 +153,14 @@ def main():
     parser.add_argument(
         "--profile", action="store_true", help="Single config with verbose output"
     )
+    parser.add_argument(
+        "--max-symbols", type=int, default=100, help="Max symbols to load (default: 100, 0=all)"
+    )
     args = parser.parse_args()
 
     years = args.years
     num_factors = 3
+    max_symbols = args.max_symbols
 
     print(f"GP Engine Benchmark via AlfarsLab")
     print(f"  Years: {years}, Factors per config: {num_factors}")
@@ -170,10 +174,10 @@ def main():
     lab.with_years(this_year - years, this_year)
     lab.with_backtest_config(10, "equal", 1, 1, 0.0003)
 
-    print(f"  Filter: {this_year - years}–{this_year}, {filter}")
+    print(f"  Filter: {this_year - years}–{this_year}, {filter}, max_symbols={max_symbols or 'all'}")
 
     # Warmup
-    _ = lab.mine_factors(num_factors=1, **quick_config())
+    _ = lab.mine_factors(num_factors=1, max_symbols=max_symbols, **quick_config())
 
     # Run 2 configs
     configs = [("quick", quick_config()), ("enhanced", enhanced_config())]
@@ -182,7 +186,7 @@ def main():
 
     all_stats = []
     for name, cfg in configs:
-        all_stats.append(run_config(name, cfg, lab, num_factors))
+        all_stats.append(run_config(name, cfg, lab, num_factors, max_symbols))
 
     # Summary
     print(f"\n{'=' * 60}")
@@ -205,7 +209,7 @@ def main():
 
     # Feature demos
     demo_structural_similarity()
-    demo_factor_pool(lab)
+    demo_factor_pool(lab, max_symbols)
 
     print(f"\n{'=' * 60}")
     print(f"  Done. --profile for verbose output.")
