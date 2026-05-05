@@ -5,14 +5,14 @@ This module starts both the backend server and frontend dev server,
 providing a Jupyter Lab-like experience for factor research.
 """
 
-import subprocess
-import webbrowser
-import time
-import sys
+import atexit
 import os
 import signal
-import atexit
-from typing import Optional, List
+import subprocess
+import sys
+import time
+import webbrowser
+from typing import List, Optional
 
 # Project root directory
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -47,6 +47,31 @@ def check_cargo_available() -> bool:
         return False
 
 
+def _find_server_binary():
+    """Locate the alfars-server binary (bundled, dev build, or system PATH)."""
+    import shutil
+
+    # 1. Bundled in alfars package directory (pip install with maturin bin)
+    package_dir = os.path.dirname(os.path.abspath(__file__))
+    for name in ("alfars-server", "alfars-server.exe"):
+        bundled = os.path.join(package_dir, name)
+        if os.path.isfile(bundled) and os.access(bundled, os.X_OK):
+            return bundled
+
+    # 2. Cargo build (dev mode)
+    for profile in ("release", "debug"):
+        dev_bin = os.path.join(PROJECT_ROOT, "target", profile, "alfars-server")
+        if os.path.isfile(dev_bin) and os.access(dev_bin, os.X_OK):
+            return dev_bin
+
+    # 3. System PATH (pip install with scripts)
+    found = shutil.which("alfars-server")
+    if found:
+        return found
+
+    return None
+
+
 def start_backend(backend_type: str = "auto") -> Optional[subprocess.Popen]:
     """
     Start the backend server.
@@ -66,17 +91,30 @@ def start_backend(backend_type: str = "auto") -> Optional[subprocess.Popen]:
     print(f"[alfars lab] Starting backend ({backend_type})...")
 
     if backend_type == "rust":
-        # Start Rust server
-        process = subprocess.Popen(
-            ["cargo", "run", "--release", "--bin", "alfars-server"],
-            cwd=PROJECT_ROOT,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            preexec_fn=os.setsid if sys.platform != "win32" else None,
-        )
-        print(f"[alfars lab] Rust backend started (PID: {process.pid})")
+        # Prefer bundled binary (pip install), fallback to cargo run (dev)
+        bin_path = _find_server_binary()
+        if bin_path:
+            process = subprocess.Popen(
+                [bin_path],
+                cwd=PROJECT_ROOT,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                preexec_fn=os.setsid if sys.platform != "win32" else None,
+            )
+            print(f"[alfars lab] Rust backend started ({bin_path}, PID: {process.pid})")
+        else:
+            process = subprocess.Popen(
+                ["cargo", "run", "--release", "--bin", "alfars-server"],
+                cwd=PROJECT_ROOT,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                preexec_fn=os.setsid if sys.platform != "win32" else None,
+            )
+            print(f"[alfars lab] Rust backend started via cargo (PID: {process.pid})")
         return process
     else:
         # Start Python FastAPI server

@@ -59,3 +59,4 @@ markers = [
 [tool.maturin]
 module-name = "alfars._core"
 features = ["pyo3/extension-module"]
+bin = [{ name = "alfars-server", path = "src/bin/server.rs" }]
