@@ -294,7 +294,7 @@ impl Function {
             builder: |args| {
                 let mut iter = args.into_iter();
                 let expr = iter.next().unwrap();
-                let window = iter.next().unwrap_or(Expr::lit_float(20.0));
+                let window = iter.next().unwrap_or(Expr::lit_int(20));
                 Expr::function("ts_mean", vec![expr, window])
             },
         }
@@ -308,7 +308,7 @@ impl Function {
             builder: |args| {
                 let mut iter = args.into_iter();
                 let expr = iter.next().unwrap();
-                let window = iter.next().unwrap_or(Expr::lit_float(20.0));
+                let window = iter.next().unwrap_or(Expr::lit_int(20));
                 Expr::function("ts_std", vec![expr, window])
             },
         }
@@ -322,7 +322,7 @@ impl Function {
             builder: |args| {
                 let mut iter = args.into_iter();
                 let expr = iter.next().unwrap();
-                let window = iter.next().unwrap_or(Expr::lit_float(20.0));
+                let window = iter.next().unwrap_or(Expr::lit_int(20));
                 Expr::function("ts_max", vec![expr, window])
             },
         }
@@ -336,7 +336,7 @@ impl Function {
             builder: |args| {
                 let mut iter = args.into_iter();
                 let expr = iter.next().unwrap();
-                let window = iter.next().unwrap_or(Expr::lit_float(20.0));
+                let window = iter.next().unwrap_or(Expr::lit_int(20));
                 Expr::function("ts_min", vec![expr, window])
             },
         }
@@ -350,7 +350,7 @@ impl Function {
             builder: |args| {
                 let mut iter = args.into_iter();
                 let expr = iter.next().unwrap();
-                let periods = iter.next().unwrap_or(Expr::lit_float(1.0));
+                let periods = iter.next().unwrap_or(Expr::lit_int(1));
                 Expr::function("ts_delay", vec![expr, periods])
             },
         }
@@ -388,7 +388,7 @@ impl Function {
             builder: |args| {
                 let mut iter = args.into_iter();
                 let expr = iter.next().unwrap();
-                let window = iter.next().unwrap_or(Expr::lit_float(20.0));
+                let window = iter.next().unwrap_or(Expr::lit_int(20));
                 Expr::function("ts_rank", vec![expr, window])
             },
         }
@@ -402,7 +402,7 @@ impl Function {
             builder: |args| {
                 let mut iter = args.into_iter();
                 let expr = iter.next().unwrap();
-                let window = iter.next().unwrap_or(Expr::lit_float(20.0));
+                let window = iter.next().unwrap_or(Expr::lit_int(20));
                 Expr::function("ts_decay_linear", vec![expr, window])
             },
         }
@@ -417,7 +417,7 @@ impl Function {
                 let mut iter = args.into_iter();
                 let expr1 = iter.next().unwrap();
                 let expr2 = iter.next().unwrap();
-                let window = iter.next().unwrap_or(Expr::lit_float(20.0));
+                let window = iter.next().unwrap_or(Expr::lit_int(20));
                 Expr::function("ts_correlation", vec![expr1, expr2, window])
             },
         }
@@ -431,7 +431,7 @@ impl Function {
             builder: |args| {
                 let mut iter = args.into_iter();
                 let expr = iter.next().unwrap();
-                let window = iter.next().unwrap_or(Expr::lit_float(1.0));
+                let window = iter.next().unwrap_or(Expr::lit_int(1));
                 Expr::function("ts_delta", vec![expr, window])
             },
         }
@@ -445,7 +445,7 @@ impl Function {
             builder: |args| {
                 let mut iter = args.into_iter();
                 let expr = iter.next().unwrap();
-                let window = iter.next().unwrap_or(Expr::lit_float(20.0));
+                let window = iter.next().unwrap_or(Expr::lit_int(20));
                 Expr::function("ts_sum", vec![expr, window])
             },
         }
@@ -472,7 +472,7 @@ impl Function {
                 let mut iter = args.into_iter();
                 let expr1 = iter.next().unwrap();
                 let expr2 = iter.next().unwrap();
-                let window = iter.next().unwrap_or(Expr::lit_float(20.0));
+                let window = iter.next().unwrap_or(Expr::lit_int(20));
                 Expr::function("ts_covariance", vec![expr1, expr2, window])
             },
         }

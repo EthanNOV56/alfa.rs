@@ -504,7 +504,56 @@ impl RealBacktestFitnessEvaluator {
 
     /// Check expression constraints (e.g., prevent division by zero, extreme values)
     fn check_constraints(&self, expr: &Expr) -> bool {
-        self.check_division_by_zero(expr) && self.check_extreme_operations(expr)
+        self.check_division_by_zero(expr)
+            && self.check_extreme_operations(expr)
+            && self.check_valid_windows(expr)
+    }
+
+    /// Reject expressions with invalid window/period values in time-series functions.
+    /// Window must be >= 2 for rolling stats, >= 1 for delay/delta.
+    fn check_valid_windows(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::FunctionCall { name, args, .. }
+                if name.starts_with("ts_") || name == "delay" =>
+            {
+                // Second argument is the window/periods parameter
+                if args.len() >= 2 {
+                    let window_expr = &args[1];
+                    if self.could_be_window_zero_or_one(window_expr) {
+                        return false;
+                    }
+                }
+                args.iter().all(|a| self.check_valid_windows(a))
+            }
+            Expr::FunctionCall { args, .. } => {
+                args.iter().all(|a| self.check_valid_windows(a))
+            }
+            Expr::UnaryExpr { expr, .. } => self.check_valid_windows(expr),
+            Expr::BinaryExpr { left, right, .. } => {
+                self.check_valid_windows(left) && self.check_valid_windows(right)
+            }
+            Expr::Conditional {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                self.check_valid_windows(condition)
+                    && self.check_valid_windows(then_expr)
+                    && self.check_valid_windows(else_expr)
+            }
+            Expr::Aggregate { expr, .. } => self.check_valid_windows(expr),
+            Expr::Cast { expr, .. } => self.check_valid_windows(expr),
+            _ => true,
+        }
+    }
+
+    /// Check if the window expression could evaluate to 0 or 1 (invalid for rolling stats).
+    fn could_be_window_zero_or_one(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::Literal(Literal::Float(v)) => *v < 1.5,
+            Expr::Literal(Literal::Integer(v)) => *v < 2,
+            _ => false, // unknown — allow it through
+        }
     }
 
     /// Check for potential division by zero

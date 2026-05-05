@@ -197,7 +197,7 @@ pub fn ts_mean(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     let n = vals.len();
     let mut result = Array1::zeros(n);
     for i in 0..n {
-        let start = i.saturating_sub(window - 1);
+        let start = i.saturating_sub(window.saturating_sub(1));
         let slice = &vals.as_slice().unwrap()[start..=i];
         result[i] = slice.iter().sum::<f64>() / slice.len() as f64;
     }
@@ -219,7 +219,7 @@ pub fn ts_sum(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     }
 
     for i in 0..n {
-        let start = i.saturating_sub(window - 1);
+        let start = i.saturating_sub(window.saturating_sub(1));
         result[i] = vals.as_slice().unwrap()[start..=i].iter().sum();
     }
     result
@@ -242,7 +242,7 @@ pub fn ts_count(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     }
 
     for i in 0..n {
-        let start = i.saturating_sub(window - 1);
+        let start = i.saturating_sub(window.saturating_sub(1));
         result[i] = vals.as_slice().unwrap()[start..=i]
             .iter()
             .filter(|v| !v.is_nan())
@@ -256,7 +256,7 @@ pub fn ts_max(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     let n = vals.len();
     let mut result = Array1::zeros(n);
     for i in 0..n {
-        let start = i.saturating_sub(window - 1);
+        let start = i.saturating_sub(window.saturating_sub(1));
         result[i] = vals.as_slice().unwrap()[start..=i]
             .iter()
             .fold(f64::NEG_INFINITY, |a, &b| a.max(b));
@@ -269,7 +269,7 @@ pub fn ts_min(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     let n = vals.len();
     let mut result = Array1::zeros(n);
     for i in 0..n {
-        let start = i.saturating_sub(window - 1);
+        let start = i.saturating_sub(window.saturating_sub(1));
         result[i] = vals.as_slice().unwrap()[start..=i]
             .iter()
             .fold(f64::INFINITY, |a, &b| a.min(b));
@@ -282,7 +282,7 @@ pub fn ts_std(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     let n = vals.len();
     let mut result = Array1::zeros(n);
     for i in 0..n {
-        let start = i.saturating_sub(window - 1);
+        let start = i.saturating_sub(window.saturating_sub(1));
         let slice = &vals.as_slice().unwrap()[start..=i];
         let mean = slice.iter().sum::<f64>() / slice.len() as f64;
         let variance = slice.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / slice.len() as f64;
@@ -296,7 +296,7 @@ pub fn ts_rank(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     let n = vals.len();
     let mut result = Array1::zeros(n);
     for i in 0..n {
-        let start = i.saturating_sub(window - 1);
+        let start = i.saturating_sub(window.saturating_sub(1));
         let slice = &vals.as_slice().unwrap()[start..=i];
         let current = vals[i];
         let rank = slice.iter().filter(|&&x| x < current).count() as f64;
@@ -310,7 +310,7 @@ pub fn ts_argmax(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     let n = vals.len();
     let mut result = Array1::zeros(n);
     for i in 0..n {
-        let start = i.saturating_sub(window - 1);
+        let start = i.saturating_sub(window.saturating_sub(1));
         let slice = &vals.as_slice().unwrap()[start..=i];
         let max_val = slice.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
         let pos = slice
@@ -326,7 +326,7 @@ pub fn ts_argmin(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     let n = vals.len();
     let mut result = Array1::zeros(n);
     for i in 0..n {
-        let start = i.saturating_sub(window - 1);
+        let start = i.saturating_sub(window.saturating_sub(1));
         let slice = &vals.as_slice().unwrap()[start..=i];
         let min_val = slice.iter().cloned().fold(f64::INFINITY, f64::min);
         let pos = slice
@@ -343,7 +343,7 @@ pub fn ts_correlation(vals1: &Array1<f64>, vals2: &Array1<f64>, window: usize) -
     let mut result = Array1::zeros(n);
 
     for i in 0..n {
-        let start = i.saturating_sub(window - 1);
+        let start = i.saturating_sub(window.saturating_sub(1));
         let slice1 = &vals1.as_slice().unwrap()[start..=i];
         let slice2 = &vals2.as_slice().unwrap()[start..=i];
 
@@ -380,7 +380,7 @@ pub fn ts_cov(vals1: &Array1<f64>, vals2: &Array1<f64>, window: usize) -> Array1
     let mut result = Array1::zeros(n);
 
     for i in 0..n {
-        let start = i.saturating_sub(window - 1);
+        let start = i.saturating_sub(window.saturating_sub(1));
         let slice1 = &vals1.as_slice().unwrap()[start..=i];
         let slice2 = &vals2.as_slice().unwrap()[start..=i];
 
@@ -427,7 +427,7 @@ pub fn lowday(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     let mut result = Array1::zeros(n);
 
     for i in 0..n {
-        let start = i.saturating_sub(window - 1);
+        let start = i.saturating_sub(window.saturating_sub(1));
         let slice = &vals.as_slice().unwrap()[start..=i];
 
         if slice.is_empty() {
@@ -453,7 +453,7 @@ pub fn highday(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     let mut result = Array1::zeros(n);
 
     for i in 0..n {
-        let start = i.saturating_sub(window - 1);
+        let start = i.saturating_sub(window.saturating_sub(1));
         let slice = &vals.as_slice().unwrap()[start..=i];
 
         if slice.is_empty() {
@@ -483,7 +483,7 @@ pub fn wma(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     }
 
     for i in 0..n {
-        let start = i.saturating_sub(window - 1);
+        let start = i.saturating_sub(window.saturating_sub(1));
         let slice = &vals.as_slice().unwrap()[start..=i];
         let len = slice.len();
 
@@ -525,7 +525,7 @@ pub fn ts_product(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     let n = vals.len();
     let mut result = Array1::zeros(n);
     for i in 0..n {
-        let start = i.saturating_sub(window - 1);
+        let start = i.saturating_sub(window.saturating_sub(1));
         let slice = &vals.as_slice().unwrap()[start..=i];
         let prod: f64 = slice.iter().fold(1.0, |acc, &v| acc * v);
         result[i] = prod;
@@ -539,7 +539,7 @@ pub fn decay_linear(vals: &Array1<f64>, periods: usize) -> Array1<f64> {
     let mut result = Array1::zeros(n);
 
     for i in 0..n {
-        let start = i.saturating_sub(periods - 1);
+        let start = i.saturating_sub(periods.saturating_sub(1));
         let slice = &vals.as_slice().unwrap()[start..=i];
         let len = slice.len();
 
@@ -680,7 +680,7 @@ pub fn ts_quantile(vals: &Array1<f64>, window: usize, quantile: f64) -> Array1<f
     let q = quantile.clamp(0.0, 1.0);
 
     for i in 0..n {
-        let start = i.saturating_sub(window - 1);
+        let start = i.saturating_sub(window.saturating_sub(1));
         let slice = &vals.as_slice().unwrap()[start..=i];
         let len = slice.len();
 
@@ -716,7 +716,7 @@ pub fn ts_slope(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     let mut result = Array1::zeros(n);
 
     for i in 0..n {
-        let start = i.saturating_sub(window - 1);
+        let start = i.saturating_sub(window.saturating_sub(1));
         let slice = &vals.as_slice().unwrap()[start..=i];
         let len = slice.len();
 
@@ -748,7 +748,7 @@ pub fn ts_rsquare(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     let mut result = Array1::zeros(n);
 
     for i in 0..n {
-        let start = i.saturating_sub(window - 1);
+        let start = i.saturating_sub(window.saturating_sub(1));
         let slice = &vals.as_slice().unwrap()[start..=i];
         let len = slice.len();
 
@@ -794,7 +794,7 @@ pub fn ts_resi(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     let mut result = Array1::zeros(n);
 
     for i in 0..n {
-        let start = i.saturating_sub(window - 1);
+        let start = i.saturating_sub(window.saturating_sub(1));
         let slice = &vals.as_slice().unwrap()[start..=i];
         let len = slice.len();
 

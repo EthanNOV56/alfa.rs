@@ -436,7 +436,7 @@ pub fn eval_ts_function_memoized(
 pub fn get_literal_int(expr: &Expr) -> Option<usize> {
     match expr {
         Expr::Literal(Literal::Integer(i)) => Some(*i as usize),
-        Expr::Literal(Literal::Float(f)) => Some(*f as usize),
+        Expr::Literal(Literal::Float(f)) => Some((f.round() as i64).max(1) as usize),
         _ => None,
     }
 }
