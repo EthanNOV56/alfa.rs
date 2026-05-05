@@ -97,33 +97,30 @@ def run_config(name, config, data, returns, num_factors=2):
     gp.set_columns(list(data.keys()))
 
     t0 = time.perf_counter()
-    results = gp.mine_factors(
-        data, returns, num_factors=num_factors,
-        weight_ic=0.4, weight_ir=0.3,
-        weight_turnover=0.15, weight_complexity=0.15,
-    )
+    results = gp.mine_factors(data, returns, num_factors=num_factors)
     elapsed = time.perf_counter() - t0
 
     print(f"\n  Time: {elapsed:.3f}s ({elapsed/num_factors:.3f}s/factor)")
-    header = f"  {'Expr':<50} {'Fitness':>8} {'IC':>8} {'IR':>8} {'TO':>8} {'Cmplx':>6}"
+    header = (f"  {'Expr':<45} {'Fit':>6} {'IC':>6} {'IR':>6} {'Cmplx':>5}"
+              f"  {'T-IC':>6} {'V-IC':>6} {'E-IC':>6}")
     print(header)
-    print(f"  {'-'*50} {'-'*8} {'-'*8} {'-'*8} {'-'*8} {'-'*6}")
+    print(f"  {'-'*45} {'-'*6} {'-'*6} {'-'*6} {'-'*5}  {'-'*6} {'-'*6} {'-'*6}")
 
     stats = {"name": name, "time_total": elapsed,
              "time_per_factor": elapsed / num_factors}
-    fits, ics, irs, tos, cmplxs = [], [], [], [], []
-    for expr_str, fitness, ic, ir, turnover, complexity in results:
-        short = expr_str[:47] + "..." if len(expr_str) > 50 else expr_str
-        print(f"  {short:<50} {fitness:>8.4f} {ic:>8.4f} {ir:>8.4f} "
-              f"{turnover:>8.4f} {complexity:>6}")
-        fits.append(fitness); ics.append(ic)
-        irs.append(ir); tos.append(turnover); cmplxs.append(complexity)
+    fits, ics, irs, cmplxs = [], [], [], []
+    for r in results:
+        expr_str, fitness, ic, ir, turnover, complexity = r[0:6]
+        train_m, val_m, test_m = r[6], r[7], r[8]
+        short = expr_str[:42] + "..." if len(expr_str) > 45 else expr_str
+        print(f"  {short:<45} {fitness:>6.3f} {ic:>6.4f} {ir:>6.4f} "
+              f"{complexity:>5}  {train_m[0]:>6.4f} {val_m[0]:>6.4f} {test_m[0]:>6.4f}")
+        fits.append(fitness); ics.append(ic); irs.append(ir); cmplxs.append(complexity)
 
     stats.update(fitness_mean=float(np.mean(fits)),
                  fitness_best=float(max(fits)),
                  ic_mean=float(np.mean(ics)),
                  ir_mean=float(np.mean(irs)),
-                 turnover_mean=float(np.mean(tos)),
                  complexity_mean=float(np.mean(cmplxs)),
                  expressions=[r[0] for r in results])
     return stats
@@ -158,10 +155,9 @@ def demo_factor_pool(data, returns):
 
     admitted = rejected_dup = flagged = rejected_min = 0
     for batch in range(1):
-        results = gp.mine_factors(data, returns, num_factors=2,
-                                   weight_ic=0.4, weight_ir=0.3,
-                                   weight_turnover=0.15, weight_complexity=0.15)
-        for expr_str, fitness, ic, ir, turnover, complexity in results:
+        results = gp.mine_factors(data, returns, num_factors=2)
+        for r in results:
+            expr_str, fitness, ic, ir, _, _ = r[0:6]
             rank_ic = ic * ir
             status, similarity = pool.try_admit(expr_str, ic, rank_ic)
             if status == "added":           admitted += 1
@@ -208,7 +204,12 @@ def main():
         print(f"\n  ClickHouse unavailable: {e}")
         sys.exit(1)
 
-    # Run 2 configs for comparison
+    # Warmup
+    gp = al.GpEngine(**quick_config())
+    gp.set_columns(list(data.keys()))
+    _ = gp.mine_factors(data, returns, num_factors=1)
+
+    # Run 2 configs
     configs = [("quick", quick_config()), ("enhanced", enhanced_config())]
     if args.profile:
         configs = [("enhanced", enhanced_config())]

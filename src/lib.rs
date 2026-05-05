@@ -1338,86 +1338,14 @@ impl PyGpEngine {
         self.terminals = new_terminals;
     }
 
-    /// Run genetic programming for factor mining (backward compatible)
+    /// Run genetic programming with train/validation/test split.
+    ///
+    /// Evolution uses training data only for fitness selection.
+    /// Returns (expr, fitness, ic, ir, turnover, complexity, train, val, test)
+    /// where train/val/test are [ic_mean, ic_ir, sharpe_ratio, max_drawdown, annualized_return].
+    #[pyo3(signature = (data, returns, num_factors=3, train_ratio=0.6, validation_ratio=0.2,
+                        weight_ic=0.4, weight_ir=0.3, weight_turnover=0.15, weight_complexity=0.15))]
     fn mine_factors(
-        &mut self,
-        _py: Python<'_>,
-        data: Bound<'_, PyDict>,
-        returns: Bound<'_, PyArray2<f64>>,
-        num_factors: usize,
-        weight_ic: Option<f64>,
-        weight_ir: Option<f64>,
-        weight_turnover: Option<f64>,
-        weight_complexity: Option<f64>,
-    ) -> PyResult<Vec<(String, f64, f64, f64, f64, usize)>> {
-        use numpy::PyArray2;
-
-        // Extract data arrays
-        let mut data_arrays = HashMap::new();
-
-        for (key, value) in data.iter() {
-            let col_name: String = key.extract()?;
-
-            if let Ok(arr) = value.extract::<Bound<'_, PyArray2<f64>>>() {
-                let array = arr.readonly().as_array().to_owned();
-                data_arrays.insert(col_name, array);
-            } else {
-                return Err(PyValueError::new_err(format!(
-                    "Column '{}' must be a 2D numpy array",
-                    col_name
-                )));
-            }
-        }
-
-        // Extract returns array
-        let returns_array = returns.readonly().as_array().to_owned();
-
-        // Create multi-objective fitness evaluator (without split - backward compatible)
-        let mut evaluator = RealBacktestFitnessEvaluator::new(data_arrays, returns_array);
-
-        // Set weights for multi-objective optimization
-        let w_ic = weight_ic.unwrap_or(0.4);
-        let w_ir = weight_ir.unwrap_or(0.3);
-        let w_to = weight_turnover.unwrap_or(0.15);
-        let w_comp = weight_complexity.unwrap_or(0.15);
-
-        let weights = HashMap::from([
-            ("ic".to_string(), w_ic),
-            ("ir".to_string(), w_ir),
-            ("turnover".to_string(), w_to),
-            ("complexity".to_string(), w_comp),
-        ]);
-        evaluator.set_weights(weights);
-
-        // Run GP multiple times to get multiple factors
-        let mut results = Vec::new();
-
-        for _i in 0..num_factors {
-            let (best_expr, best_fitness) = run_gp(
-                &self.config,
-                &evaluator,
-                self.terminals.clone(),
-                self.functions.clone(),
-                &mut self.rng,
-            );
-
-            // Convert expression to string representation
-            let expr_str = to_parseable_string(&best_expr);
-
-            // Get additional metrics from evaluator
-            let ic = evaluator.get_last_ic();
-            let ir = evaluator.get_last_ir();
-            let turnover = evaluator.get_last_turnover();
-            let complexity = evaluator.get_last_complexity();
-
-            results.push((expr_str, best_fitness, ic, ir, turnover, complexity));
-        }
-
-        Ok(results)
-    }
-
-    /// Run genetic programming with train/test/validation split
-    fn mine_factors_with_split(
         &mut self,
         _py: Python<'_>,
         data: Bound<'_, PyDict>,
@@ -1425,10 +1353,10 @@ impl PyGpEngine {
         num_factors: usize,
         train_ratio: f64,
         validation_ratio: f64,
-        weight_ic: Option<f64>,
-        weight_ir: Option<f64>,
-        weight_turnover: Option<f64>,
-        weight_complexity: Option<f64>,
+        weight_ic: f64,
+        weight_ir: f64,
+        weight_turnover: f64,
+        weight_complexity: f64,
     ) -> PyResult<
         Vec<(
             String,
@@ -1444,7 +1372,6 @@ impl PyGpEngine {
     > {
         use numpy::PyArray2;
 
-        // Validate split ratios
         if train_ratio <= 0.0 || validation_ratio <= 0.0 {
             return Err(PyValueError::new_err(
                 "train_ratio and validation_ratio must be positive",
@@ -1456,15 +1383,11 @@ impl PyGpEngine {
             ));
         }
 
-        // Extract data arrays
         let mut data_arrays = HashMap::new();
-
         for (key, value) in data.iter() {
             let col_name: String = key.extract()?;
-
             if let Ok(arr) = value.extract::<Bound<'_, PyArray2<f64>>>() {
-                let array = arr.readonly().as_array().to_owned();
-                data_arrays.insert(col_name, array);
+                data_arrays.insert(col_name, arr.readonly().as_array().to_owned());
             } else {
                 return Err(PyValueError::new_err(format!(
                     "Column '{}' must be a 2D numpy array",
@@ -1473,38 +1396,27 @@ impl PyGpEngine {
             }
         }
 
-        // Extract returns array
         let returns_array = returns.readonly().as_array().to_owned();
 
-        // Create split config
         let split_config = DataSplitConfig {
             train_ratio,
             validation_ratio,
             test_ratio: Some(1.0 - train_ratio - validation_ratio),
         };
 
-        // Create evaluator with split
         let mut evaluator =
             RealBacktestFitnessEvaluator::with_split(data_arrays, returns_array, split_config);
 
-        // Set weights for multi-objective optimization
-        let w_ic = weight_ic.unwrap_or(0.4);
-        let w_ir = weight_ir.unwrap_or(0.3);
-        let w_to = weight_turnover.unwrap_or(0.15);
-        let w_comp = weight_complexity.unwrap_or(0.15);
-
         let weights = HashMap::from([
-            ("ic".to_string(), w_ic),
-            ("ir".to_string(), w_ir),
-            ("turnover".to_string(), w_to),
-            ("complexity".to_string(), w_comp),
+            ("ic".to_string(), weight_ic),
+            ("ir".to_string(), weight_ir),
+            ("turnover".to_string(), weight_turnover),
+            ("complexity".to_string(), weight_complexity),
         ]);
         evaluator.set_weights(weights);
 
-        // Run GP multiple times to get multiple factors
         let mut results = Vec::new();
-
-        for _i in 0..num_factors {
+        for _ in 0..num_factors {
             let (best_expr, best_fitness) = run_gp(
                 &self.config,
                 &evaluator,
@@ -1513,46 +1425,38 @@ impl PyGpEngine {
                 &mut self.rng,
             );
 
-            // Convert expression to string representation
             let expr_str = to_parseable_string(&best_expr);
-
-            // Get additional metrics from evaluator
             let ic = evaluator.get_last_ic();
             let ir = evaluator.get_last_ir();
             let turnover = evaluator.get_last_turnover();
             let complexity = evaluator.get_last_complexity();
 
-            // Get split evaluation results
-            let split_result = evaluator.get_last_split_result();
-            let (train_metrics, validation_metrics, test_metrics) =
-                if let Some(ref sr) = split_result {
-                    (
-                        vec![
-                            sr.train.ic_mean,
-                            sr.train.ic_ir,
-                            sr.train.sharpe_ratio,
-                            sr.train.max_drawdown,
-                        ],
-                        vec![
-                            sr.validation.ic_mean,
-                            sr.validation.ic_ir,
-                            sr.validation.sharpe_ratio,
-                            sr.validation.max_drawdown,
-                        ],
-                        vec![
-                            sr.test.ic_mean,
-                            sr.test.ic_ir,
-                            sr.test.sharpe_ratio,
-                            sr.test.max_drawdown,
-                        ],
-                    )
-                } else {
-                    (
-                        vec![0.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0],
-                        vec![0.0, 0.0, 0.0, 0.0],
-                    )
-                };
+            let (train_m, val_m, test_m) = match evaluator.get_last_split_result() {
+                Some(s) => (
+                    vec![
+                        s.train.ic_mean,
+                        s.train.ic_ir,
+                        s.train.sharpe_ratio,
+                        s.train.max_drawdown,
+                        s.train.annualized_return,
+                    ],
+                    vec![
+                        s.validation.ic_mean,
+                        s.validation.ic_ir,
+                        s.validation.sharpe_ratio,
+                        s.validation.max_drawdown,
+                        s.validation.annualized_return,
+                    ],
+                    vec![
+                        s.test.ic_mean,
+                        s.test.ic_ir,
+                        s.test.sharpe_ratio,
+                        s.test.max_drawdown,
+                        s.test.annualized_return,
+                    ],
+                ),
+                None => (vec![0.0; 5], vec![0.0; 5], vec![0.0; 5]),
+            };
 
             results.push((
                 expr_str,
@@ -1561,9 +1465,9 @@ impl PyGpEngine {
                 ir,
                 turnover,
                 complexity,
-                train_metrics,
-                validation_metrics,
-                test_metrics,
+                train_m,
+                val_m,
+                test_m,
             ));
         }
 
