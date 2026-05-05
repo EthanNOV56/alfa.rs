@@ -367,9 +367,8 @@ fn main() {
 
         let adj_factor = ndarray::Array2::from_elem((n_dates, n_symbols), 1.0);
 
-        let open_array =
-            ndarray::Array2::from_shape_vec((n_dates, n_symbols), open_flat.clone())
-                .expect("Invalid open shape");
+        let open_array = ndarray::Array2::from_shape_vec((n_dates, n_symbols), open_flat.clone())
+            .expect("Invalid open shape");
 
         // Tradable: high > low means the stock can be traded (had a real transaction)
         let tradable_array = ndarray::Array2::from_shape_vec(

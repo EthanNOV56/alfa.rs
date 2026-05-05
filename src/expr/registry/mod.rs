@@ -26,9 +26,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 pub use functions::{
-    collect_frequencies, collect_unique_subexpressions, eval_expr_vectorized,
-    eval_expr_compact, eval_function_vectorized,
-    eval_ts_function_vectorized, expr_hash, extract_columns,
+    collect_frequencies, collect_unique_subexpressions, eval_expr_compact, eval_expr_vectorized,
+    eval_function_vectorized, eval_ts_function_vectorized, expr_hash, extract_columns,
 };
 
 /// Factor Registry
@@ -129,17 +128,34 @@ impl FactorRegistry {
         if names.len() == 1 && compact {
             let mut results = HashMap::new();
             let name = names[0];
-            let info = self.factors.get(name)
+            let info = self
+                .factors
+                .get(name)
                 .ok_or_else(|| format!("Factor '{}' not found", name))?;
             let (arr, groups) = crate::expr::registry::functions::eval_expr_compact(
-                &info.parsed_expr, data, &mut HashMap::new())?;
-            results.insert(name.to_string(), FactorResult {
-                name: name.to_string(), values: arr.to_vec(),
-                n_rows: arr.len(), n_cols: 1, compute_time_ms: 0,
-                groups: if groups.is_empty() { None } else { Some(groups) },
-            });
+                &info.parsed_expr,
+                data,
+                &mut HashMap::new(),
+            )?;
+            results.insert(
+                name.to_string(),
+                FactorResult {
+                    name: name.to_string(),
+                    values: arr.to_vec(),
+                    n_rows: arr.len(),
+                    n_cols: 1,
+                    compute_time_ms: 0,
+                    groups: if groups.is_empty() {
+                        None
+                    } else {
+                        Some(groups)
+                    },
+                },
+            );
             let elapsed = start.elapsed().as_millis() as u64;
-            for r in results.values_mut() { r.compute_time_ms = elapsed; }
+            for r in results.values_mut() {
+                r.compute_time_ms = elapsed;
+            }
             return Ok(results);
         }
 
@@ -154,16 +170,21 @@ impl FactorRegistry {
             let total = names.len();
             eprintln!("  compute: parallel {} factors: {:?}", total, names);
             names.par_iter().for_each(|&name| {
-                let info = match self.factors.get(name) { Some(i) => i, None => return };
+                let info = match self.factors.get(name) {
+                    Some(i) => i,
+                    None => return,
+                };
                 let mut cache = HashMap::new();
                 let t0 = std::time::Instant::now();
                 let eval_result = if compact {
                     crate::expr::registry::functions::eval_expr_compact(
-                        &info.parsed_expr, data, &mut cache)
-                        .map(|v| (v.0, v.1))
+                        &info.parsed_expr,
+                        data,
+                        &mut cache,
+                    )
+                    .map(|v| (v.0, v.1))
                 } else {
-                    eval_expr_vectorized(&info.parsed_expr, data, &mut cache)
-                        .map(|v| (v, vec![]))
+                    eval_expr_vectorized(&info.parsed_expr, data, &mut cache).map(|v| (v, vec![]))
                 };
                 let (arr, groups) = match eval_result {
                     Ok(v) => v,
@@ -178,19 +199,38 @@ impl FactorRegistry {
                 let t = t0.elapsed().as_millis();
                 let n = done.fetch_add(1, Ordering::Relaxed) + 1;
                 eprintln!("    [{}/{}] {} {}ms", n, total, name, t);
-                results_mtx.lock().insert(name.to_string(), FactorResult {
-                    name: name.to_string(), values: arr.to_vec(),
-                    n_rows: arr.len(), n_cols: 1, compute_time_ms: 0,
-                    groups: if groups.is_empty() { None } else { Some(groups) },
-                });
+                results_mtx.lock().insert(
+                    name.to_string(),
+                    FactorResult {
+                        name: name.to_string(),
+                        values: arr.to_vec(),
+                        n_rows: arr.len(),
+                        n_cols: 1,
+                        compute_time_ms: 0,
+                        groups: if groups.is_empty() {
+                            None
+                        } else {
+                            Some(groups)
+                        },
+                    },
+                );
             });
             let failed = failed_mtx.into_inner();
             if !failed.is_empty() {
-                eprintln!("  compute: {} factors failed: {:?}", failed.len(), &failed[..failed.len().min(20)]);
+                eprintln!(
+                    "  compute: {} factors failed: {:?}",
+                    failed.len(),
+                    &failed[..failed.len().min(20)]
+                );
             }
             let mut results = results_mtx.into_inner();
             let elapsed = start.elapsed().as_millis() as u64;
-            eprintln!("  compute: done in {}ms ({}/{} succeeded)", elapsed, results.len(), total);
+            eprintln!(
+                "  compute: done in {}ms ({}/{} succeeded)",
+                elapsed,
+                results.len(),
+                total
+            );
             return Ok(results);
         }
 
@@ -198,20 +238,35 @@ impl FactorRegistry {
         let mut cache = HashMap::new();
         let mut results = HashMap::new();
         for &name in names {
-            let info = self.factors.get(name)
+            let info = self
+                .factors
+                .get(name)
                 .ok_or_else(|| format!("Factor '{}' not found", name))?;
             let (arr, groups) = if compact {
                 crate::expr::registry::functions::eval_expr_compact(
-                    &info.parsed_expr, data, &mut cache)?
+                    &info.parsed_expr,
+                    data,
+                    &mut cache,
+                )?
             } else {
                 let v = eval_expr_vectorized(&info.parsed_expr, data, &mut cache)?;
                 (v, vec![])
             };
-            results.insert(name.to_string(), FactorResult {
-                name: name.to_string(), values: arr.to_vec(),
-                n_rows: arr.len(), n_cols: 1, compute_time_ms: 0,
-                groups: if groups.is_empty() { None } else { Some(groups) },
-            });
+            results.insert(
+                name.to_string(),
+                FactorResult {
+                    name: name.to_string(),
+                    values: arr.to_vec(),
+                    n_rows: arr.len(),
+                    n_cols: 1,
+                    compute_time_ms: 0,
+                    groups: if groups.is_empty() {
+                        None
+                    } else {
+                        Some(groups)
+                    },
+                },
+            );
         }
         return Ok(results);
 
@@ -451,7 +506,9 @@ impl FactorRegistry {
                 .query(query_fields)
                 .map_err(|e| format!("DataLayer query error: {:?}", e))?;
             // Build shared sort order, groups, and perm once (all factors share these)
-            let dates = data.get("1d:trading_date").ok_or("1d:trading_date missing")?;
+            let dates = data
+                .get("1d:trading_date")
+                .ok_or("1d:trading_date missing")?;
             let syms = data.get("1d:symbol").ok_or("1d:symbol missing")?;
             let n = dates.len();
             let mut indexed: Vec<(usize, (i64, i64))> = (0..n)
@@ -479,16 +536,35 @@ impl FactorRegistry {
         let n_batches = factor_names.len().div_ceil(BATCH_SIZE);
         for batch in factor_names.chunks(BATCH_SIZE) {
             batch_idx += 1;
-            eprintln!("  batch [{}/{}] compute {} factors", batch_idx, n_batches, batch.len());
+            eprintln!(
+                "  batch [{}/{}] compute {} factors",
+                batch_idx,
+                n_batches,
+                batch.len()
+            );
             let t0 = std::time::Instant::now();
             let results = self.compute(batch, &data, parallel, compact)?;
-            eprintln!("  batch [{}/{}] compute done in {}ms, building slices", batch_idx, n_batches, t0.elapsed().as_millis());
+            eprintln!(
+                "  batch [{}/{}] compute done in {}ms, building slices",
+                batch_idx,
+                n_batches,
+                t0.elapsed().as_millis()
+            );
             let names: Vec<&str> = results.keys().map(|s| s.as_str()).collect();
             let batch_slices = self.build_slices(
-                &results, &names, &symbols_arc, &mktcap_map,
-                shared_groups.as_ref(), perm.as_deref(),
+                &results,
+                &names,
+                &symbols_arc,
+                &mktcap_map,
+                shared_groups.as_ref(),
+                perm.as_deref(),
             )?;
-            eprintln!("  batch [{}/{}] slices done in {}ms total", batch_idx, n_batches, t0.elapsed().as_millis());
+            eprintln!(
+                "  batch [{}/{}] slices done in {}ms total",
+                batch_idx,
+                n_batches,
+                t0.elapsed().as_millis()
+            );
             all_slices.extend(batch_slices);
         }
         Ok(all_slices)
@@ -573,8 +649,10 @@ impl FactorRegistry {
                     } else {
                         Array1::from_vec(values[start..end].to_vec())
                     };
-                    let syms: Vec<usize> =
-                        groups_slice[start..end].iter().map(|g| g.1 as usize).collect();
+                    let syms: Vec<usize> = groups_slice[start..end]
+                        .iter()
+                        .map(|g| g.1 as usize)
+                        .collect();
                     let mktcaps: Array1<f64> = syms
                         .iter()
                         .map(|&s| mktcap_map.get(&(date_int, s)).copied().unwrap_or(f64::NAN))
@@ -857,7 +935,10 @@ mod tests {
         registry.register("alpha_001", "close * 2").unwrap();
 
         let mut data: HashMap<String, Array1<f64>> = HashMap::new();
-        data.insert("1d:close".to_string(), Array1::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0]));
+        data.insert(
+            "1d:close".to_string(),
+            Array1::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0]),
+        );
 
         let result = registry.compute(&["alpha_001"], &data, false, false);
         assert!(result.is_ok());
@@ -879,8 +960,14 @@ mod tests {
         registry.register("alpha_002", "close + volume").unwrap();
 
         let mut data: HashMap<String, Array1<f64>> = HashMap::new();
-        data.insert("1d:close".to_string(), Array1::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0]));
-        data.insert("1d:volume".to_string(), Array1::from_vec(vec![10.0, 20.0, 30.0, 40.0, 50.0]));
+        data.insert(
+            "1d:close".to_string(),
+            Array1::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0]),
+        );
+        data.insert(
+            "1d:volume".to_string(),
+            Array1::from_vec(vec![10.0, 20.0, 30.0, 40.0, 50.0]),
+        );
 
         let result = registry.compute(&["alpha_001", "alpha_002"], &data, false, false);
         assert!(result.is_ok());
@@ -905,7 +992,10 @@ mod tests {
         registry.register("alpha_001", "ts_mean(close, 3)").unwrap();
 
         let mut data: HashMap<String, Array1<f64>> = HashMap::new();
-        data.insert("1d:close".to_string(), Array1::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0]));
+        data.insert(
+            "1d:close".to_string(),
+            Array1::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0]),
+        );
 
         let result = registry.compute(&["alpha_001"], &data, false, false);
         assert!(result.is_ok());
@@ -928,7 +1018,10 @@ mod tests {
             .unwrap();
 
         let mut data: HashMap<String, Array1<f64>> = HashMap::new();
-        data.insert("1d:close".to_string(), Array1::from_vec(vec![1.0, 5.0, 3.0, 2.0, 4.0]));
+        data.insert(
+            "1d:close".to_string(),
+            Array1::from_vec(vec![1.0, 5.0, 3.0, 2.0, 4.0]),
+        );
 
         let result = registry.compute(&["alpha_001"], &data, false, false);
         assert!(result.is_ok());

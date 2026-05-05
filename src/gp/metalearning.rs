@@ -278,22 +278,45 @@ impl MetaLearningAnalyzer {
 
         let mut functions = Vec::new();
 
-        // Common function patterns
+        // Common function patterns (includes all functions from the expression registry)
         let function_patterns = [
-            ("sqrt", "sqrt"),
-            ("log", "log"),
+            // time-series functions
+            ("ts_mean", "ts_mean"),
+            ("ts_sum", "ts_sum"),
+            ("ts_std", "ts_std"),
+            ("ts_max", "ts_max"),
+            ("ts_min", "ts_min"),
+            ("ts_rank", "ts_rank"),
+            ("ts_argmax", "ts_argmax"),
+            ("ts_argmin", "ts_argmin"),
+            ("ts_correlation", "ts_correlation"),
+            ("ts_covariance", "ts_covariance"),
+            ("ts_delta", "ts_delta"),
+            ("ts_product", "ts_product"),
+            ("ts_count", "ts_count"),
+            ("ts_delay", "ts_delay"),
+            ("ts_decay_linear", "ts_decay_linear"),
+            ("ts_sma", "ts_sma"),
+            ("ts_wma", "ts_wma"),
+            ("ts_lowday", "ts_lowday"),
+            ("ts_highday", "ts_highday"),
+            ("ts_quantile", "ts_quantile"),
+            ("ts_slope", "ts_slope"),
+            // cross-sectional functions
+            ("cs_rank", "cs_rank"),
+            ("cs_scale", "cs_scale"),
+            // element-wise functions
+            ("sign", "sign"),
             ("abs", "abs"),
+            ("log", "log"),
+            ("sqrt", "sqrt"),
             ("exp", "exp"),
-            ("sin", "sin"),
-            ("cos", "cos"),
-            ("tan", "tan"),
-            ("atan", "atan"),
             ("pow", "pow"),
-            ("max", "max"),
-            ("min", "min"),
-            ("mean", "mean"),
-            ("std", "std"),
-            ("sum", "sum"),
+            ("winsor", "winsor"),
+            ("zscore", "zscore"),
+            ("cap_neu", "cap_neu"),
+            ("delta", "delta"),
+            ("delay", "delay"),
         ];
 
         let expr_lower = expr.to_lowercase();
@@ -975,7 +998,7 @@ mod tests {
 
         FactorMetadata {
             id: format!("test_factor_{}", name),
-            expression: format!("close_{} * volume", name),
+            expression: format!("ts_mean(close_{}, 5) * volume", name),
             created_at: 1234567890,
             updated_at: 1234567890,
             metrics,

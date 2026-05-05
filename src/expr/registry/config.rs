@@ -95,27 +95,52 @@ impl ComputationPlan {
 
         fn hash_impl(expr: &Expr, h: &mut DefaultHasher) {
             match expr {
-                Expr::Column(name) => { 0u8.hash(h); name.hash(h); }
+                Expr::Column(name) => {
+                    0u8.hash(h);
+                    name.hash(h);
+                }
                 Expr::Literal(lit) => {
                     1u8.hash(h);
                     match lit {
-                        crate::expr::ast::Literal::Boolean(b) => { 0u8.hash(h); b.hash(h); }
-                        crate::expr::ast::Literal::Integer(i) => { 1u8.hash(h); i.hash(h); }
-                        crate::expr::ast::Literal::Float(f) => { 2u8.hash(h); f.to_bits().hash(h); }
-                        crate::expr::ast::Literal::String(s) => { 3u8.hash(h); s.hash(h); }
-                        crate::expr::ast::Literal::Null => { 4u8.hash(h); }
+                        crate::expr::ast::Literal::Boolean(b) => {
+                            0u8.hash(h);
+                            b.hash(h);
+                        }
+                        crate::expr::ast::Literal::Integer(i) => {
+                            1u8.hash(h);
+                            i.hash(h);
+                        }
+                        crate::expr::ast::Literal::Float(f) => {
+                            2u8.hash(h);
+                            f.to_bits().hash(h);
+                        }
+                        crate::expr::ast::Literal::String(s) => {
+                            3u8.hash(h);
+                            s.hash(h);
+                        }
+                        crate::expr::ast::Literal::Null => {
+                            4u8.hash(h);
+                        }
                     }
                 }
                 Expr::BinaryExpr { left, right, op } => {
-                    2u8.hash(h); op.hash(h);
-                    hash_impl(left, h); hash_impl(right, h);
+                    2u8.hash(h);
+                    op.hash(h);
+                    hash_impl(left, h);
+                    hash_impl(right, h);
                 }
                 Expr::UnaryExpr { op, expr: e } => {
-                    3u8.hash(h); op.hash(h); hash_impl(e, h);
+                    3u8.hash(h);
+                    op.hash(h);
+                    hash_impl(e, h);
                 }
                 Expr::FunctionCall { name, args, freq } => {
-                    4u8.hash(h); name.hash(h); freq.hash(h);
-                    for a in args { hash_impl(a, h); }
+                    4u8.hash(h);
+                    name.hash(h);
+                    freq.hash(h);
+                    for a in args {
+                        hash_impl(a, h);
+                    }
                 }
                 _ => {}
             }
@@ -149,7 +174,9 @@ impl ComputationPlan {
                         collect(e, unique, seen, ref_counts);
                     }
                     Expr::FunctionCall { args, .. } => {
-                        for a in args { collect(a, unique, seen, ref_counts); }
+                        for a in args {
+                            collect(a, unique, seen, ref_counts);
+                        }
                     }
                     _ => {}
                 }
@@ -159,8 +186,11 @@ impl ComputationPlan {
         }
 
         // Phase 2: topological sort via Kahn's algorithm
-        let hash_to_idx: HashMap<u64, usize> = unique.iter().enumerate()
-            .map(|(i, (_, h))| (*h, i)).collect();
+        let hash_to_idx: HashMap<u64, usize> = unique
+            .iter()
+            .enumerate()
+            .map(|(i, (_, h))| (*h, i))
+            .collect();
         let n = unique.len();
         let mut indegree = vec![0u32; n];
         let mut edges: Vec<Vec<usize>> = vec![Vec::new(); n];
@@ -186,15 +216,24 @@ impl ComputationPlan {
             order.push(i);
             for &c in &edges[i] {
                 indegree[c] -= 1;
-                if indegree[c] == 0 { queue.push(c); }
+                if indegree[c] == 0 {
+                    queue.push(c);
+                }
             }
         }
 
-        let nodes: Vec<PlanNode> = order.iter().map(|&orig_idx| {
-            let (ref expr, hash) = unique[orig_idx];
-            let rc = *ref_counts.get(&hash).unwrap_or(&0);
-            PlanNode { expr: expr.clone(), hash, ref_count: rc }
-        }).collect();
+        let nodes: Vec<PlanNode> = order
+            .iter()
+            .map(|&orig_idx| {
+                let (ref expr, hash) = unique[orig_idx];
+                let rc = *ref_counts.get(&hash).unwrap_or(&0);
+                PlanNode {
+                    expr: expr.clone(),
+                    hash,
+                    ref_count: rc,
+                }
+            })
+            .collect();
 
         let mut factor_roots = HashMap::new();
         for (name, info) in factors.iter() {
@@ -206,7 +245,10 @@ impl ComputationPlan {
             }
         }
 
-        ComputationPlan { nodes, factor_roots }
+        ComputationPlan {
+            nodes,
+            factor_roots,
+        }
     }
 }
 
@@ -281,11 +323,19 @@ impl FactorSlice {
     pub fn write_header<W: std::io::Write>(wtr: &mut csv::Writer<W>) {
         #[cfg(debug_assertions)]
         wtr.write_record(&[
-            "factor", "symbol", "date", "raw", "winsored", "zscored", "cap_neued", "qcut",
+            "factor",
+            "symbol",
+            "date",
+            "raw",
+            "winsored",
+            "zscored",
+            "cap_neued",
+            "qcut",
         ])
         .ok();
         #[cfg(not(debug_assertions))]
-        wtr.write_record(&["factor", "symbol", "date", "cap_neued", "qcut"]).ok();
+        wtr.write_record(&["factor", "symbol", "date", "cap_neued", "qcut"])
+            .ok();
     }
 
     fn write_rows<W: std::io::Write>(&self, wtr: &mut csv::Writer<W>) -> csv::Result<usize> {
@@ -295,7 +345,8 @@ impl FactorSlice {
             let mo = (date % 10000) / 100;
             let dy = date % 100;
             let date_str = format!("{:04}-{:02}-{:02}", yr, mo, dy);
-            let sym = self.symbols
+            let sym = self
+                .symbols
                 .get(sym_idx as usize)
                 .map(|s| s.as_str())
                 .unwrap_or("");
@@ -315,8 +366,11 @@ impl FactorSlice {
 
             #[cfg(not(debug_assertions))]
             wtr.write_record(&[
-                &self.factor_name, sym, &date_str,
-                &self.cap_neued[i].to_string(), &q,
+                &self.factor_name,
+                sym,
+                &date_str,
+                &self.cap_neued[i].to_string(),
+                &q,
             ])?;
         }
         wtr.flush()?;
@@ -344,7 +398,10 @@ impl FactorPanel {
     }
 
     /// Build a (n_dates × n_symbols) factor matrix aligned to the given PriceMatrix.
-    pub fn build_factor_matrix(&self, prices: &crate::data::layer::PriceMatrix) -> ndarray::Array2<f64> {
+    pub fn build_factor_matrix(
+        &self,
+        prices: &crate::data::layer::PriceMatrix,
+    ) -> ndarray::Array2<f64> {
         prices.build_factor_matrix(&self.slices)
     }
 

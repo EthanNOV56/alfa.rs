@@ -311,4 +311,3 @@ expression = "close"
         assert_eq!(factor.dimension, "dimensionless");
     }
 }
-

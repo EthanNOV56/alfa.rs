@@ -96,7 +96,10 @@ impl MockDataSource {
     }
 
     /// Set the query result to return
-    pub fn with_query_result(mut self, result: Result<HashMap<String, Vec<f64>>, DataError>) -> Self {
+    pub fn with_query_result(
+        mut self,
+        result: Result<HashMap<String, Vec<f64>>, DataError>,
+    ) -> Self {
         self.query_result = Some(result);
         self
     }
@@ -191,8 +194,8 @@ mod tests {
 
     #[test]
     fn test_query_filter_with_date_range() {
-        let filter = QueryFilter::new(vec!["close".to_string()])
-            .with_date_range("2024-01-01", "2024-12-31");
+        let filter =
+            QueryFilter::new(vec!["close".to_string()]).with_date_range("2024-01-01", "2024-12-31");
         assert!(filter.date_range.is_some());
         let (start, end) = filter.date_range.unwrap();
         assert_eq!(start, "2024-01-01");

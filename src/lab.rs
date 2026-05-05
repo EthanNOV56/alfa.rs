@@ -20,8 +20,8 @@ use std::collections::HashMap;
 use crate::backtest::{BacktestConfig, BacktestEngine, BacktestResult};
 use crate::data::clickhouse::ClickHouseSource;
 use crate::data::layer::DataLayer;
-use crate::expr::registry::config::{FactorPanel, FactorSlice};
 use crate::expr::registry::FactorRegistry;
+use crate::expr::registry::config::{FactorPanel, FactorSlice};
 
 pub struct AlfarsLab {
     source: ClickHouseSource,
@@ -69,8 +69,13 @@ impl AlfarsLab {
     /// factor matrices aligned to a common PriceMatrix. For multi-factor backtest.
     pub fn evaluate(
         &self,
-    ) -> Result<(HashMap<String, ndarray::Array2<f64>>, crate::data::layer::PriceMatrix), String>
-    {
+    ) -> Result<
+        (
+            HashMap<String, ndarray::Array2<f64>>,
+            crate::data::layer::PriceMatrix,
+        ),
+        String,
+    > {
         let (start_year, end_year) = self.years()?;
         let base_filter = self.dl.pre_filter().to_string();
         let mut all_slices = Vec::new();
@@ -80,7 +85,9 @@ impl AlfarsLab {
             let end = format!("{}-01-01", year + 1);
             let mut year_dl = DataLayer::new(self.source.clone());
             year_dl.set_pre_filter(&format!("{}:{} {}", start, end, base_filter));
-            let results = self.registry.compute_cs_pipeline(&mut year_dl)
+            let results = self
+                .registry
+                .compute_cs_pipeline(&mut year_dl)
                 .map_err(|e| format!("Year {}: {}", year, e))?;
             all_slices.extend(results.into_values());
         }
@@ -89,14 +96,20 @@ impl AlfarsLab {
         let end_full = format!("{}-01-01", end_year + 1);
         let mut dl = DataLayer::new(self.source.clone());
         dl.set_pre_filter(&format!("{}:{} {}", start_full, end_full, base_filter));
-        let prices = dl.query_price_matrix()
+        let prices = dl
+            .query_price_matrix()
             .map_err(|e| format!("Price query: {:?}", e))?;
 
         let mut matrices = HashMap::new();
         for name in self.registry.list() {
-            let factor_slices: Vec<_> = all_slices.iter()
-                .filter(|s| s.factor_name == name).cloned().collect();
-            if factor_slices.is_empty() { continue; }
+            let factor_slices: Vec<_> = all_slices
+                .iter()
+                .filter(|s| s.factor_name == name)
+                .cloned()
+                .collect();
+            if factor_slices.is_empty() {
+                continue;
+            }
             matrices.insert(name, prices.build_factor_matrix(&factor_slices));
         }
         Ok((matrices, prices))
@@ -140,8 +153,7 @@ impl AlfarsLab {
         let base_filter = self.dl.pre_filter().to_string();
         let mut all_slices: Vec<FactorSlice> = Vec::new();
 
-        let mut wtr = csv::Writer::from_path(csv_path)
-            .map_err(|e| format!("CSV: {}", e))?;
+        let mut wtr = csv::Writer::from_path(csv_path).map_err(|e| format!("CSV: {}", e))?;
         FactorSlice::write_header(&mut wtr);
 
         for year in start_year..=end_year {
@@ -150,11 +162,14 @@ impl AlfarsLab {
             let mut year_dl = DataLayer::new(self.source.clone());
             year_dl.set_pre_filter(&format!("{}:{} {}", start, end, base_filter));
 
-            let results = self.registry.compute_cs_pipeline(&mut year_dl)
+            let results = self
+                .registry
+                .compute_cs_pipeline(&mut year_dl)
                 .map_err(|e| format!("Year {}: {}", year, e))?;
 
             for (_name, slice) in &results {
-                slice.write_to(&mut wtr)
+                slice
+                    .write_to(&mut wtr)
                     .map_err(|e| format!("Year {} CSV: {}", year, e))?;
             }
             all_slices.extend(results.into_values());
@@ -180,7 +195,8 @@ impl AlfarsLab {
 
         let mut dl = DataLayer::new(self.source.clone());
         dl.set_pre_filter(&format!("{}:{} {}", start_full, end_full, base_filter));
-        let prices = dl.query_price_matrix()
+        let prices = dl
+            .query_price_matrix()
             .map_err(|e| format!("Price query: {:?}", e))?;
 
         let factor_mat = panel.build_factor_matrix(&prices);

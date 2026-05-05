@@ -30,17 +30,15 @@ Cargo.lock
 Thumbs.db
 
 # Build artifacts
-alpha_expr/_core*.so
-alpha_expr/_core*.pyd
-alpha_expr/__pycache__/
 dist/
 build/
 *.egg-info/
 .eggs/
 
 /priv
-CLAUDE.md
 
 # Local tests (contains private config)
 local_tests/
-CLAUDE.md
+CLAUDE.*
+dev/
+docs/

@@ -71,14 +71,14 @@ impl Frequency {
     /// Smaller values = finer granularity
     pub fn period_days(&self) -> f64 {
         match self {
-            Frequency::Minute1 => 1.0 / (24.0 * 60.0),    // ~0.00069 days
-            Frequency::Minute5 => 5.0 / (24.0 * 60.0),     // ~0.00347 days
-            Frequency::Minute15 => 15.0 / (24.0 * 60.0),  // ~0.0104 days
-            Frequency::Minute30 => 30.0 / (24.0 * 60.0),  // ~0.0208 days
-            Frequency::Hour1 => 1.0 / 24.0,                // ~0.0417 days
-            Frequency::Daily => 1.0,                       // 1 day
-            Frequency::Weekly => 7.0,                       // 7 days
-            Frequency::Monthly => 30.0,                     // ~30 days
+            Frequency::Minute1 => 1.0 / (24.0 * 60.0), // ~0.00069 days
+            Frequency::Minute5 => 5.0 / (24.0 * 60.0), // ~0.00347 days
+            Frequency::Minute15 => 15.0 / (24.0 * 60.0), // ~0.0104 days
+            Frequency::Minute30 => 30.0 / (24.0 * 60.0), // ~0.0208 days
+            Frequency::Hour1 => 1.0 / 24.0,            // ~0.0417 days
+            Frequency::Daily => 1.0,                   // 1 day
+            Frequency::Weekly => 7.0,                  // 7 days
+            Frequency::Monthly => 30.0,                // ~30 days
         }
     }
 }

@@ -711,7 +711,7 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let mut manager = PersistenceManager::new(temp_dir.path()).unwrap();
 
-        // Create test factors
+        // Create test factors with unique IDs (timestamp-based IDs can collide)
         let mut factor1 = create_factor_metadata(
             "factor1",
             &MultiObjectiveFitness {
@@ -725,6 +725,7 @@ mod tests {
             100,
             252,
         );
+        factor1.id = "factor_1".to_string();
         factor1.tags = vec!["momentum".to_string(), "high_ic".to_string()];
         manager.factor_cache.insert(factor1.id.clone(), factor1);
 
@@ -741,6 +742,7 @@ mod tests {
             100,
             252,
         );
+        factor2.id = "factor_2".to_string();
         factor2.tags = vec!["value".to_string()];
         manager.factor_cache.insert(factor2.id.clone(), factor2);
 

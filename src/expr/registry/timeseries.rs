@@ -43,7 +43,11 @@ pub fn winsor(vals: &Array1<f64>, n_symbols: usize) -> Array1<f64> {
         let upper = mean + 3.0 * std;
 
         for (j, &v) in slice.iter().enumerate() {
-            result[start + j] = if v.is_finite() { v.clamp(lower, upper) } else { v };
+            result[start + j] = if v.is_finite() {
+                v.clamp(lower, upper)
+            } else {
+                v
+            };
         }
     }
     result
@@ -110,8 +114,8 @@ pub fn cap_neu(vals: &Array1<f64>, market_cap: &Array1<f64>, n_symbols: usize) -
     let mut result = Array1::from_elem(n, f64::NAN);
 
     // Pre-compute log(market_cap)
-    let log_mktcap: Array1<f64> = market_cap
-        .mapv(|v| if v > 0.0 { v.ln() } else { f64::NEG_INFINITY });
+    let log_mktcap: Array1<f64> =
+        market_cap.mapv(|v| if v > 0.0 { v.ln() } else { f64::NEG_INFINITY });
 
     for d in 0..n_dates {
         let start = d * n_symbols;
@@ -140,12 +144,14 @@ pub fn cap_neu(vals: &Array1<f64>, market_cap: &Array1<f64>, n_symbols: usize) -
         let cov: f64 = valid_indices
             .iter()
             .map(|&i| (alpha_slice[i] - alpha_mean) * (log_mktcap[i] - log_mktcap_mean))
-            .sum::<f64>() / n_valid;
+            .sum::<f64>()
+            / n_valid;
 
         let var_log_mktcap: f64 = valid_indices
             .iter()
             .map(|&i| (log_mktcap[i] - log_mktcap_mean).powi(2))
-            .sum::<f64>() / n_valid;
+            .sum::<f64>()
+            / n_valid;
 
         let beta = if var_log_mktcap > 1e-10 {
             cov / var_log_mktcap
@@ -165,7 +171,8 @@ pub fn cap_neu(vals: &Array1<f64>, market_cap: &Array1<f64>, n_symbols: usize) -
         let residual_var = valid_residuals
             .iter()
             .map(|&r| (r - residual_mean).powi(2))
-            .sum::<f64>() / n_valid;
+            .sum::<f64>()
+            / n_valid;
         let residual_std = residual_var.sqrt();
 
         if residual_std > 1e-10 {
@@ -278,8 +285,7 @@ pub fn ts_std(vals: &Array1<f64>, window: usize) -> Array1<f64> {
         let start = i.saturating_sub(window - 1);
         let slice = &vals.as_slice().unwrap()[start..=i];
         let mean = slice.iter().sum::<f64>() / slice.len() as f64;
-        let variance =
-            slice.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / slice.len() as f64;
+        let variance = slice.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / slice.len() as f64;
         result[i] = variance.sqrt();
     }
     result
@@ -636,7 +642,15 @@ pub fn scale(vals: &Array1<f64>) -> Array1<f64> {
 
 /// Sign of values
 pub fn sign(vals: &Array1<f64>) -> Array1<f64> {
-    vals.mapv(|v| if v > 0.0 { 1.0 } else if v < 0.0 { -1.0 } else { 0.0 })
+    vals.mapv(|v| {
+        if v > 0.0 {
+            1.0
+        } else if v < 0.0 {
+            -1.0
+        } else {
+            0.0
+        }
+    })
 }
 
 /// Conditional: if a > threshold, return b, else return c
@@ -650,12 +664,7 @@ pub fn quesval(threshold: f64, a: &Array1<f64>, b: &Array1<f64>, c: &Array1<f64>
 }
 
 /// Conditional: if a > b, return c, else return d
-pub fn quesval2(
-    a: &Array1<f64>,
-    b: &Array1<f64>,
-    c: &Array1<f64>,
-    d: &Array1<f64>,
-) -> Array1<f64> {
+pub fn quesval2(a: &Array1<f64>, b: &Array1<f64>, c: &Array1<f64>, d: &Array1<f64>) -> Array1<f64> {
     let n = a.len();
     let mut result = Array1::zeros(n);
     for i in 0..n {
@@ -887,10 +896,7 @@ mod tests {
 
     #[test]
     fn test_winsor() {
-        let vals = Array1::from_vec(vec![
-            1.0, 2.0, 3.0, 4.0, 5.0,
-            10.0, 20.0, 30.0, 40.0, 50.0,
-        ]);
+        let vals = Array1::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 10.0, 20.0, 30.0, 40.0, 50.0]);
         let result = winsor(&vals, 5);
         assert_eq!(result.to_vec(), vals.to_vec());
     }
@@ -904,10 +910,7 @@ mod tests {
 
     #[test]
     fn test_zscore() {
-        let vals = Array1::from_vec(vec![
-            1.0, 2.0, 3.0, 4.0, 5.0,
-            2.0, 4.0, 6.0, 8.0, 10.0,
-        ]);
+        let vals = Array1::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 2.0, 4.0, 6.0, 8.0, 10.0]);
         let result = zscore(&vals, 5);
 
         let date0 = &result.as_slice().unwrap()[0..5];

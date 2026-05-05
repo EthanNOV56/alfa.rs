@@ -2,7 +2,7 @@
 //!
 //! This module provides ClickHouse-specific data source implementation.
 
-use super::{DataDerivation, DataError, DataSource, QueryFilter};
+use super::{DataError, DataSource, QueryFilter};
 use std::collections::HashMap;
 
 /// ClickHouse data source
@@ -269,38 +269,6 @@ impl ClickHouseSource {
         );
 
         self.query_to_hashmap(&sql)
-    }
-
-    /// Fetch stock data with complete derived fields
-    ///
-    /// This method fetches raw data from ClickHouse and computes all derived fields
-    /// including holding returns, adjusted prices, and adjusted VWAP.
-    ///
-    /// # Parameters
-    /// - symbols: List of stock symbols to fetch
-    /// - start_date: Start date (YYYY-MM-DD)
-    /// - end_date: End date (YYYY-MM-DD)
-    /// - table_name: Table name (e.g., "stock_1d")
-    ///
-    /// # Returns
-    /// - HashMap containing both raw and derived fields:
-    ///   - Raw: symbol, trading_date, open, high, low, close, volume, amount, adjust_factor
-    ///   - Derived: returns (simple), holding_return, vwap, close_adj, vwap_adj
-    pub fn fetch_stock_data_with_derivation(
-        &self,
-        symbols: &[String],
-        start_date: &str,
-        end_date: &str,
-        table_name: &str,
-    ) -> Result<HashMap<String, Vec<f64>>, DataError> {
-        // 1. Fetch raw data
-        let mut data = self.fetch_stock_data(symbols, start_date, end_date, table_name)?;
-
-        // 2. Compute derived fields
-        let derivation = DataDerivation::new();
-        data = derivation.derive_all(&data, self.amount_unit as f64, self.volume_unit as f64);
-
-        Ok(data)
     }
 
     /// Query data with flexible filter conditions

@@ -30,7 +30,11 @@ fn tokenize(s: &str) -> Result<Vec<Token>, String> {
                 }
             }
             // Check if it's a frequency prefix (ends with ':')
-            if prefix.ends_with(':') && (prefix.starts_with("5m") || prefix.starts_with("1d") || prefix.starts_with("1m")) {
+            if prefix.ends_with(':')
+                && (prefix.starts_with("5m")
+                    || prefix.starts_with("1d")
+                    || prefix.starts_with("1m"))
+            {
                 tokens.push(Token::Frequency(prefix.trim_end_matches(':').to_string()));
                 continue;
             }
@@ -110,14 +114,19 @@ fn tokenize(s: &str) -> Result<Vec<Token>, String> {
                                 }
                             }
                             // Check if after_freq is a known aggregation function
-                            let valid_funcs = ["sum", "mean", "std", "min", "max", "count", "product"];
+                            let valid_funcs =
+                                ["sum", "mean", "std", "min", "max", "count", "product"];
                             if valid_funcs.contains(&after_freq.as_str()) {
                                 // This is frequency+function, like "1d:sum"
                                 // Advance the REAL chars iterator to match what we consumed
-                                for _ in 0..num.len() { chars.next(); } // consume digits
+                                for _ in 0..num.len() {
+                                    chars.next();
+                                } // consume digits
                                 chars.next(); // consume 'd' or 'm' etc.
                                 chars.next(); // consume ':'
-                                for _ in 0..after_freq.len() { chars.next(); } // consume function name
+                                for _ in 0..after_freq.len() {
+                                    chars.next();
+                                } // consume function name
                                 let freq_str = format!("{}{}", num, c);
                                 tokens.push(Token::Frequency(freq_str));
                                 tokens.push(Token::Function(after_freq));
@@ -125,10 +134,14 @@ fn tokenize(s: &str) -> Result<Vec<Token>, String> {
                             } else if !after_freq.is_empty() {
                                 // It's frequency + column name, like "5m:vol"
                                 // after_freq contains the column name
-                                for _ in 0..num.len() { chars.next(); }
+                                for _ in 0..num.len() {
+                                    chars.next();
+                                }
                                 chars.next(); // consume 'd' or 'm' etc.
                                 chars.next(); // consume ':'
-                                for _ in 0..after_freq.len() { chars.next(); }
+                                for _ in 0..after_freq.len() {
+                                    chars.next();
+                                }
                                 let freq_str = format!("{}{}", num, c);
                                 tokens.push(Token::Frequency(freq_str));
                                 tokens.push(Token::Identifier(after_freq));
@@ -140,7 +153,9 @@ fn tokenize(s: &str) -> Result<Vec<Token>, String> {
             }
 
             // Not a frequency suffix, just a number
-            for _ in 0..num.len() { chars.next(); }
+            for _ in 0..num.len() {
+                chars.next();
+            }
             tokens.push(Token::Number(num.parse().unwrap_or(0.0)));
         } else {
             let op = match c {
@@ -173,7 +188,7 @@ enum Token {
     Number(f64),
     Identifier(String),
     Function(String),
-    Frequency(String),  // "5m", "1d", "1m" etc.
+    Frequency(String), // "5m", "1d", "1m" etc.
     Plus,
     Minus,
     Multiply,
@@ -275,7 +290,12 @@ fn parse_primary(tokens: &[Token], start: usize) -> Result<(Expr, usize), String
                     // 1d:sum(...) -> Function with frequency prefix
                     let (expr, pos) = parse_function(tokens, start + 1)?;
                     // Attach the frequency to the FunctionCall
-                    let expr = if let Expr::FunctionCall { name, args, freq: _ } = expr {
+                    let expr = if let Expr::FunctionCall {
+                        name,
+                        args,
+                        freq: _,
+                    } = expr
+                    {
                         Expr::FunctionCall {
                             name,
                             args,
@@ -518,7 +538,7 @@ mod tests {
     fn test_parse_nested_expression() {
         // Test nested function calls
         let expr = parse_expression("rank(ts_mean(close, 20))").unwrap();
-        assert!(matches!(expr, Expr::FunctionCall { name, .. } if name == "rank"));
+        assert!(matches!(expr, Expr::FunctionCall { name, .. } if name == "cs_rank"));
 
         // Test multiple operations
         let expr = parse_expression("close + open * 2").unwrap();
@@ -553,7 +573,8 @@ mod tests {
         eprintln!("1d:sum(5m:vol * 5m:close) = {:?}", expr);
         assert!(expr.is_ok());
 
-        let expr2 = parse_expression("1d:sum(5m:vol * 5m:close) / 1d:sum(5m:vol) / 1d:mean(5m:close)");
+        let expr2 =
+            parse_expression("1d:sum(5m:vol * 5m:close) / 1d:sum(5m:vol) / 1d:mean(5m:close)");
         eprintln!("full expr = {:?}", expr2);
         assert!(expr2.is_ok());
     }
