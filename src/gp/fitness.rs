@@ -272,7 +272,7 @@ impl RealBacktestFitnessEvaluator {
 
         let engine = BacktestEngine::with_config(config);
 
-        match engine.run_ic_only_with_prices(factor.clone(), &self.prices) {
+        match engine.run_with_prices(factor.clone(), &self.prices) {
             Ok(result) => {
                 if result.ic_mean.is_nan() || result.ic_ir.is_nan() {
                     None
