@@ -4,7 +4,10 @@
 
 use alfars::WeightMethod;
 use alfars::backtest::{BacktestConfig, BacktestEngine, BacktestResult, FeeConfig};
+use alfars::data::clickhouse::ClickHouseSource;
 use alfars::expr::registry::FactorRegistry;
+use alfars::gp::GPConfig;
+use alfars::lab::AlfarsLab;
 use axum::{
     Router,
     extract::State,
@@ -2783,47 +2786,98 @@ async fn get_filter_options(
     get_columns(State(state), axum::extract::Query(params)).await
 }
 
-/// Run GP factor mining
+/// Run GP factor mining via AlfarsLab
 async fn mine_factors(
     State(state): State<AppState>,
     Json(req): Json<GpMineRequest>,
 ) -> Result<Json<GpMineResponse>, (StatusCode, String)> {
     let start = std::time::Instant::now();
 
-    let max_gens = req.max_generations.unwrap_or(10);
-
-    // Data source must be provided
     let data_source = req.data_source.as_ref().ok_or_else(|| {
         (
             StatusCode::BAD_REQUEST,
-            "Data source not configured. Please configure data source in Data Source page first."
-                .to_string(),
+            "Data source not configured.".to_string(),
         )
     })?;
 
-    // Load data from database for real GP mining
-    let loaded_data = load_data_from_config(&state, data_source).await?;
+    let db_config = state.db_config.read().await;
+    if !db_config.connected {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Database not connected.".to_string(),
+        ));
+    }
 
-    // Use real GP engine with loaded data
-    let terminal_set = req.terminal_set.unwrap_or_else(|| {
-        vec![
-            "close".to_string(),
-            "open".to_string(),
-            "high".to_string(),
-            "low".to_string(),
-            "volume".to_string(),
-        ]
-    });
-    let function_set = req.function_set.unwrap_or_else(|| {
-        vec![
-            "add".to_string(),
-            "sub".to_string(),
-            "mul".to_string(),
-            "div".to_string(),
-        ]
-    });
-    let (factors, best_factor) = run_real_gp(&loaded_data, max_gens, terminal_set, function_set)?;
+    // Build ClickHouseSource from server's DB config
+    let source = if db_config.username.is_empty() {
+        ClickHouseSource::new(&db_config.host, db_config.port, &db_config.database)
+    } else {
+        ClickHouseSource::with_username(
+            &db_config.host,
+            db_config.port,
+            &db_config.database,
+            &db_config.username,
+        )
+    };
 
+    // Build filter string from DataSourceConfig
+    let filter = build_lab_filter(data_source);
+
+    let mut lab = AlfarsLab::new(source);
+    lab.set_filter(&filter);
+    lab.set_years(
+        data_source.start_date[..4].parse::<i32>().unwrap_or(2020),
+        data_source.end_date[..4].parse::<i32>().unwrap_or(2025),
+    );
+    lab.set_backtest_config(BacktestConfig::default());
+
+    let pop_size = req.population_size.unwrap_or(50);
+    let max_gens = req.max_generations.unwrap_or(10);
+
+    let gp_config = GPConfig {
+        population_size: pop_size,
+        max_generations: max_gens,
+        tournament_size: 5,
+        crossover_prob: 0.8,
+        mutation_prob: 0.15,
+        max_depth: 5,
+        parent_diversity_penalty: 0.1,
+        use_diverse_init: true,
+        smart_mutation_ratio: 0.3,
+        use_frequencies: false,
+    };
+
+    let num_factors = 3;
+    let results = lab
+        .mine_factors(gp_config, num_factors)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    let mut factors = Vec::new();
+    let mut best_idx = 0;
+    let mut best_fitness = f64::NEG_INFINITY;
+    for (i, (expr_str, fitness, ic, ir, _turnover, _complexity)) in results.iter().enumerate() {
+        factors.push(GpFactor {
+            id: format!("gp-factor-{}", i + 1),
+            name: format!("GP Factor {}", i + 1),
+            expression: expr_str.clone(),
+            ic_mean: *ic,
+            ic_ir: *ir,
+            fitness: *fitness,
+        });
+        if *fitness > best_fitness {
+            best_fitness = *fitness;
+            best_idx = i;
+        }
+    }
+
+    if factors.is_empty() {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "No factors discovered".to_string(),
+        ));
+    }
+
+    let best_factor = factors[best_idx].clone();
     let elapsed = start.elapsed().as_secs_f64();
 
     Ok(Json(GpMineResponse {
@@ -2834,191 +2888,23 @@ async fn mine_factors(
     }))
 }
 
-/// Run real GP factor mining with loaded data
-fn run_real_gp(
-    data: &LoadDataResponse,
-    _max_generations: usize,
-    terminal_set: Vec<String>,
-    function_set: Vec<String>,
-) -> Result<(Vec<GpFactor>, GpFactor), (StatusCode, String)> {
-    use alfars::gp::{Function, GPConfig, RealBacktestFitnessEvaluator, Terminal, run_gp};
-    use rand::SeedableRng;
-    use rand::rngs::StdRng;
-    use std::collections::HashMap;
-
-    // Convert loaded data to HashMap format for the evaluator
-    let n_dates = data.close.len();
-    let n_symbols = data.symbols.len();
-
-    // Build data HashMap with column names
-    let mut data_map: HashMap<String, Array2<f64>> = HashMap::new();
-
-    // Convert Vec<Vec<f64>> to Array2<f64>
-    let close_array = Array2::from_shape_vec(
-        (n_dates, n_symbols),
-        data.close.iter().flatten().cloned().collect(),
-    )
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to create close array: {}", e),
-        )
-    })?;
-
-    let open_array = Array2::from_shape_vec(
-        (n_dates, n_symbols),
-        data.open.iter().flatten().cloned().collect(),
-    )
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to create open array: {}", e),
-        )
-    })?;
-
-    let high_array = Array2::from_shape_vec(
-        (n_dates, n_symbols),
-        data.high.iter().flatten().cloned().collect(),
-    )
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to create high array: {}", e),
-        )
-    })?;
-
-    let low_array = Array2::from_shape_vec(
-        (n_dates, n_symbols),
-        data.low.iter().flatten().cloned().collect(),
-    )
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to create low array: {}", e),
-        )
-    })?;
-
-    let volume_array = Array2::from_shape_vec(
-        (n_dates, n_symbols),
-        data.volume.iter().flatten().cloned().collect(),
-    )
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to create volume array: {}", e),
-        )
-    })?;
-
-    let returns_array = Array2::from_shape_vec(
-        (n_dates, n_symbols),
-        data.returns.iter().flatten().cloned().collect(),
-    )
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to create returns array: {}", e),
-        )
-    })?;
-
-    data_map.insert("close".to_string(), close_array);
-    data_map.insert("open".to_string(), open_array);
-    data_map.insert("high".to_string(), high_array);
-    data_map.insert("low".to_string(), low_array);
-    data_map.insert("volume".to_string(), volume_array);
-
-    // Create evaluator with real data
-    let evaluator = RealBacktestFitnessEvaluator::new(data_map, returns_array);
-
-    // Configure GP - use smaller values for faster execution
-    let config = GPConfig {
-        population_size: 20,
-        max_generations: 5,
-        tournament_size: 3,
-        crossover_prob: 0.8,
-        mutation_prob: 0.1,
-        max_depth: 4,
-        parent_diversity_penalty: 0.1,
-        use_diverse_init: false,
-        smart_mutation_ratio: 0.3,
-        use_frequencies: false,
-    };
-
-    // Create terminals (variables) from the provided terminal_set
-    let mut terminals: Vec<Terminal> = terminal_set
-        .iter()
-        .map(|name| Terminal::Variable(name.clone()))
-        .collect();
-
-    // Add some constant values
-    terminals.push(Terminal::Constant(1.0));
-    terminals.push(Terminal::Constant(2.0));
-    terminals.push(Terminal::Constant(5.0));
-    terminals.push(Terminal::Constant(10.0));
-    terminals.push(Terminal::Constant(20.0));
-    terminals.push(Terminal::Ephemeral);
-
-    // Create functions from the provided function_set
-    let mut functions: Vec<Function> = Vec::new();
-    for name in &function_set {
-        match name.as_str() {
-            "add" => functions.push(Function::add()),
-            "sub" => functions.push(Function::sub()),
-            "mul" => functions.push(Function::mul()),
-            "div" => functions.push(Function::div()),
-            "sqrt" => functions.push(Function::sqrt()),
-            "abs" => functions.push(Function::abs()),
-            "neg" => functions.push(Function::neg()),
-            // Time series functions
-            "rank" => functions.push(Function::rank()),
-            "ts_mean" => functions.push(Function::ts_mean()),
-            "ts_std" => functions.push(Function::ts_std()),
-            "ts_max" => functions.push(Function::ts_max()),
-            "ts_min" => functions.push(Function::ts_min()),
-            "delay" => functions.push(Function::delay()),
-            "log" => functions.push(Function::log()),
-            "sign" => functions.push(Function::sign()),
-            "ts_rank" => functions.push(Function::ts_rank()),
-            "decay_linear" => functions.push(Function::decay_linear()),
-            "correlation" => functions.push(Function::correlation()),
-            _ => {
-                // Unknown function, skip but log a warning
-                eprintln!(
-                    "Warning: Unknown function '{}' in function_set, skipping",
-                    name
-                );
-            }
+/// Build a pre_filter string from DataSourceConfig.
+fn build_lab_filter(data_source: &DataSourceConfig) -> String {
+    let mut parts = vec![format!(
+        "{}:{}",
+        data_source.start_date, data_source.end_date
+    )];
+    if let Some(ref filters) = data_source.filters {
+        for f in filters {
+            parts.push(format!(
+                "{} {} '{}'",
+                f.column,
+                f.operator.to_lowercase(),
+                f.value
+            ));
         }
     }
-
-    // Ensure we have at least some functions
-    if functions.is_empty() {
-        functions.push(Function::add());
-        functions.push(Function::mul());
-    }
-
-    // Run GP
-    let mut rng = StdRng::from_entropy();
-    let (best_expr, best_fitness) = run_gp(&config, &evaluator, terminals, functions, &mut rng);
-
-    // Convert expression to string
-    let expression = format!("{:?}", best_expr);
-
-    // Get metrics from evaluator
-    let ic_mean = evaluator.get_last_ic();
-    let ic_ir = evaluator.get_last_ir();
-
-    // Create result factor
-    let best_factor = GpFactor {
-        id: "gp_best".to_string(),
-        name: "GP Best Factor".to_string(),
-        expression,
-        ic_mean,
-        ic_ir,
-        fitness: best_fitness,
-    };
-
-    // Return single factor (could be extended to return top N)
-    Ok((vec![best_factor.clone()], best_factor))
+    parts.join(" ")
 }
 
 #[tokio::main]
