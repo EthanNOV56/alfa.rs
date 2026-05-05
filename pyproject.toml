@@ -51,6 +51,11 @@ Repository = "https://github.com/EthanNOV56/alfa.rs"
 [project.aliases]
 alfars = "alfars"
 
+[tool.pytest.ini_options]
+markers = [
+    "slow: marks tests that require live data and are slow to run",
+]
+
 [tool.maturin]
 module-name = "alfars._core"
 features = ["pyo3/extension-module"]

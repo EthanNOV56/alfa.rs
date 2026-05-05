@@ -56,10 +56,3 @@ pyo3-build-config = "0.28"
 name = "alfars-server"
 path = "src/bin/server.rs"
 
-[[bin]]
-name = "fullstack"
-path = "src/bin/fullstack.rs"
-
-[[bin]]
-name = "wcr"
-path = "src/bin/wcr.rs"
