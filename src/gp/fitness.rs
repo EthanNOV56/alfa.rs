@@ -1,0 +1,945 @@
+//! Fitness evaluators for factor evaluation.
+//!
+//! Provides the `FitnessEvaluator` trait and several implementations:
+//! - `RealBacktestFitnessEvaluator` — full backtest-based evaluation with
+//!   train/test/validation split support
+//! - `BacktestFitnessEvaluator` — simple complexity-based evaluator for testing
+//! - `CachedFitnessEvaluator` — LRU-cached wrapper with semantic deduplication
+//! - `BatchFitnessEvaluator` — parallel batch processing wrapper
+
+use crate::WeightMethod;
+use crate::backtest::{BacktestConfig, BacktestEngine, BacktestResult, FeeConfig, PositionConfig};
+use crate::expr::registry::functions::eval_expr_vectorized;
+use crate::expr::{BinaryOp, Expr, Literal, UnaryOp};
+use crate::gp::types::{
+    Complexity, DataSplit, DataSplitConfig, MultiObjectiveFitness, SplitEvaluationResult,
+    SplitMetrics, normalize_expression,
+};
+use lru::LruCache;
+use ndarray::Array2;
+use rayon::prelude::*;
+use std::collections::HashMap;
+use std::num::NonZeroUsize;
+use std::sync::atomic;
+use std::sync::{Mutex, RwLock};
+
+/// Fitness evaluator trait for evaluating expression fitness
+pub trait FitnessEvaluator: Send + Sync {
+    fn fitness(&self, expr: &Expr) -> f64;
+
+    /// Batch evaluate multiple expressions (optional optimization)
+    fn fitness_batch(&self, exprs: &[Expr]) -> Vec<f64> {
+        // Default implementation: evaluate sequentially
+        exprs.iter().map(|e| self.fitness(e)).collect()
+    }
+
+    /// Check if this evaluator supports batch evaluation
+    fn supports_batch(&self) -> bool {
+        false
+    }
+}
+
+/// Fitness evaluator for factor mining based on actual backtest performance
+/// with support for train/test/validation split
+pub struct RealBacktestFitnessEvaluator {
+    data: HashMap<String, Array2<f64>>,
+    returns: Array2<f64>,
+    weights: HashMap<String, f64>, // Feature weights for multi-objective optimization
+    min_valid_days: usize,         // Minimum days required for valid backtest
+    // Data split configuration
+    data_split: Option<DataSplit>,
+    // Fee configuration for backtest
+    fee_config: FeeConfig,
+    // Position configuration for backtest
+    position_config: PositionConfig,
+    // Store last computed metrics (using RwLock for thread safety)
+    last_metrics: RwLock<(f64, f64, f64, usize)>, // (ic, ir, turnover, complexity)
+    // Store last split evaluation result
+    last_split_result: RwLock<Option<SplitEvaluationResult>>,
+}
+
+impl RealBacktestFitnessEvaluator {
+    /// Create a new real backtest fitness evaluator (backward compatible)
+    pub fn new(data: HashMap<String, Array2<f64>>, returns: Array2<f64>) -> Self {
+        Self {
+            data,
+            returns,
+            weights: HashMap::new(),
+            min_valid_days: 50,
+            data_split: None,
+            fee_config: FeeConfig::default(),
+            position_config: PositionConfig::default(),
+            last_metrics: RwLock::new((0.0, 0.0, 0.0, 0)),
+            last_split_result: RwLock::new(None),
+        }
+    }
+
+    /// Create a new evaluator with train/test/validation split
+    pub fn with_split(
+        data: HashMap<String, Array2<f64>>,
+        returns: Array2<f64>,
+        split_config: DataSplitConfig,
+    ) -> Self {
+        let n_days = returns.shape()[0];
+        let data_split = DataSplit::from_config(n_days, &split_config);
+
+        Self {
+            data,
+            returns,
+            weights: HashMap::new(),
+            min_valid_days: 50,
+            data_split: Some(data_split),
+            fee_config: FeeConfig::default(),
+            position_config: PositionConfig::default(),
+            last_metrics: RwLock::new((0.0, 0.0, 0.0, 0)),
+            last_split_result: RwLock::new(None),
+        }
+    }
+
+    /// Set fee configuration
+    pub fn with_fee_config(mut self, fee_config: FeeConfig) -> Self {
+        self.fee_config = fee_config;
+        self
+    }
+
+    /// Set position configuration
+    pub fn with_position_config(mut self, position_config: PositionConfig) -> Self {
+        self.position_config = position_config;
+        self
+    }
+
+    /// Get last computed IC
+    pub fn get_last_ic(&self) -> f64 {
+        self.last_metrics.read().unwrap().0
+    }
+
+    /// Get last computed IR
+    pub fn get_last_ir(&self) -> f64 {
+        self.last_metrics.read().unwrap().1
+    }
+
+    /// Get last computed turnover
+    pub fn get_last_turnover(&self) -> f64 {
+        self.last_metrics.read().unwrap().2
+    }
+
+    /// Get last computed complexity
+    pub fn get_last_complexity(&self) -> usize {
+        self.last_metrics.read().unwrap().3
+    }
+
+    /// Set feature weights for multi-objective optimization
+    pub fn set_weights(&mut self, weights: HashMap<String, f64>) -> &mut Self {
+        self.weights = weights;
+        self
+    }
+
+    /// Set minimum valid days for backtest
+    pub fn set_min_valid_days(&mut self, days: usize) -> &mut Self {
+        self.min_valid_days = days;
+        self
+    }
+
+    /// Evaluate expression and run backtest with multiple objectives
+    fn evaluate_with_backtest(&self, expr: &Expr) -> Option<MultiObjectiveFitness> {
+        let n_days = self.returns.shape()[0];
+
+        if n_days < self.min_valid_days {
+            return None; // Not enough data for valid backtest
+        }
+
+        // Evaluate expression to get factor matrix (full data)
+        let factor_matrix = self.evaluate_expression(expr)?;
+
+        // Run backtest on the factor matrix (uses training data if split is configured)
+        let backtest_result = self.run_backtest(&factor_matrix)?;
+
+        // Evaluate on all splits if configured (for tracking purposes)
+        if self.data_split.is_some() {
+            // Evaluate on all splits and store results
+            let _ = self.evaluate_on_all_splits(&factor_matrix);
+        }
+
+        // Compute turnover (simplified - based on factor value changes)
+        let turnover = self.compute_turnover(&factor_matrix);
+
+        // Compute complexity
+        let complexity = self.compute_complexity(expr);
+
+        // Store last computed metrics
+        *self.last_metrics.write().unwrap() = (
+            backtest_result.ic_mean.abs(),
+            backtest_result.ic_ir.abs(),
+            turnover,
+            complexity.node_count,
+        );
+
+        // Get weights
+        let w_ic = *self.weights.get("ic").unwrap_or(&0.4);
+        let w_ir = *self.weights.get("ir").unwrap_or(&0.3);
+        let w_to = *self.weights.get("turnover").unwrap_or(&0.15);
+        let w_comp = *self.weights.get("complexity").unwrap_or(&0.15);
+
+        // Create multi-objective fitness
+        Some(MultiObjectiveFitness::new(
+            backtest_result.ic_mean.abs(), // Use absolute IC (direction doesn't matter)
+            backtest_result.ic_ir.abs(),   // Use absolute IR
+            turnover,
+            &complexity,
+            Some((w_ic, w_ir, w_to, w_comp)),
+        ))
+    }
+
+    /// Evaluate expression to get factor matrix
+    fn evaluate_expression(&self, expr: &Expr) -> Option<Array2<f64>> {
+        use ndarray::Array1;
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let n_days = self.returns.shape()[0];
+        let n_assets = self.returns.shape()[1];
+
+        // Parallel evaluation across assets
+        let results: Vec<Vec<f64>> = (0..n_assets)
+            .into_par_iter()
+            .map(|asset_idx| {
+                let mut columns: HashMap<String, Array1<f64>> = HashMap::new();
+
+                for (col_name, array) in &self.data {
+                    let column_data = array.column(asset_idx).to_owned();
+                    columns.insert(col_name.clone(), column_data);
+                }
+
+                // Pre-populate cache with column hashes
+                let mut cache: HashMap<u64, Array1<f64>> = HashMap::new();
+                for (name, arr) in &columns {
+                    let mut hasher = DefaultHasher::new();
+                    0u8.hash(&mut hasher);
+                    name.hash(&mut hasher);
+                    cache.insert(hasher.finish(), arr.clone());
+                }
+
+                match eval_expr_vectorized(expr, &columns, &mut cache) {
+                    Ok(arr) => arr.to_vec(),
+                    Err(_) => vec![f64::NAN; n_days],
+                }
+            })
+            .collect();
+
+        // Check if we have enough valid values
+        let valid_count = results
+            .iter()
+            .flat_map(|v| v.iter())
+            .filter(|&&v| !v.is_nan())
+            .count();
+
+        if valid_count < self.min_valid_days * n_assets / 2 {
+            return None; // Too many NaN values
+        }
+
+        // Convert to Array2
+        let mut factor_matrix = Array2::<f64>::zeros((n_days, n_assets));
+        for (asset_idx, values) in results.iter().enumerate() {
+            for (day_idx, &value) in values.iter().enumerate() {
+                factor_matrix[[day_idx, asset_idx]] = value;
+            }
+        }
+
+        Some(factor_matrix)
+    }
+
+    /// Run backtest on factor matrix (uses training data if split is configured)
+    fn run_backtest(&self, factor: &Array2<f64>) -> Option<BacktestResult> {
+        // If split is configured, use training data only
+        if let Some(ref split) = self.data_split {
+            let train_factor = self.extract_split_data(factor, &split.train_indices);
+            let train_returns = self.extract_split_data(&self.returns, &split.train_indices);
+            return self.run_backtest_internal(&train_factor, &train_returns);
+        }
+
+        // No split - use all data (backward compatible)
+        self.run_backtest_internal(factor, &self.returns)
+    }
+
+    /// Run backtest on a specific data split
+    fn run_backtest_on_split(
+        &self,
+        factor: &Array2<f64>,
+        indices: &[usize],
+    ) -> Option<BacktestResult> {
+        let split_factor = self.extract_split_data(factor, indices);
+        let split_returns = self.extract_split_data(&self.returns, indices);
+        self.run_backtest_internal(&split_factor, &split_returns)
+    }
+
+    /// Internal backtest implementation using enhanced BacktestEngine
+    fn run_backtest_internal(
+        &self,
+        factor: &Array2<f64>,
+        returns: &Array2<f64>,
+    ) -> Option<BacktestResult> {
+        // Use the enhanced BacktestEngine with fee and position config
+        let config = BacktestConfig {
+            quantiles: 10,
+            weight_method: WeightMethod::Equal,
+            long_top_n: 1,
+            short_top_n: 1,
+            fee_config: self.fee_config.clone(),
+            limit_up_down_config: Default::default(),
+            position_config: self.position_config.clone(),
+        };
+
+        let engine = BacktestEngine::with_config(config);
+
+        // Create close, open, vwap, and tradable as placeholder (using returns as proxy)
+        let close = Array2::from_elem(returns.dim(), 1.0);
+        let open = Array2::from_elem(returns.dim(), 1.0);
+        let vwap = Array2::from_elem(returns.dim(), 1.0);
+        let tradable = Array2::from_elem(returns.dim(), 1.0);
+        // adj_factor is now required - use ones as default
+        let adj_factor = Array2::from_elem(returns.dim(), 1.0);
+
+        match engine.run(
+            factor.clone(),
+            returns.clone(),
+            adj_factor,
+            close,
+            open,
+            vwap,
+            tradable,
+        ) {
+            Ok(result) => {
+                // Check for valid results
+                if result.ic_mean.is_nan() || result.ic_ir.is_nan() {
+                    None
+                } else {
+                    Some(result)
+                }
+            }
+            Err(_) => None,
+        }
+    }
+
+    /// Extract data for a specific set of indices
+    fn extract_split_data(&self, data: &Array2<f64>, indices: &[usize]) -> Array2<f64> {
+        let n_cols = data.shape()[1];
+        let mut result = Array2::<f64>::zeros((indices.len(), n_cols));
+
+        for (i, &idx) in indices.iter().enumerate() {
+            for j in 0..n_cols {
+                result[[i, j]] = data[[idx, j]];
+            }
+        }
+
+        result
+    }
+
+    /// Evaluate factor on all splits and return comprehensive results
+    pub fn evaluate_on_all_splits(&self, factor: &Array2<f64>) -> Option<SplitEvaluationResult> {
+        let split = self.data_split.as_ref()?;
+
+        // Evaluate on training set
+        let train_result = self.run_backtest_on_split(factor, &split.train_indices)?;
+        let train_metrics = SplitMetrics::from_backtest(&train_result);
+
+        // Evaluate on validation set
+        let validation_result = self.run_backtest_on_split(factor, &split.validation_indices)?;
+        let validation_metrics = SplitMetrics::from_backtest(&validation_result);
+
+        // Evaluate on test set
+        let test_result = self.run_backtest_on_split(factor, &split.test_indices)?;
+        let test_metrics = SplitMetrics::from_backtest(&test_result);
+
+        let result = SplitEvaluationResult {
+            train: train_metrics,
+            validation: validation_metrics,
+            test: test_metrics,
+        };
+
+        // Store the result
+        *self.last_split_result.write().unwrap() = Some(result.clone());
+
+        Some(result)
+    }
+
+    /// Get last split evaluation result
+    pub fn get_last_split_result(&self) -> Option<SplitEvaluationResult> {
+        self.last_split_result.read().unwrap().clone()
+    }
+
+    /// Compute turnover based on rank changes (percentage of assets changing position)
+    /// This is a more reasonable measure that gives values between 0 and 1
+    fn compute_turnover(&self, factor: &Array2<f64>) -> f64 {
+        let (n_days, n_assets) = factor.dim();
+        if n_days < 2 || n_assets < 2 {
+            return 0.0;
+        }
+
+        let mut total_turnover = 0.0;
+        let mut valid_days = 0;
+
+        for day in 1..n_days {
+            let today = factor.row(day);
+            let yesterday = factor.row(day - 1);
+
+            // Get valid assets for both days
+            let mut valid_indices = Vec::new();
+            for asset in 0..n_assets {
+                let f_today = today[asset];
+                let f_yesterday = yesterday[asset];
+                if !f_today.is_nan()
+                    && !f_yesterday.is_nan()
+                    && !f_today.is_infinite()
+                    && !f_yesterday.is_infinite()
+                {
+                    valid_indices.push(asset);
+                }
+            }
+
+            if valid_indices.len() < 2 {
+                continue;
+            }
+
+            // Compute ranks for valid assets
+            let mut yesterday_ranks: Vec<(usize, f64)> =
+                valid_indices.iter().map(|&i| (i, yesterday[i])).collect();
+            let mut today_ranks: Vec<(usize, f64)> =
+                valid_indices.iter().map(|&i| (i, today[i])).collect();
+
+            // Sort by factor values (descending)
+            yesterday_ranks.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+            today_ranks.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+            // Compute top 20% turnover
+            let top_n = std::cmp::max(1, valid_indices.len() / 5);
+
+            let prev_top: std::collections::HashSet<usize> = yesterday_ranks
+                .iter()
+                .take(top_n)
+                .map(|(i, _)| *i)
+                .collect();
+            let curr_top: std::collections::HashSet<usize> =
+                today_ranks.iter().take(top_n).map(|(i, _)| *i).collect();
+
+            // Compute Jaccard distance: |A ∩ B| / |A ∪ B|
+            // Turnover = 1 - similarity
+            let intersection: usize = prev_top.intersection(&curr_top).count();
+            let union = prev_top.len() + curr_top.len() - intersection;
+            let similarity = if union > 0 {
+                intersection as f64 / union as f64
+            } else {
+                1.0
+            };
+            let day_turnover = 1.0 - similarity;
+
+            total_turnover += day_turnover;
+            valid_days += 1;
+        }
+
+        if valid_days == 0 {
+            0.0
+        } else {
+            total_turnover / valid_days as f64
+        }
+    }
+
+    /// Compute multi-factor complexity of an expression.
+    fn compute_complexity(&self, expr: &Expr) -> Complexity {
+        let mut cols = std::collections::HashSet::new();
+        let (node_count, free_params) = self.compute_complexity_inner(expr, &mut cols);
+        Complexity {
+            node_count,
+            free_param_count: free_params,
+            unique_column_count: cols.len(),
+        }
+    }
+
+    /// Walk the tree, counting nodes and free parameters. Collects column names.
+    fn compute_complexity_inner(
+        &self,
+        expr: &Expr,
+        cols: &mut std::collections::HashSet<String>,
+    ) -> (usize, usize) {
+        match expr {
+            Expr::Literal(Literal::Float(_) | Literal::Integer(_)) => (1, 1),
+            Expr::Literal(_) => (1, 0),
+            Expr::Column(name) => {
+                cols.insert(name.clone());
+                (1, 0)
+            }
+            Expr::UnaryExpr { expr, .. } => {
+                let (n, p) = self.compute_complexity_inner(expr, cols);
+                (1 + n, p)
+            }
+            Expr::BinaryExpr { left, right, .. } => {
+                let (nl, pl) = self.compute_complexity_inner(left, cols);
+                let (nr, pr) = self.compute_complexity_inner(right, cols);
+                (1 + nl + nr, pl + pr)
+            }
+            Expr::FunctionCall { args, .. } => {
+                let mut total_n = 1;
+                let mut total_p = 0;
+                for arg in args {
+                    let (n, p) = self.compute_complexity_inner(arg, cols);
+                    total_n += n;
+                    total_p += p;
+                }
+                (total_n, total_p)
+            }
+            Expr::Aggregate { expr, .. } => {
+                let (n, p) = self.compute_complexity_inner(expr, cols);
+                (1 + n, p)
+            }
+            Expr::Conditional {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                let (nc, pc) = self.compute_complexity_inner(condition, cols);
+                let (nt, pt) = self.compute_complexity_inner(then_expr, cols);
+                let (ne, pe) = self.compute_complexity_inner(else_expr, cols);
+                (1 + nc + nt + ne, pc + pt + pe)
+            }
+            Expr::Cast { expr, .. } => {
+                let (n, p) = self.compute_complexity_inner(expr, cols);
+                (1 + n, p)
+            }
+        }
+    }
+
+    /// Check expression constraints (e.g., prevent division by zero, extreme values)
+    fn check_constraints(&self, expr: &Expr) -> bool {
+        self.check_division_by_zero(expr) && self.check_extreme_operations(expr)
+    }
+
+    /// Check for potential division by zero
+    fn check_division_by_zero(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::BinaryExpr { op, right, .. } if *op == BinaryOp::Divide => {
+                // Check if right side could be zero
+                !self.could_be_zero(right)
+            }
+            Expr::BinaryExpr { left, right, .. } => {
+                self.check_division_by_zero(left) && self.check_division_by_zero(right)
+            }
+            Expr::UnaryExpr { expr, .. } => self.check_division_by_zero(expr),
+            Expr::FunctionCall { args, .. } => {
+                args.iter().all(|arg| self.check_division_by_zero(arg))
+            }
+            Expr::Conditional {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                self.check_division_by_zero(condition)
+                    && self.check_division_by_zero(then_expr)
+                    && self.check_division_by_zero(else_expr)
+            }
+            Expr::Aggregate { expr, .. } => self.check_division_by_zero(expr),
+            Expr::Cast { expr, .. } => self.check_division_by_zero(expr),
+            _ => true,
+        }
+    }
+
+    /// Check if an expression could evaluate to zero
+    fn could_be_zero(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::Literal(Literal::Float(v)) => v.abs() < 1e-10,
+            Expr::Literal(Literal::Integer(v)) => *v == 0,
+            Expr::BinaryExpr { left, op, right } => {
+                match op {
+                    BinaryOp::Add | BinaryOp::Subtract => {
+                        self.could_be_zero(left) && self.could_be_zero(right)
+                    }
+                    BinaryOp::Multiply => self.could_be_zero(left) || self.could_be_zero(right),
+                    BinaryOp::Divide => {
+                        // Division by something that could be zero is dangerous
+                        self.could_be_zero(right)
+                    }
+                    _ => false,
+                }
+            }
+            Expr::UnaryExpr {
+                op: UnaryOp::Negate,
+                expr,
+            } => self.could_be_zero(expr),
+            _ => false,
+        }
+    }
+
+    /// Check for extreme operations (e.g., log of negative, sqrt of negative)
+    fn check_extreme_operations(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::UnaryExpr { op, expr } => match op {
+                UnaryOp::Sqrt | UnaryOp::Log => {
+                    // Check if expression could be negative
+                    !self.could_be_negative(expr)
+                }
+                _ => self.check_extreme_operations(expr),
+            },
+            Expr::BinaryExpr { left, right, .. } => {
+                self.check_extreme_operations(left) && self.check_extreme_operations(right)
+            }
+            Expr::FunctionCall { args, .. } => {
+                args.iter().all(|arg| self.check_extreme_operations(arg))
+            }
+            Expr::Conditional {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                self.check_extreme_operations(condition)
+                    && self.check_extreme_operations(then_expr)
+                    && self.check_extreme_operations(else_expr)
+            }
+            Expr::Aggregate { expr, .. } => self.check_extreme_operations(expr),
+            Expr::Cast { expr, .. } => self.check_extreme_operations(expr),
+            _ => true,
+        }
+    }
+
+    /// Check if an expression could be negative
+    fn could_be_negative(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::Literal(Literal::Float(v)) => *v < 0.0,
+            Expr::Literal(Literal::Integer(v)) => *v < 0,
+            Expr::BinaryExpr { left, op, right } => {
+                match op {
+                    BinaryOp::Add => self.could_be_negative(left) || self.could_be_negative(right),
+                    BinaryOp::Subtract => true, // Subtraction could always result in negative
+                    BinaryOp::Multiply => {
+                        // Multiplication could be negative if one is negative and one positive
+                        (self.could_be_negative(left) && !self.could_be_positive(right))
+                            || (self.could_be_negative(right) && !self.could_be_positive(left))
+                    }
+                    BinaryOp::Divide => true, // Division could result in negative
+                    _ => false,
+                }
+            }
+            Expr::UnaryExpr {
+                op: UnaryOp::Negate,
+                expr,
+            } => !self.could_be_negative(expr),
+            Expr::Column(_) => true, // Column values could be negative
+            _ => false,
+        }
+    }
+
+    /// Check if an expression could be positive
+    fn could_be_positive(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::Literal(Literal::Float(v)) => *v > 0.0,
+            Expr::Literal(Literal::Integer(v)) => *v > 0,
+            Expr::BinaryExpr { left, op, right } => {
+                match op {
+                    BinaryOp::Add => self.could_be_positive(left) || self.could_be_positive(right),
+                    BinaryOp::Subtract => true, // Subtraction could result in positive
+                    BinaryOp::Multiply => {
+                        // Multiplication could be positive if both positive or both negative
+                        (self.could_be_positive(left) && self.could_be_positive(right))
+                            || (self.could_be_negative(left) && self.could_be_negative(right))
+                    }
+                    BinaryOp::Divide => true, // Division could result in positive
+                    _ => false,
+                }
+            }
+            Expr::UnaryExpr {
+                op: UnaryOp::Negate,
+                expr,
+            } => !self.could_be_positive(expr),
+            Expr::Column(_) => true, // Column values could be positive
+            _ => false,
+        }
+    }
+}
+
+impl FitnessEvaluator for RealBacktestFitnessEvaluator {
+    fn fitness(&self, expr: &Expr) -> f64 {
+        // Check constraints first
+        if !self.check_constraints(expr) {
+            return -1e9; // Very low fitness for invalid expressions
+        }
+
+        // Run real backtest evaluation
+        match self.evaluate_with_backtest(expr) {
+            Some(fitness_metrics) => {
+                let base_fitness = fitness_metrics.fitness();
+
+                // Apply penalty for extreme complexity
+                let complexity = self.compute_complexity(expr);
+                let complexity_penalty = (complexity.node_count as f64).powi(2) / 1000.0;
+
+                base_fitness - complexity_penalty
+            }
+            None => -1e6, // Lower fitness for failed evaluation
+        }
+    }
+}
+
+/// Simple fitness evaluator based on expression complexity (for testing)
+#[allow(dead_code)]
+pub struct BacktestFitnessEvaluator {
+    data: HashMap<String, Array2<f64>>,
+    returns: Array2<f64>,
+}
+
+impl BacktestFitnessEvaluator {
+    /// Create a new backtest fitness evaluator
+    pub fn new(data: HashMap<String, Array2<f64>>, returns: Array2<f64>) -> Self {
+        Self { data, returns }
+    }
+
+    /// Compute complexity of an expression (number of nodes)
+    fn compute_complexity(&self, expr: &Expr) -> usize {
+        match expr {
+            Expr::Literal(_) => 1,
+            Expr::Column(_) => 1,
+            Expr::UnaryExpr { expr, .. } => 1 + self.compute_complexity(expr),
+            Expr::BinaryExpr { left, right, .. } => {
+                1 + self.compute_complexity(left) + self.compute_complexity(right)
+            }
+            Expr::FunctionCall { args, .. } => {
+                1 + args
+                    .iter()
+                    .map(|arg| self.compute_complexity(arg))
+                    .sum::<usize>()
+            }
+            Expr::Aggregate { expr, .. } => 1 + self.compute_complexity(expr),
+            Expr::Conditional {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                1 + self.compute_complexity(condition)
+                    + self.compute_complexity(then_expr)
+                    + self.compute_complexity(else_expr)
+            }
+            Expr::Cast { expr, .. } => 1 + self.compute_complexity(expr),
+        }
+    }
+}
+
+impl FitnessEvaluator for BacktestFitnessEvaluator {
+    fn fitness(&self, expr: &Expr) -> f64 {
+        // For now, return a simple fitness based on expression complexity
+        // In real implementation, this would run actual backtest
+        let complexity = self.compute_complexity(expr);
+
+        // Higher fitness for simpler expressions (encourage parsimony)
+        1.0 / (complexity as f64 + 1.0)
+    }
+}
+
+/// Cached fitness evaluator with LRU cache and semantic deduplication.
+pub struct CachedFitnessEvaluator<E: FitnessEvaluator> {
+    evaluator: E,
+    cache: Mutex<LruCache<String, f64>>,
+    /// Maps normalized expression strings to fitness values for deduplication
+    dedup: Mutex<HashMap<String, f64>>,
+    /// Count of evaluations skipped due to semantic deduplication
+    dedup_hits: atomic::AtomicU64,
+    /// Count of total fitness evaluations (cache misses only)
+    total_evals: atomic::AtomicU64,
+}
+
+impl<E: FitnessEvaluator> CachedFitnessEvaluator<E> {
+    /// Create a new cached evaluator with given capacity
+    pub fn new(evaluator: E, capacity: usize) -> Self {
+        let cap = NonZeroUsize::new(capacity.max(1)).unwrap_or(NonZeroUsize::new(100).unwrap());
+        Self {
+            evaluator,
+            cache: Mutex::new(LruCache::new(cap)),
+            dedup: Mutex::new(HashMap::new()),
+            dedup_hits: atomic::AtomicU64::new(0),
+            total_evals: atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// Clear the cache
+    pub fn clear_cache(&self) {
+        self.cache.lock().unwrap().clear();
+        self.dedup.lock().unwrap().clear();
+    }
+
+    /// Get cache size
+    pub fn cache_size(&self) -> usize {
+        self.cache.lock().unwrap().len()
+    }
+
+    /// Get deduplication hit count
+    pub fn dedup_hits(&self) -> u64 {
+        self.dedup_hits.load(atomic::Ordering::Relaxed)
+    }
+
+    /// Get total evaluations (cache misses)
+    pub fn total_evals(&self) -> u64 {
+        self.total_evals.load(atomic::Ordering::Relaxed)
+    }
+
+    /// Get cache hit rate statistics
+    pub fn cache_stats(&self) -> (usize, usize) {
+        let cache = self.cache.lock().unwrap();
+        (cache.len(), cache.cap().get())
+    }
+}
+
+impl<E: FitnessEvaluator> FitnessEvaluator for CachedFitnessEvaluator<E> {
+    fn fitness(&self, expr: &Expr) -> f64 {
+        let key = format!("{:?}", expr);
+
+        // Check exact cache first
+        {
+            let mut cache = self.cache.lock().unwrap();
+            if let Some(&cached) = cache.get(&key) {
+                return cached;
+            }
+        }
+
+        // Check semantic deduplication
+        let normalized = normalize_expression(expr);
+        {
+            let dedup = self.dedup.lock().unwrap();
+            if let Some(&cached) = dedup.get(&normalized) {
+                // Found structurally equivalent expression — reuse fitness
+                self.dedup_hits.fetch_add(1, atomic::Ordering::Relaxed);
+                let mut cache = self.cache.lock().unwrap();
+                cache.put(key, cached);
+                return cached;
+            }
+        }
+
+        // Compute fitness
+        self.total_evals.fetch_add(1, atomic::Ordering::Relaxed);
+        let fitness = self.evaluator.fitness(expr);
+
+        // Store in both caches
+        {
+            let mut cache = self.cache.lock().unwrap();
+            cache.put(key, fitness);
+        }
+        {
+            let mut dedup = self.dedup.lock().unwrap();
+            dedup.insert(normalized, fitness);
+        }
+
+        fitness
+    }
+
+    fn fitness_batch(&self, exprs: &[Expr]) -> Vec<f64> {
+        let mut results = vec![0.0; exprs.len()];
+        let mut to_compute: Vec<(usize, Expr, String, String)> = Vec::new();
+
+        // First pass: check both caches
+        {
+            let mut cache = self.cache.lock().unwrap();
+            let dedup = self.dedup.lock().unwrap();
+
+            for (idx, expr) in exprs.iter().enumerate() {
+                let key = format!("{:?}", expr);
+                if let Some(&cached) = cache.get(&key) {
+                    results[idx] = cached;
+                } else {
+                    let normalized = normalize_expression(expr);
+                    if let Some(&cached) = dedup.get(&normalized) {
+                        cache.put(key, cached);
+                        self.dedup_hits.fetch_add(1, atomic::Ordering::Relaxed);
+                        results[idx] = cached;
+                    } else {
+                        to_compute.push((idx, expr.clone(), key, normalized));
+                    }
+                }
+            }
+        }
+
+        // Compute missing fitness values
+        if !to_compute.is_empty() {
+            let exprs_to_compute: Vec<Expr> = to_compute
+                .iter()
+                .map(|(_, expr, _, _)| expr.clone())
+                .collect();
+            let computed = self.evaluator.fitness_batch(&exprs_to_compute);
+            let n_computed = computed.len();
+
+            // Update caches and results
+            {
+                let mut cache = self.cache.lock().unwrap();
+                let mut dedup = self.dedup.lock().unwrap();
+
+                for ((idx, _, key, normalized), fitness) in
+                    to_compute.into_iter().zip(computed.into_iter())
+                {
+                    cache.put(key, fitness);
+                    dedup.insert(normalized, fitness);
+                    results[idx] = fitness;
+                }
+            }
+
+            self.total_evals
+                .fetch_add(n_computed as u64, atomic::Ordering::Relaxed);
+        }
+
+        results
+    }
+
+    fn supports_batch(&self) -> bool {
+        true
+    }
+}
+
+/// Batch-optimized fitness evaluator for parallel processing
+pub struct BatchFitnessEvaluator<E: FitnessEvaluator> {
+    evaluator: E,
+    batch_size: usize,
+}
+
+impl<E: FitnessEvaluator> BatchFitnessEvaluator<E> {
+    /// Create a new batch evaluator
+    pub fn new(evaluator: E, batch_size: usize) -> Self {
+        Self {
+            evaluator,
+            batch_size,
+        }
+    }
+}
+
+impl<E: FitnessEvaluator + Clone> FitnessEvaluator for BatchFitnessEvaluator<E> {
+    fn fitness(&self, expr: &Expr) -> f64 {
+        self.evaluator.fitness(expr)
+    }
+
+    fn fitness_batch(&self, exprs: &[Expr]) -> Vec<f64> {
+        use rayon::prelude::*;
+
+        // Process in parallel batches
+        exprs
+            .par_chunks(self.batch_size)
+            .flat_map(|chunk| self.evaluator.fitness_batch(chunk))
+            .collect()
+    }
+
+    fn supports_batch(&self) -> bool {
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ndarray::Array2;
+    use std::collections::HashMap;
+
+    #[test]
+    fn test_fitness_evaluator() {
+        let mut data = HashMap::new();
+        data.insert("x".to_string(), Array2::<f64>::zeros((10, 5)));
+
+        let returns = Array2::<f64>::zeros((10, 5));
+
+        let evaluator = BacktestFitnessEvaluator::new(data, returns);
+
+        let expr = Expr::Column("x".to_string()).add(Expr::Literal(Literal::Float(1.0)));
+
+        let fitness = evaluator.fitness(&expr);
+        assert!(fitness > 0.0);
+    }
+}

@@ -4,7 +4,7 @@
 //! future factor mining through adaptive hyperparameter tuning and
 //! intelligent search guidance.
 
-use super::engine::GPConfig;
+use super::types::GPConfig;
 use crate::gp::history::GPHistoryRecord;
 use crate::persistence::FactorMetadata;
 use serde::{Deserialize, Serialize};

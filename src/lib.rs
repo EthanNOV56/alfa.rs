@@ -1600,7 +1600,7 @@ impl PyFactorPool {
             .unwrap_or_default()
             .as_secs();
 
-        use crate::gp::engine::AdmissionResult;
+        use crate::gp::AdmissionResult;
         let result = self
             .inner
             .try_admit_parsed(&expr, ic, rank_ic, &pool_exprs, now);
