@@ -2,8 +2,12 @@
 //!
 //! Provides high-performance backtesting capabilities for alpha factors.
 
+pub mod config;
 pub mod engine;
+pub mod metrics;
+pub mod portfolio;
+pub mod types;
 
-pub use engine::{
-    BacktestConfig, BacktestEngine, BacktestResult, FeeConfig, PositionConfig, SlippageConfig,
-};
+pub use config::{BacktestConfig, FeeConfig, PositionConfig, SlippageConfig};
+pub use engine::BacktestEngine;
+pub use types::BacktestResult;
