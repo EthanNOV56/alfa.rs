@@ -10,8 +10,8 @@ use ndarray::{Array1, Array2};
 use rayon::prelude::*;
 use std::f64::NAN;
 
-use crate::data::layer::PriceMatrix;
 use crate::WeightMethod;
+use crate::data::layer::PriceMatrix;
 
 /// Return type for automatic return computation
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -94,9 +94,7 @@ pub struct LimitUpDownConfig {
 
 impl Default for LimitUpDownConfig {
     fn default() -> Self {
-        Self {
-            enabled: false,
-        }
+        Self { enabled: false }
     }
 }
 
@@ -183,10 +181,7 @@ impl BacktestResult {
     }
 
     /// Write group NAV curves to CSV writer.
-    pub fn write_nav_csv<W: std::io::Write>(
-        &self,
-        wtr: &mut csv::Writer<W>,
-    ) -> csv::Result<()> {
+    pub fn write_nav_csv<W: std::io::Write>(&self, wtr: &mut csv::Writer<W>) -> csv::Result<()> {
         let dates = &self.dates;
         wtr.write_record(&["date", "nv", "group"])?;
         let fmt_date = |d: i64| -> String {
@@ -322,15 +317,27 @@ impl BacktestEngine {
         let group_labels = Self::compute_quantile_groups(&factor, quantiles)?;
 
         // Compute group weights based on factor values
+        // weight_method controls within-group allocation: Equal or Weighted
         let group_weights = Self::compute_group_weights(
-            &factor, &group_labels, quantiles, self.config.weight_method,
+            &factor,
+            &group_labels,
+            quantiles,
+            self.config.weight_method,
         );
 
         let fee_rate = self.config.fee_config.commission_rate
             + self.config.fee_config.slippage.normal_slippage_rate;
         let group_returns = Self::simulate_groups(
-            &group_labels, quantiles, n_days, n_assets,
-            &tradable, &open, &close, &vwap, fee_rate,
+            &group_labels,
+            &group_weights,
+            quantiles,
+            n_days,
+            n_assets,
+            &tradable,
+            &open,
+            &close,
+            &vwap,
+            fee_rate,
         )?;
 
         // Compute long/short returns directly from per-group returns
@@ -434,10 +441,16 @@ impl BacktestEngine {
 
         let adj_factor = Array2::<f64>::from_elem((n_days, n_assets), 1.0);
         self.run_with_labels(
-            factor, prices, &group_labels, quantiles,
-            &prices.returns, &adj_factor,
-            &prices.close, &prices.open,
-            &prices.vwap, &prices.tradable,
+            factor,
+            prices,
+            &group_labels,
+            quantiles,
+            &prices.returns,
+            &adj_factor,
+            &prices.close,
+            &prices.open,
+            &prices.vwap,
+            &prices.tradable,
         )
     }
 
@@ -665,6 +678,7 @@ impl BacktestEngine {
     /// (pre-computed qcut).
     fn simulate_groups(
         group_labels: &Array2<usize>,
+        group_weights: &Array2<f64>,
         quantiles: usize,
         n_days: usize,
         n_assets: usize,
@@ -684,9 +698,7 @@ impl BacktestEngine {
                 let mut pool_count = 0usize;
                 let mut in_pool = vec![false; n_assets];
                 for a in 0..n_assets {
-                    if group_labels[[day - 1, a]] == group + 1
-                        && tradable[[day, a]] > 0.5
-                    {
+                    if group_labels[[day - 1, a]] == group + 1 && tradable[[day, a]] > 0.5 {
                         in_pool[a] = true;
                         pool_count += 1;
                     }
@@ -720,7 +732,21 @@ impl BacktestEngine {
                     continue;
                 }
 
-                let per_stock = asset / pool_count as f64;
+                // Weight-proportional allocation within the group.
+                // Equal-weight: each weight = 1/quantiles/|group| → same result as per_stock.
+                // Weighted: weight ∝ factor value → larger positions on stronger signals.
+                let mut total_weight = 0.0f64;
+                for a in 0..n_assets {
+                    if in_pool[a] {
+                        let w = group_weights[[day - 1, a]];
+                        if w.is_finite() && w > 0.0 {
+                            total_weight += w;
+                        }
+                    }
+                }
+                if total_weight == 0.0 {
+                    total_weight = pool_count as f64; // fallback to equal
+                }
 
                 let mut new_shares: Vec<f64> = vec![0.0f64; n_assets];
                 let mut asset_close = 0.0f64;
@@ -729,8 +755,14 @@ impl BacktestEngine {
                 for a in 0..n_assets {
                     if in_pool[a] {
                         let op = open[[day, a]];
+                        let w = group_weights[[day - 1, a]];
+                        let alloc = if w.is_finite() && w > 0.0 {
+                            asset * (w / total_weight)
+                        } else {
+                            asset / pool_count as f64
+                        };
                         if op.is_finite() && op > 0.0 {
-                            new_shares[a] = per_stock / op;
+                            new_shares[a] = alloc / op;
                             let cl = close[[day, a]];
                             if cl.is_finite() {
                                 asset_close += new_shares[a] * cl;
@@ -780,9 +812,23 @@ impl BacktestEngine {
         let fee_rate = self.config.fee_config.commission_rate
             + self.config.fee_config.slippage.normal_slippage_rate;
 
+        let group_weights = Self::compute_group_weights(
+            &factor,
+            group_labels,
+            quantiles,
+            self.config.weight_method,
+        );
         let group_returns = Self::simulate_groups(
-            group_labels, quantiles, n_days, n_assets,
-            tradable, open, close, vwap, fee_rate,
+            group_labels,
+            &group_weights,
+            quantiles,
+            n_days,
+            n_assets,
+            tradable,
+            open,
+            close,
+            vwap,
+            fee_rate,
         )?;
 
         let mut long_short_returns = Array1::<f64>::zeros(n_days - 1);
@@ -790,16 +836,22 @@ impl BacktestEngine {
         let long_groups: Vec<usize> = (quantiles - self.config.long_top_n..quantiles).collect();
         for day in 0..(n_days - 1) {
             let mut sum = 0.0;
-            for &g in &long_groups { sum += group_returns[[day, g]]; }
-            long_returns[day] = sum / self.config.long_top_n as f64 * self.config.position_config.long_ratio;
+            for &g in &long_groups {
+                sum += group_returns[[day, g]];
+            }
+            long_returns[day] =
+                sum / self.config.long_top_n as f64 * self.config.position_config.long_ratio;
         }
 
         let mut short_returns = Array1::<f64>::zeros(n_days - 1);
         let short_groups: Vec<usize> = (0..self.config.short_top_n).collect();
         for day in 0..(n_days - 1) {
             let mut sum = 0.0;
-            for &g in &short_groups { sum += group_returns[[day, g]]; }
-            short_returns[day] = -sum / self.config.short_top_n as f64 * self.config.position_config.short_ratio;
+            for &g in &short_groups {
+                sum += group_returns[[day, g]];
+            }
+            short_returns[day] =
+                -sum / self.config.short_top_n as f64 * self.config.position_config.short_ratio;
         }
 
         for day in 0..(n_days - 1) {
@@ -1166,15 +1218,17 @@ impl BacktestEngine {
         let ic_vec: Vec<f64> = (0..(n_days - 1))
             .into_par_iter()
             .map(|day| {
+                // Forward return: returns[day+1] = close[day+1]/close[day] - 1
+                // Predictive IC: factor[t] vs forward return[t→t+1]
                 let factor_today = factor.row(day);
-                let returns_today = returns.row(day);
+                let forward_returns = returns.row(day + 1);
 
                 let mut factor_vals = Vec::new();
                 let mut return_vals = Vec::new();
 
                 for asset in 0..n_assets {
                     let f = factor_today[asset];
-                    let r = returns_today[asset];
+                    let r = forward_returns[asset];
                     if !f.is_nan() && !r.is_nan() {
                         factor_vals.push(f);
                         return_vals.push(r);
@@ -1316,8 +1370,7 @@ impl BacktestEngine {
             return 0.0;
         }
 
-        // Annualize (assume 252 trading days)
-        total_turnover / count as f64 * 252.0
+        total_turnover / count as f64
     }
 
     fn pearson_correlation(x: &[f64], y: &[f64]) -> f64 {
@@ -1545,17 +1598,25 @@ impl BacktestEngine {
                     if weight_change.abs() > 1e-10 {
                         // Apply buy or sell fee rate
                         let fee_rate = if weight_change > 0.0 {
-                            (fee + slippage)  // Buy: commission + slippage
+                            (fee + slippage) // Buy: commission + slippage
                         } else {
-                            (fee + slippage)  // Sell: same rates
+                            (fee + slippage) // Sell: same rates
                         };
                         fee += weight_change.abs() * fee_rate;
                     }
                 }
 
                 // Return = (current_asset - fee) / previous_asset - 1
-                let nav = if prev_asset > 0.0 { curr_asset - fee } else { curr_asset };
-                let day_return = if prev_asset > 0.0 { nav / prev_asset - 1.0 } else { 0.0 };
+                let nav = if prev_asset > 0.0 {
+                    curr_asset - fee
+                } else {
+                    curr_asset
+                };
+                let day_return = if prev_asset > 0.0 {
+                    nav / prev_asset - 1.0
+                } else {
+                    0.0
+                };
                 returns[[day, 0]] = day_return;
             }
         }
@@ -1586,8 +1647,9 @@ impl BacktestEngine {
         tradable: &Array2<f64>,
     ) -> Array2<f64> {
         let holding_return = Self::compute_holding_return(weights, close, adj_factor);
-        let trading_return =
-            Self::compute_trading_return(weights, close, open, vwap, adj_factor, fee, slippage, tradable);
+        let trading_return = Self::compute_trading_return(
+            weights, close, open, vwap, adj_factor, fee, slippage, tradable,
+        );
         holding_return + trading_return
     }
 }
@@ -1683,7 +1745,15 @@ mod tests {
         let engine = BacktestEngine::with_config(config);
 
         let result = engine
-            .run(factor, returns, adj_factor, close.clone(), close.clone(), vwap.clone(), Array2::from_elem(close.dim(), 1.0))
+            .run(
+                factor,
+                returns,
+                adj_factor,
+                close.clone(),
+                close.clone(),
+                vwap.clone(),
+                Array2::from_elem(close.dim(), 1.0),
+            )
             .unwrap();
         assert!(result.long_short_cum_return.is_finite());
     }
@@ -1776,7 +1846,15 @@ mod tests {
         let adj_factor = Array2::from_elem((3, 4), 1.0);
         let engine = BacktestEngine::with_config(config);
         let result = engine
-            .run(factor, returns.clone(), adj_factor, close.clone(), close.clone(), vwap.clone(), Array2::from_elem(close.dim(), 1.0))
+            .run(
+                factor,
+                returns.clone(),
+                adj_factor,
+                close.clone(),
+                close.clone(),
+                vwap.clone(),
+                Array2::from_elem(close.dim(), 1.0),
+            )
             .unwrap();
 
         // Verify result is valid
@@ -1819,7 +1897,15 @@ mod tests {
         let adj_factor = Array2::from_elem((3, 4), 1.0);
         let engine = BacktestEngine::with_config(config);
         let result = engine
-            .run(factor, returns.clone(), adj_factor, close.clone(), close.clone(), vwap.clone(), Array2::from_elem(close.dim(), 1.0))
+            .run(
+                factor,
+                returns.clone(),
+                adj_factor,
+                close.clone(),
+                close.clone(),
+                vwap.clone(),
+                Array2::from_elem(close.dim(), 1.0),
+            )
             .unwrap();
 
         // group_returns should have shape (n_days-1, quantiles) = (2, 4)
@@ -1864,7 +1950,15 @@ mod tests {
         let tradable = Array2::from_elem(close.dim(), 1.0);
         let adj_factor = Array2::from_elem((3, 4), 1.0);
         let result = engine
-            .run(factor.clone(), returns.clone(), adj_factor, close, open, vwap, tradable)
+            .run(
+                factor.clone(),
+                returns.clone(),
+                adj_factor,
+                close,
+                open,
+                vwap,
+                tradable,
+            )
             .unwrap();
 
         // Verify long/short returns exist
@@ -2122,7 +2216,15 @@ mod tests {
         let adj_factor = Array2::from_elem((1, 4), 1.0);
 
         // Single day returns - should work but produce empty results
-        let result = engine.run(factor, returns.clone(), adj_factor, close, open, vwap, tradable);
+        let result = engine.run(
+            factor,
+            returns.clone(),
+            adj_factor,
+            close,
+            open,
+            vwap,
+            tradable,
+        );
         // Single day might fail or produce empty results - that's expected
         assert!(result.is_err() || result.unwrap().group_returns.dim().0 == 0);
     }
@@ -2156,7 +2258,15 @@ mod tests {
 
         // Single asset - run might fail due to edge case handling
         // Just verify it doesn't panic
-        let _ = engine.run(factor, returns.clone(), adj_factor, close, open, vwap, tradable);
+        let _ = engine.run(
+            factor,
+            returns.clone(),
+            adj_factor,
+            close,
+            open,
+            vwap,
+            tradable,
+        );
     }
 
     #[test]
@@ -2207,7 +2317,15 @@ mod tests {
 
         let adj_factor = Array2::from_elem((3, 4), 1.0);
         let result = engine
-            .run(factor, returns, adj_factor, close.clone(), close.clone(), vwap.clone(), Array2::from_elem(close.dim(), 1.0))
+            .run(
+                factor,
+                returns,
+                adj_factor,
+                close.clone(),
+                close.clone(),
+                vwap.clone(),
+                Array2::from_elem(close.dim(), 1.0),
+            )
             .unwrap();
         assert!(result.long_short_cum_return.is_finite());
         // Negative returns should result in negative cumulative return
@@ -2382,7 +2500,15 @@ mod tests {
         let engine2 = BacktestEngine::with_config(config2);
         let adj_factor2 = Array2::from_elem((5, 10), 1.0);
         let result2 = engine2
-            .run(factor, returns, adj_factor2, close.clone(), open.clone(), vwap.clone(), tradable.clone())
+            .run(
+                factor,
+                returns,
+                adj_factor2,
+                close.clone(),
+                open.clone(),
+                vwap.clone(),
+                tradable.clone(),
+            )
             .unwrap();
         assert_eq!(result2.group_returns.dim(), (4, 2));
     }
@@ -2466,7 +2592,15 @@ mod tests {
 
         let engine_directional = BacktestEngine::with_config(config_directional);
         let result_directional = engine_directional
-            .run(factor, returns, adj_factor, close.clone(), close.clone(), vwap.clone(), Array2::from_elem(close.dim(), 1.0))
+            .run(
+                factor,
+                returns,
+                adj_factor,
+                close.clone(),
+                close.clone(),
+                vwap.clone(),
+                Array2::from_elem(close.dim(), 1.0),
+            )
             .unwrap();
 
         // Both should produce finite results
