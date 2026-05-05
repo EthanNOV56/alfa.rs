@@ -1351,7 +1351,7 @@ pub enum AdmissionResult {
 }
 
 /// Convert an expression to a parseable string (unlike Debug which uses #name).
-fn to_parseable_string(expr: &Expr) -> String {
+pub(crate) fn to_parseable_string(expr: &Expr) -> String {
     match expr {
         Expr::Literal(Literal::Float(v)) => format!("{}", v),
         Expr::Literal(Literal::Integer(v)) => format!("{}", v),

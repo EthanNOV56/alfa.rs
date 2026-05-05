@@ -1241,6 +1241,7 @@ fn compute_pearson(x: &[f64], y: &[f64]) -> f64 {
 use crate::gp::{
     BacktestFitnessEvaluator, DataSplitConfig, FactorPool, Function, GPConfig, PoolEntry,
     RealBacktestFitnessEvaluator, Terminal, check_redundancy, expr_structural_similarity, run_gp,
+    to_parseable_string,
 };
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -1401,7 +1402,7 @@ impl PyGpEngine {
             );
 
             // Convert expression to string representation
-            let expr_str = format!("{:?}", best_expr);
+            let expr_str = to_parseable_string(&best_expr);
 
             // Get additional metrics from evaluator
             let ic = evaluator.get_last_ic();
@@ -1513,7 +1514,7 @@ impl PyGpEngine {
             );
 
             // Convert expression to string representation
-            let expr_str = format!("{:?}", best_expr);
+            let expr_str = to_parseable_string(&best_expr);
 
             // Get additional metrics from evaluator
             let ic = evaluator.get_last_ic();
@@ -1594,7 +1595,7 @@ impl PyGpEngine {
         );
 
         Ok(format!(
-            "Best expression: {:?}, Fitness: {:.6}",
+            "Best expression: {}, Fitness: {:.6}",
             best_expr, fitness
         ))
     }

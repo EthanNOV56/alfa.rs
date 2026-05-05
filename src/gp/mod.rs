@@ -10,6 +10,7 @@ pub mod history;
 pub mod metalearning;
 
 // Re-exports from engine
+pub(crate) use engine::to_parseable_string;
 pub use engine::{
     AdmissionResult, BacktestFitnessEvaluator, BatchFitnessEvaluator, CachedFitnessEvaluator,
     DataSplit, DataSplitConfig, ExpressionGenerator, FactorPool, Function, GPConfig,

@@ -31,6 +31,7 @@ impl ClickHouseSource {
     /// - VOLUME_UNIT (default: 100, e.g., hand = 100 shares)
     /// - AMOUNT_UNIT (default: 1000, e.g., 千元)
     pub fn from_env() -> Self {
+        dotenv::dotenv().ok();
         let host = std::env::var("CLICKHOUSE_HOST")
             .or_else(|_| std::env::var("CH_HOST"))
             .unwrap_or_else(|_| "localhost".to_string());
@@ -39,8 +40,7 @@ impl ClickHouseSource {
             .unwrap_or_else(|_| "8123".to_string())
             .parse()
             .unwrap_or(8123);
-        let database =
-            std::env::var("CLICKHOUSE_DATABASE")
+        let database = std::env::var("CLICKHOUSE_DATABASE")
             .or_else(|_| std::env::var("CH_DATABASE"))
             .unwrap_or_else(|_| "default".to_string());
         let username = std::env::var("CLICKHOUSE_USER")
