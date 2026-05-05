@@ -6,17 +6,17 @@ use crate::data::clickhouse::ClickHouseSource;
 use crate::data::source::{DataError, QueryFilter};
 use crate::expr::ast::Frequency;
 use crate::expr::registry::config::FactorSlice;
+use ahash::AHashMap;
 use arrow::array::{
-    Array, Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, Int8Array,
-    PrimitiveArray, StringArray, UInt16Array, UInt32Array, UInt64Array, UInt8Array,
+    Array, Float32Array, Float64Array, Int8Array, Int16Array, Int32Array, Int64Array,
+    PrimitiveArray, StringArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
 };
 use arrow::datatypes::{DataType, Date32Type};
-use arrow::record_batch::RecordBatch;
 use arrow::ipc::reader::StreamReader;
+use arrow::record_batch::RecordBatch;
 use ndarray::{Array1, Array2};
 use rayon::prelude::*;
 use std::collections::{BTreeSet, HashMap, HashSet};
-use ahash::AHashMap;
 
 /// PreFilter - parsed filter conditions from pre_filter string
 #[derive(Debug, Clone)]
@@ -37,17 +37,29 @@ const TABLE_5M: &str = "stock_5m";
 fn canonical_to_sql(table: &str, col: &str) -> String {
     let expr = match col {
         "open" | "high" | "low" | "close" => col.to_string(),
-        "vol" => if table == TABLE_5M { "vol".into() } else { "volume".into() },
+        "vol" => {
+            if table == TABLE_5M {
+                "vol".into()
+            } else {
+                "volume".into()
+            }
+        }
         "amount" => "amount".into(),
-        "vwap" => if table == TABLE_5M {
-            format!("amount * {} / vol", 10)
-        } else {
-            format!("amount * {} / volume", 10)
-        },
+        "vwap" => {
+            if table == TABLE_5M {
+                format!("amount * {} / vol", 10)
+            } else {
+                format!("amount * {} / volume", 10)
+            }
+        }
         "cap" => "close * free_float_shares".into(),
         other => other.to_string(),
     };
-    if expr == col { expr } else { format!("{} AS {}", expr, col) }
+    if expr == col {
+        expr
+    } else {
+        format!("{} AS {}", expr, col)
+    }
 }
 
 impl Default for PreFilter {
@@ -95,11 +107,15 @@ impl PreFilter {
                     let next = tokens[i + 1];
                     let third = tokens[i + 2];
                     if next == "like" {
-                        result.symbols_like.push(third.trim_matches('\'').to_string());
+                        result
+                            .symbols_like
+                            .push(third.trim_matches('\'').to_string());
                         i += 3;
                         continue;
                     } else if next == "not" && i + 3 < tokens.len() && tokens[i + 2] == "like" {
-                        result.exclude_symbols_like.push(tokens[i + 3].trim_matches('\'').to_string());
+                        result
+                            .exclude_symbols_like
+                            .push(tokens[i + 3].trim_matches('\'').to_string());
                         i += 4;
                         continue;
                     }
@@ -107,14 +123,18 @@ impl PreFilter {
             }
             // Check for "not" keyword (standalone not like)
             else if token == "not" && i + 2 < tokens.len() && tokens[i + 1] == "like" {
-                result.exclude_symbols_like.push(tokens[i + 2].trim_matches('\'').to_string());
+                result
+                    .exclude_symbols_like
+                    .push(tokens[i + 2].trim_matches('\'').to_string());
                 i += 3;
                 continue;
             }
             // Check for "like" with pattern
             else if token == "like" {
                 if i + 1 < tokens.len() {
-                    result.exclude_symbols_like.push(tokens[i + 1].trim_matches('\'').to_string());
+                    result
+                        .exclude_symbols_like
+                        .push(tokens[i + 1].trim_matches('\'').to_string());
                     i += 2;
                     continue;
                 }
@@ -122,8 +142,12 @@ impl PreFilter {
             // Other conditions (e.g., "close > 100", "volume > 1000000")
             else {
                 // Check if it looks like a SQL condition
-                if token.contains('>') || token.contains('<') || token.contains('=') ||
-                   token.contains("AND") || token.contains("OR") {
+                if token.contains('>')
+                    || token.contains('<')
+                    || token.contains('=')
+                    || token.contains("AND")
+                    || token.contains("OR")
+                {
                     result.conditions.push(token.to_string());
                 }
             }
@@ -140,7 +164,8 @@ impl PreFilter {
 
         if let Some(ref symbols) = self.symbols {
             if !symbols.is_empty() {
-                let sym_list = symbols.iter()
+                let sym_list = symbols
+                    .iter()
                     .map(|s| format!("'{}'", s))
                     .collect::<Vec<_>>()
                     .join(", ");
@@ -198,11 +223,7 @@ fn date32_to_ymd_f64(epoch_days: i32) -> f64 {
 }
 
 /// Convert any Arrow numeric array to f64 values and push into vec
-fn numeric_to_f64(
-    array: &dyn Array,
-    col_name: &str,
-    vec: &mut Vec<f64>,
-) -> Result<(), DataError> {
+fn numeric_to_f64(array: &dyn Array, col_name: &str, vec: &mut Vec<f64>) -> Result<(), DataError> {
     macro_rules! push_as_f64 {
         ($arr:expr, $vec:expr) => {
             for v in $arr.values() {
@@ -260,21 +281,16 @@ impl PriceMatrix {
     ///
     /// Returns `(n_dates, n_symbols)` where each cell is the qcut group (0..9) or `-1`
     /// (encoded as i32, -1 = None) for symbols with no data.
-    pub fn build_qcut_matrix(
-        &self,
-        slices: &[FactorSlice],
-    ) -> Array2<i32> {
+    pub fn build_qcut_matrix(&self, slices: &[FactorSlice]) -> Array2<i32> {
         let n_dates = self.dates.len();
         let n_syms = self.symbols.len();
 
-        let mut sym_to_idx: HashMap<&str, usize> =
-            HashMap::new();
+        let mut sym_to_idx: HashMap<&str, usize> = HashMap::new();
         for (i, s) in self.symbols.iter().enumerate() {
             sym_to_idx.insert(s.as_str(), i);
         }
 
-        let mut date_to_idx: HashMap<i64, usize> =
-            HashMap::new();
+        let mut date_to_idx: HashMap<i64, usize> = HashMap::new();
         for (i, &d) in self.dates.iter().enumerate() {
             date_to_idx.insert(d, i);
         }
@@ -302,21 +318,16 @@ impl PriceMatrix {
     ///
     /// Each `FactorSlice` carries its own symbol list. The returned `Array2<f64>`
     /// has shape `[n_dates, n_symbols]` with `f64::NAN` where no factor value is available.
-    pub fn build_factor_matrix(
-        &self,
-        slices: &[FactorSlice],
-    ) -> Array2<f64> {
+    pub fn build_factor_matrix(&self, slices: &[FactorSlice]) -> Array2<f64> {
         let n_dates = self.dates.len();
         let n_syms = self.symbols.len();
 
-        let mut sym_to_idx: HashMap<&str, usize> =
-            HashMap::new();
+        let mut sym_to_idx: HashMap<&str, usize> = HashMap::new();
         for (i, s) in self.symbols.iter().enumerate() {
             sym_to_idx.insert(s.as_str(), i);
         }
 
-        let mut date_to_idx: HashMap<i64, usize> =
-            HashMap::new();
+        let mut date_to_idx: HashMap<i64, usize> = HashMap::new();
         for (i, &d) in self.dates.iter().enumerate() {
             date_to_idx.insert(d, i);
         }
@@ -403,7 +414,10 @@ impl DataLayer {
     /// Query data for specified fields
     /// Automatically determines which tables to query based on field prefixes
     /// Fields format: "5m:close", "1d:volume", etc.
-    pub fn query(&mut self, fields: Vec<String>) -> Result<HashMap<String, Array1<f64>>, crate::data::source::DataError> {
+    pub fn query(
+        &mut self,
+        fields: Vec<String>,
+    ) -> Result<HashMap<String, Array1<f64>>, crate::data::source::DataError> {
         let pre = PreFilter::parse(&self.pre_filter);
 
         // Group fields by frequency prefix
@@ -533,9 +547,7 @@ impl DataLayer {
             let kind: ColKind = match field.data_type() {
                 DataType::Float64 => ColKind::Float,
                 DataType::Date32 => ColKind::Date,
-                DataType::Utf8
-                | DataType::LargeUtf8
-                | DataType::Utf8View => {
+                DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => {
                     if field.name() == "symbol" {
                         ColKind::Symbol
                     } else {
@@ -560,8 +572,7 @@ impl DataLayer {
         let mut batches: Vec<RecordBatch> = Vec::new();
         for batch_result in reader {
             batches.push(
-                batch_result
-                    .map_err(|e| DataError::Query(format!("Arrow batch read: {}", e)))?,
+                batch_result.map_err(|e| DataError::Query(format!("Arrow batch read: {}", e)))?,
             );
         }
 
@@ -620,10 +631,14 @@ impl DataLayer {
                             numeric_to_f64(array, name, &mut vec).ok();
                         }
                         ColKind::Date => {
-                            if let Some(arr) = array.as_any().downcast_ref::<PrimitiveArray<Date32Type>>() {
+                            if let Some(arr) =
+                                array.as_any().downcast_ref::<PrimitiveArray<Date32Type>>()
+                            {
                                 for i in 0..n_rows {
                                     let epoch = arr.value(i);
-                                    let ymd = *date_cache.entry(epoch).or_insert_with(|| date32_to_ymd_f64(epoch));
+                                    let ymd = *date_cache
+                                        .entry(epoch)
+                                        .or_insert_with(|| date32_to_ymd_f64(epoch));
                                     vec.push(ymd);
                                 }
                             }
@@ -631,7 +646,12 @@ impl DataLayer {
                         ColKind::Symbol => {
                             if let Some(arr) = array.as_any().downcast_ref::<StringArray>() {
                                 for i in 0..n_rows {
-                                    vec.push(symbol_to_idx_arc.get(arr.value(i)).copied().unwrap_or(f64::NAN));
+                                    vec.push(
+                                        symbol_to_idx_arc
+                                            .get(arr.value(i))
+                                            .copied()
+                                            .unwrap_or(f64::NAN),
+                                    );
                                 }
                             }
                         }
@@ -652,7 +672,11 @@ impl DataLayer {
     }
 
     /// Query 1d data with specific columns
-    fn query_1d_with_columns(&mut self, columns: &[String], pre: &PreFilter) -> Result<HashMap<String, Array1<f64>>, DataError> {
+    fn query_1d_with_columns(
+        &mut self,
+        columns: &[String],
+        pre: &PreFilter,
+    ) -> Result<HashMap<String, Array1<f64>>, DataError> {
         let mut cols = vec!["trading_date".to_string(), "symbol".to_string()];
         for col in columns {
             if !cols.contains(col) {
@@ -663,7 +687,11 @@ impl DataLayer {
     }
 
     /// Query 5m data with specific columns
-    fn query_5m_with_columns(&mut self, columns: &[String], pre: &PreFilter) -> Result<HashMap<String, Array1<f64>>, DataError> {
+    fn query_5m_with_columns(
+        &mut self,
+        columns: &[String],
+        pre: &PreFilter,
+    ) -> Result<HashMap<String, Array1<f64>>, DataError> {
         let mut cols = vec!["trading_date".to_string(), "symbol".to_string()];
         for col in columns {
             if !cols.contains(col) {
@@ -686,15 +714,15 @@ impl DataLayer {
             "1d:symbol".to_string(),
         ])?;
 
-        let dates = data.get("1d:trading_date").ok_or(DataError::NotFound(
-            "1d:trading_date column missing".into(),
-        ))?;
-        let symbols = data.get("1d:symbol").ok_or(DataError::NotFound(
-            "1d:symbol column missing".into(),
-        ))?;
-        let close = data.get("1d:close").ok_or(DataError::NotFound(
-            "1d:close column missing".into(),
-        ))?;
+        let dates = data
+            .get("1d:trading_date")
+            .ok_or(DataError::NotFound("1d:trading_date column missing".into()))?;
+        let symbols = data
+            .get("1d:symbol")
+            .ok_or(DataError::NotFound("1d:symbol column missing".into()))?;
+        let close = data
+            .get("1d:close")
+            .ok_or(DataError::NotFound("1d:close column missing".into()))?;
         let float_shares = data.get("1d:free_float_shares").ok_or(DataError::NotFound(
             "1d:free_float_shares column missing".into(),
         ))?;
@@ -723,9 +751,7 @@ impl DataLayer {
     ///
     /// Follows `alpha.py::read_prices`: vwap = amount × amount_unit / (volume × volume_unit),
     /// forward-adjusted prices via adjust_factor, backfilled close.
-    pub fn query_price_matrix(
-        &mut self,
-    ) -> Result<PriceMatrix, crate::data::source::DataError> {
+    pub fn query_price_matrix(&mut self) -> Result<PriceMatrix, crate::data::source::DataError> {
         let data = self.query(vec![
             "1d:trading_date".to_string(),
             "1d:symbol".to_string(),
@@ -738,19 +764,33 @@ impl DataLayer {
             "1d:adjust_factor".to_string(),
         ])?;
 
-        let dates_arr = data.get("1d:trading_date").ok_or(DataError::NotFound(
-            "1d:trading_date missing".into(),
-        ))?;
-        let syms_arr = data.get("1d:symbol").ok_or(DataError::NotFound(
-            "1d:symbol missing".into(),
-        ))?;
-        let open = data.get("1d:open").ok_or(DataError::NotFound("1d:open missing".into()))?;
-        let high = data.get("1d:high").ok_or(DataError::NotFound("1d:high missing".into()))?;
-        let low = data.get("1d:low").ok_or(DataError::NotFound("1d:low missing".into()))?;
-        let close = data.get("1d:close").ok_or(DataError::NotFound("1d:close missing".into()))?;
-        let volume = data.get("1d:volume").ok_or(DataError::NotFound("1d:volume missing".into()))?;
-        let amount = data.get("1d:amount").ok_or(DataError::NotFound("1d:amount missing".into()))?;
-        let adj = data.get("1d:adjust_factor").ok_or(DataError::NotFound("1d:adjust_factor missing".into()))?;
+        let dates_arr = data
+            .get("1d:trading_date")
+            .ok_or(DataError::NotFound("1d:trading_date missing".into()))?;
+        let syms_arr = data
+            .get("1d:symbol")
+            .ok_or(DataError::NotFound("1d:symbol missing".into()))?;
+        let open = data
+            .get("1d:open")
+            .ok_or(DataError::NotFound("1d:open missing".into()))?;
+        let high = data
+            .get("1d:high")
+            .ok_or(DataError::NotFound("1d:high missing".into()))?;
+        let low = data
+            .get("1d:low")
+            .ok_or(DataError::NotFound("1d:low missing".into()))?;
+        let close = data
+            .get("1d:close")
+            .ok_or(DataError::NotFound("1d:close missing".into()))?;
+        let volume = data
+            .get("1d:volume")
+            .ok_or(DataError::NotFound("1d:volume missing".into()))?;
+        let amount = data
+            .get("1d:amount")
+            .ok_or(DataError::NotFound("1d:amount missing".into()))?;
+        let adj = data
+            .get("1d:adjust_factor")
+            .ok_or(DataError::NotFound("1d:adjust_factor missing".into()))?;
 
         let sym_list = self.get_symbols_5m();
         let n_syms = sym_list.len();
@@ -758,10 +798,14 @@ impl DataLayer {
         // Collect unique sorted dates
         let mut date_set: BTreeSet<i64> = BTreeSet::new();
         for i in 0..dates_arr.len() {
-            if syms_arr[i].is_nan() { continue; }
+            if syms_arr[i].is_nan() {
+                continue;
+            }
             let d = dates_arr[i] as i64;
             let s = syms_arr[i] as usize;
-            if d > 19000101 && s < n_syms { date_set.insert(d); }
+            if d > 19000101 && s < n_syms {
+                date_set.insert(d);
+            }
         }
         let dates: Vec<i64> = date_set.into_iter().collect();
         let n_dates = dates.len();
@@ -776,14 +820,18 @@ impl DataLayer {
         // Track which (date, symbol) have data, matching Python's group-by semantics
         let mut has_data = Array2::<bool>::from_elem((n_dates, n_syms), false);
 
-        let date_to_idx: HashMap<i64, usize> = dates
-            .iter().enumerate().map(|(i, &d)| (d, i)).collect();
+        let date_to_idx: HashMap<i64, usize> =
+            dates.iter().enumerate().map(|(i, &d)| (d, i)).collect();
 
         for i in 0..dates_arr.len() {
-            if syms_arr[i].is_nan() { continue; }
+            if syms_arr[i].is_nan() {
+                continue;
+            }
             let d = dates_arr[i] as i64;
             let s = syms_arr[i] as usize;
-            if s >= n_syms { continue; }
+            if s >= n_syms {
+                continue;
+            }
             if let Some(&di) = date_to_idx.get(&d) {
                 close_mat[[di, s]] = close[i];
                 open_mat[[di, s]] = open[i];
@@ -804,7 +852,8 @@ impl DataLayer {
         // The "last" is the last date the symbol appears in the data (has_data==true),
         // even if adj_factor is NaN on that date. IEEE 754 propagates NaN correctly.
         for s in 0..n_syms {
-            let last_adj = (0..n_dates).rev()
+            let last_adj = (0..n_dates)
+                .rev()
                 .find(|&d| has_data[[d, s]])
                 .map(|d| adj_mat[[d, s]])
                 .unwrap_or(1.0);
@@ -833,14 +882,15 @@ impl DataLayer {
             }
         }
 
-        // Compute returns: close[t] / close[t-1] - 1
+        // Forward returns: close[t+1] / close[t] - 1
+        // returns[d] is the return earned from day d to day d+1
         let mut returns = Array2::<f64>::zeros((n_dates, n_syms));
         for s in 0..n_syms {
-            for d in 1..n_dates {
-                let prev = close_mat[[d - 1, s]];
+            for d in 0..(n_dates - 1) {
                 let curr = close_mat[[d, s]];
-                if prev.is_finite() && curr.is_finite() && prev != 0.0 {
-                    returns[[d, s]] = curr / prev - 1.0;
+                let next = close_mat[[d + 1, s]];
+                if curr.is_finite() && next.is_finite() && curr != 0.0 {
+                    returns[[d, s]] = next / curr - 1.0;
                 }
             }
         }
@@ -849,7 +899,8 @@ impl DataLayer {
         let mut tradable = Array2::<f64>::zeros((n_dates, n_syms));
         for d in 0..n_dates {
             for s in 0..n_syms {
-                if high_mat[[d, s]].is_finite() && low_mat[[d, s]].is_finite()
+                if high_mat[[d, s]].is_finite()
+                    && low_mat[[d, s]].is_finite()
                     && high_mat[[d, s]] > low_mat[[d, s]]
                 {
                     tradable[[d, s]] = 1.0;
@@ -872,7 +923,10 @@ impl DataLayer {
 
     /// Fetch data by frequency
     /// Returns columns with frequency prefix (e.g., "1d:close", "5m:vol")
-    pub fn fetch(&mut self, freq: Frequency) -> Result<HashMap<String, Array1<f64>>, crate::data::source::DataError> {
+    pub fn fetch(
+        &mut self,
+        freq: Frequency,
+    ) -> Result<HashMap<String, Array1<f64>>, crate::data::source::DataError> {
         match freq {
             Frequency::Daily => {
                 let pre = PreFilter::parse(&self.pre_filter);
@@ -882,9 +936,10 @@ impl DataLayer {
                 let pre = PreFilter::parse(&self.pre_filter);
                 self.query_5m_with_columns(&vec![], &pre)
             }
-            _ => Err(crate::data::source::DataError::NotFound(
-                format!("Frequency {:?} not supported yet", freq)
-            )),
+            _ => Err(crate::data::source::DataError::NotFound(format!(
+                "Frequency {:?} not supported yet",
+                freq
+            ))),
         }
     }
 }

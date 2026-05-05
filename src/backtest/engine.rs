@@ -1218,10 +1218,10 @@ impl BacktestEngine {
         let ic_vec: Vec<f64> = (0..(n_days - 1))
             .into_par_iter()
             .map(|day| {
-                // Forward return: returns[day+1] = close[day+1]/close[day] - 1
-                // Predictive IC: factor[t] vs forward return[t→t+1]
+                // Forward return: returns[day] = close[day+1]/close[day] - 1
+                // Predictive IC: factor[day] vs forward return[day→day+1]
                 let factor_today = factor.row(day);
-                let forward_returns = returns.row(day + 1);
+                let forward_returns = returns.row(day);
 
                 let mut factor_vals = Vec::new();
                 let mut return_vals = Vec::new();
