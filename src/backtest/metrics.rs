@@ -4,33 +4,6 @@ use ndarray::{Array1, Array2};
 use rayon::prelude::*;
 use std::f64::NAN;
 
-/// Stats extension for Vec<f64>
-trait StatsExt {
-    fn mean(&self) -> f64;
-    fn std_dev(&self) -> f64;
-}
-
-impl StatsExt for Vec<f64> {
-    fn mean(&self) -> f64 {
-        if self.is_empty() {
-            0.0
-        } else {
-            self.iter().sum::<f64>() / self.len() as f64
-        }
-    }
-
-    fn std_dev(&self) -> f64 {
-        if self.len() <= 1 {
-            0.0
-        } else {
-            let mean = self.mean();
-            let variance = self.iter().map(|&x| (x - mean) * (x - mean)).sum::<f64>()
-                / (self.len() - 1) as f64;
-            variance.sqrt()
-        }
-    }
-}
-
 pub(crate) fn compute_cumulative_returns(daily_returns: &Array2<f64>) -> Array2<f64> {
     let (n_days, n_groups) = daily_returns.dim();
     let mut cum_returns = Array2::<f64>::zeros((n_days, n_groups));
@@ -92,18 +65,21 @@ pub(crate) fn compute_ic_series(
 
     let ic_series = Array1::from_vec(ic_vec);
 
-    let valid_ic: Vec<f64> = ic_series
-        .iter()
-        .filter(|&&v| !v.is_nan())
-        .cloned()
-        .collect();
-
-    if valid_ic.is_empty() {
+    let valid_n = ic_series.iter().filter(|&&v| !v.is_nan()).count();
+    if valid_n < 2 {
         return Err("No valid IC values".to_string());
     }
 
-    let ic_mean = valid_ic.mean();
-    let ic_std = valid_ic.std_dev();
+    let ic_mean = ic_series.iter().filter(|v| !v.is_nan()).sum::<f64>() / valid_n as f64;
+    let ic_std = {
+        let variance: f64 = ic_series
+            .iter()
+            .filter(|v| !v.is_nan())
+            .map(|&x| (x - ic_mean) * (x - ic_mean))
+            .sum::<f64>()
+            / (valid_n - 1) as f64;
+        variance.sqrt()
+    };
     let ic_ir = if ic_std == 0.0 { NAN } else { ic_mean / ic_std };
 
     Ok((ic_series, ic_mean, ic_ir))
@@ -121,14 +97,19 @@ pub(crate) fn compute_annualized_return(total_return: f64, n_days: usize) -> f64
 }
 
 pub(crate) fn compute_sharpe_ratio(returns: &Array1<f64>, _n_days: usize) -> f64 {
-    let valid_returns: Vec<f64> = returns.iter().filter(|&&r| !r.is_nan()).cloned().collect();
-
-    if valid_returns.len() < 2 {
+    let valid_n = returns.iter().filter(|&&r| !r.is_nan()).count();
+    if valid_n < 2 {
         return 0.0;
     }
 
-    let mean = valid_returns.mean();
-    let std = valid_returns.std_dev();
+    let mean = returns.iter().filter(|v| !v.is_nan()).sum::<f64>() / valid_n as f64;
+    let variance: f64 = returns
+        .iter()
+        .filter(|v| !v.is_nan())
+        .map(|&x| (x - mean) * (x - mean))
+        .sum::<f64>()
+        / (valid_n - 1) as f64;
+    let std = variance.sqrt();
 
     if std == 0.0 {
         return 0.0;

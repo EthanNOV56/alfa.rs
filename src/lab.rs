@@ -21,7 +21,7 @@ use crate::backtest::{BacktestConfig, BacktestEngine, BacktestResult};
 use crate::data::clickhouse::ClickHouseSource;
 use crate::data::layer::{DataLayer, PriceMatrix};
 use crate::expr::registry::FactorRegistry;
-use crate::expr::registry::config::{FactorPanel, FactorSlice};
+use crate::expr::registry::config::{CALC_PARALLEL_YEARS, FactorPanel, FactorSlice};
 use crate::gp::evolution::run_gp;
 use crate::gp::fitness::RealBacktestFitnessEvaluator;
 use crate::gp::types::{Function, GPConfig, Terminal, to_parseable_string};
@@ -157,28 +157,51 @@ impl AlfarsLab {
     pub fn calc(&self, csv_path: &str) -> Result<FactorPanel, String> {
         let (start_year, end_year) = self.years()?;
         let base_filter = self.dl.pre_filter().to_string();
-        let mut all_slices: Vec<FactorSlice> = Vec::new();
 
+        let years: Vec<i32> = (start_year..=end_year).collect();
+
+        // Bounded parallel: each year creates its own DataLayer which is dropped
+        // inside the closure, freeing ~2GB raw data. Only FactorSlices (~45MB/year)
+        // are retained. Peak memory with CALC_PARALLEL_YEARS=5 is ~17GB single-factor.
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(CALC_PARALLEL_YEARS.min(years.len()))
+            .build()
+            .map_err(|e| format!("rayon pool: {}", e))?;
+
+        let year_results: Result<Vec<_>, _> = pool.install(|| {
+            use rayon::prelude::*;
+            years
+                .par_iter()
+                .map(|&year| {
+                    let start = format!("{}-01-01", year);
+                    let end = format!("{}-01-01", year + 1);
+                    let mut year_dl = DataLayer::new(self.source.clone());
+                    year_dl.set_pre_filter(&format!("{}:{} {}", start, end, base_filter));
+
+                    let results = self
+                        .registry
+                        .compute_cs_pipeline(&mut year_dl)
+                        .map_err(|e| format!("Year {}: {}", year, e))?;
+
+                    let slices: Vec<FactorSlice> = results.into_values().collect();
+                    Ok::<_, String>((year, slices))
+                })
+                .collect::<Result<Vec<_>, _>>()
+        });
+        let mut year_results = year_results?;
+        year_results.sort_by_key(|(year, _)| *year);
+
+        // Sequential CSV write
         let mut wtr = csv::Writer::from_path(csv_path).map_err(|e| format!("CSV: {}", e))?;
         FactorSlice::write_header(&mut wtr);
-
-        for year in start_year..=end_year {
-            let start = format!("{}-01-01", year);
-            let end = format!("{}-01-01", year + 1);
-            let mut year_dl = DataLayer::new(self.source.clone());
-            year_dl.set_pre_filter(&format!("{}:{} {}", start, end, base_filter));
-
-            let results = self
-                .registry
-                .compute_cs_pipeline(&mut year_dl)
-                .map_err(|e| format!("Year {}: {}", year, e))?;
-
-            for (_name, slice) in &results {
+        let mut all_slices: Vec<FactorSlice> = Vec::new();
+        for (year, slices) in year_results {
+            for slice in &slices {
                 slice
                     .write_to(&mut wtr)
                     .map_err(|e| format!("Year {} CSV: {}", year, e))?;
             }
-            all_slices.extend(results.into_values());
+            all_slices.extend(slices);
         }
         wtr.flush().map_err(|e| format!("CSV flush: {}", e))?;
 
@@ -327,6 +350,7 @@ impl AlfarsLab {
 
         let mut dl = DataLayer::new(self.source.clone());
         dl.set_pre_filter(&format!("{}:{} {}", start_full, end_full, base_filter));
+
         let prices = dl
             .query_price_matrix()
             .map_err(|e| format!("Price query: {:?}", e))?;

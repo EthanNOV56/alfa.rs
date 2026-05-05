@@ -133,7 +133,7 @@ pub fn eval_expr_memoized(
     expr: &Expr,
     data: &HashMap<String, Array1<f64>>,
     n_rows: usize,
-    cache: &mut HashMap<u64, Array1<f64>>,
+    cache: &mut AHashMap<u64, Array1<f64>>,
 ) -> Result<Array1<f64>, String> {
     let hash = expr_hash(expr);
 
@@ -200,7 +200,7 @@ pub fn eval_function_memoized(
     args: &[Expr],
     data: &HashMap<String, Array1<f64>>,
     n_rows: usize,
-    cache: &mut HashMap<u64, Array1<f64>>,
+    cache: &mut AHashMap<u64, Array1<f64>>,
 ) -> Result<Array1<f64>, String> {
     let name_lower = name.to_lowercase();
 
@@ -357,7 +357,7 @@ pub fn eval_ts_function_memoized(
     args: &[Expr],
     data: &HashMap<String, Array1<f64>>,
     n_rows: usize,
-    cache: &mut HashMap<u64, Array1<f64>>,
+    cache: &mut AHashMap<u64, Array1<f64>>,
 ) -> Result<Array1<f64>, String> {
     let vals = eval_expr_memoized(&args[0], data, n_rows, cache)?;
     let window = args.get(1).and_then(|a| get_literal_int(a)).unwrap_or(20);
@@ -458,7 +458,7 @@ pub fn get_literal_float(expr: &Expr) -> Option<f64> {
 pub fn eval_expr_vectorized(
     expr: &Expr,
     data: &HashMap<String, Array1<f64>>,
-    cache: &mut HashMap<u64, Array1<f64>>,
+    cache: &mut AHashMap<u64, Array1<f64>>,
 ) -> Result<Array1<f64>, String> {
     eval_expr_impl(expr, data, cache, true, &mut None)
 }
@@ -468,7 +468,7 @@ pub fn eval_expr_vectorized(
 pub fn eval_expr_compact(
     expr: &Expr,
     data: &HashMap<String, Array1<f64>>,
-    cache: &mut HashMap<u64, Array1<f64>>,
+    cache: &mut AHashMap<u64, Array1<f64>>,
 ) -> Result<(Array1<f64>, Vec<(i64, i64)>), String> {
     let mut group_keys: Option<Vec<(i64, i64)>> = None;
     let values = eval_expr_impl(expr, data, cache, false, &mut group_keys)?;
@@ -478,7 +478,7 @@ pub fn eval_expr_compact(
 fn eval_expr_impl(
     expr: &Expr,
     data: &HashMap<String, Array1<f64>>,
-    cache: &mut HashMap<u64, Array1<f64>>,
+    cache: &mut AHashMap<u64, Array1<f64>>,
     expand: bool,
     group_keys: &mut Option<Vec<(i64, i64)>>,
 ) -> Result<Array1<f64>, String> {
@@ -626,7 +626,7 @@ fn eval_expr_impl(
 
     // Cache the result only if it's not too large (avoid OOM)
     // Group aggregation results are n_rows which can be millions of elements
-    const CACHE_SIZE_LIMIT: usize = 100_000; // ~800KB for f64
+    const CACHE_SIZE_LIMIT: usize = 10_000_000; // ~80MB for f64
     if result.len() <= CACHE_SIZE_LIMIT {
         cache.insert(hash, result.clone());
     }
@@ -638,7 +638,7 @@ pub fn eval_function_vectorized(
     name: &str,
     args: &[Expr],
     data: &HashMap<String, Array1<f64>>,
-    cache: &mut HashMap<u64, Array1<f64>>,
+    cache: &mut AHashMap<u64, Array1<f64>>,
 ) -> Result<Array1<f64>, String> {
     let name_lower = name.to_lowercase();
 
@@ -1180,7 +1180,7 @@ pub fn eval_group_function_vectorized(
     name: &str,
     args: &[Expr],
     data: &HashMap<String, Array1<f64>>,
-    cache: &mut HashMap<u64, Array1<f64>>,
+    cache: &mut AHashMap<u64, Array1<f64>>,
     group_freq: Frequency,
     expand: bool,
     group_keys: &mut Option<Vec<(i64, i64)>>,
@@ -1430,7 +1430,7 @@ pub fn eval_group_function_vectorized(
             drop(agg_count);
 
             if expand {
-                let group_index: HashMap<(i64, i64), usize> = unique_groups
+                let group_index: AHashMap<(i64, i64), usize> = unique_groups
                     .iter()
                     .enumerate()
                     .map(|(i, g)| (*g, i))
@@ -1455,7 +1455,7 @@ pub fn eval_group_function_vectorized(
             }
         }
         "min" => {
-            let mut agg_min: HashMap<(i64, i64), f64> = HashMap::with_capacity(estimated_groups);
+            let mut agg_min: AHashMap<(i64, i64), f64> = AHashMap::with_capacity(estimated_groups);
             for i in 0..n_rows {
                 let date_int = trading_dates[i] as i64;
                 let symbol_int = symbols[i] as i64;
@@ -1487,7 +1487,7 @@ pub fn eval_group_function_vectorized(
             drop(agg_min);
 
             if expand {
-                let group_index: HashMap<(i64, i64), usize> = unique_groups
+                let group_index: AHashMap<(i64, i64), usize> = unique_groups
                     .iter()
                     .enumerate()
                     .map(|(i, g)| (*g, i))
@@ -1512,7 +1512,7 @@ pub fn eval_group_function_vectorized(
             }
         }
         "max" => {
-            let mut agg_max: HashMap<(i64, i64), f64> = HashMap::with_capacity(estimated_groups);
+            let mut agg_max: AHashMap<(i64, i64), f64> = AHashMap::with_capacity(estimated_groups);
             for i in 0..n_rows {
                 let date_int = trading_dates[i] as i64;
                 let symbol_int = symbols[i] as i64;
@@ -1544,7 +1544,7 @@ pub fn eval_group_function_vectorized(
             drop(agg_max);
 
             if expand {
-                let group_index: HashMap<(i64, i64), usize> = unique_groups
+                let group_index: AHashMap<(i64, i64), usize> = unique_groups
                     .iter()
                     .enumerate()
                     .map(|(i, g)| (*g, i))
@@ -1570,9 +1570,9 @@ pub fn eval_group_function_vectorized(
         }
         "std" | "stdev" => {
             // Two-pass: first compute means, then variance
-            let mut agg_sum: HashMap<(i64, i64), f64> = HashMap::with_capacity(estimated_groups);
-            let mut agg_count: HashMap<(i64, i64), usize> =
-                HashMap::with_capacity(estimated_groups);
+            let mut agg_sum: AHashMap<(i64, i64), f64> = AHashMap::with_capacity(estimated_groups);
+            let mut agg_count: AHashMap<(i64, i64), usize> =
+                AHashMap::with_capacity(estimated_groups);
 
             for i in 0..n_rows {
                 let date_int = trading_dates[i] as i64;
@@ -1609,8 +1609,8 @@ pub fn eval_group_function_vectorized(
                 .collect();
 
             // Second pass: compute variance
-            let mut agg_var: HashMap<(i64, i64), (f64, usize)> =
-                HashMap::with_capacity(estimated_groups);
+            let mut agg_var: AHashMap<(i64, i64), (f64, usize)> =
+                AHashMap::with_capacity(estimated_groups);
             for i in 0..n_rows {
                 let date_int = trading_dates[i] as i64;
                 let symbol_int = symbols[i] as i64;
@@ -1639,7 +1639,7 @@ pub fn eval_group_function_vectorized(
             drop(agg_var);
 
             if expand {
-                let group_index: HashMap<(i64, i64), usize> = unique_groups
+                let group_index: AHashMap<(i64, i64), usize> = unique_groups
                     .iter()
                     .enumerate()
                     .map(|(i, g)| (*g, i))
@@ -1665,8 +1665,8 @@ pub fn eval_group_function_vectorized(
         }
         _ => {
             // Default to sum
-            let mut aggregation: HashMap<(i64, i64), f64> =
-                HashMap::with_capacity(estimated_groups);
+            let mut aggregation: AHashMap<(i64, i64), f64> =
+                AHashMap::with_capacity(estimated_groups);
             for i in 0..n_rows {
                 let date_int = trading_dates[i] as i64;
                 let symbol_int = symbols[i] as i64;
@@ -1695,7 +1695,7 @@ pub fn eval_group_function_vectorized(
             drop(aggregation);
 
             if expand {
-                let group_index: HashMap<(i64, i64), usize> = unique_groups
+                let group_index: AHashMap<(i64, i64), usize> = unique_groups
                     .iter()
                     .enumerate()
                     .map(|(i, g)| (*g, i))
@@ -1727,7 +1727,7 @@ pub fn eval_ts_function_vectorized(
     name: &str,
     args: &[Expr],
     data: &HashMap<String, Array1<f64>>,
-    cache: &mut HashMap<u64, Array1<f64>>,
+    cache: &mut AHashMap<u64, Array1<f64>>,
 ) -> Result<Array1<f64>, String> {
     // Evaluate the first argument
     let vals = eval_expr_vectorized(&args[0], data, cache)?;

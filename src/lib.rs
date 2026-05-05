@@ -355,7 +355,7 @@ fn evaluate_expression(
             }
 
             // Pre-populate cache with column hashes
-            let mut cache = std::collections::HashMap::new();
+            let mut cache = ahash::AHashMap::new();
             for (name, arr) in &columns {
                 let mut hasher = DefaultHasher::new();
                 0u8.hash(&mut hasher);

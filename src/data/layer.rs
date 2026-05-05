@@ -285,12 +285,12 @@ impl PriceMatrix {
         let n_dates = self.dates.len();
         let n_syms = self.symbols.len();
 
-        let mut sym_to_idx: HashMap<&str, usize> = HashMap::new();
+        let mut sym_to_idx: AHashMap<&str, usize> = AHashMap::new();
         for (i, s) in self.symbols.iter().enumerate() {
             sym_to_idx.insert(s.as_str(), i);
         }
 
-        let mut date_to_idx: HashMap<i64, usize> = HashMap::new();
+        let mut date_to_idx: AHashMap<i64, usize> = AHashMap::new();
         for (i, &d) in self.dates.iter().enumerate() {
             date_to_idx.insert(d, i);
         }
@@ -322,12 +322,12 @@ impl PriceMatrix {
         let n_dates = self.dates.len();
         let n_syms = self.symbols.len();
 
-        let mut sym_to_idx: HashMap<&str, usize> = HashMap::new();
+        let mut sym_to_idx: AHashMap<&str, usize> = AHashMap::new();
         for (i, s) in self.symbols.iter().enumerate() {
             sym_to_idx.insert(s.as_str(), i);
         }
 
-        let mut date_to_idx: HashMap<i64, usize> = HashMap::new();
+        let mut date_to_idx: AHashMap<i64, usize> = AHashMap::new();
         for (i, &d) in self.dates.iter().enumerate() {
             date_to_idx.insert(d, i);
         }
@@ -614,14 +614,15 @@ impl DataLayer {
 
         // Process columns in parallel with rayon (one thread per column)
         use std::sync::Arc;
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
         let batches_arc = Arc::new(batches);
         let symbol_to_idx_arc = Arc::new(symbol_to_idx);
 
         let col_results: Vec<(String, Vec<f64>)> = col_specs
             .par_iter()
             .map(|(col_idx, name, kind)| {
-                let mut vec: Vec<f64> = Vec::new();
-                let mut date_cache: HashMap<i32, f64> = HashMap::with_capacity(256);
+                let mut vec: Vec<f64> = Vec::with_capacity(total_rows);
+                let mut date_cache: AHashMap<i32, f64> = AHashMap::with_capacity(256);
                 for batch in batches_arc.iter() {
                     let arrays = batch.columns();
                     let array = &arrays[*col_idx];
@@ -706,7 +707,7 @@ impl DataLayer {
     /// Queries 1d close and free_float_shares, computes free_float_cap = close × shares.
     pub fn build_free_float_cap_map(
         &mut self,
-    ) -> Result<HashMap<(i64, usize), f64>, crate::data::source::DataError> {
+    ) -> Result<AHashMap<(i64, usize), f64>, crate::data::source::DataError> {
         let data = self.query(vec![
             "1d:close".to_string(),
             "1d:free_float_shares".to_string(),
@@ -729,7 +730,7 @@ impl DataLayer {
 
         let sym_list = self.get_symbols_5m();
         let n_syms = sym_list.len();
-        let mut map = HashMap::new();
+        let mut map = AHashMap::new();
         for i in 0..dates.len() {
             let d = dates[i] as i64;
             if symbols[i].is_nan() {
@@ -820,7 +821,7 @@ impl DataLayer {
         // Track which (date, symbol) have data, matching Python's group-by semantics
         let mut has_data = Array2::<bool>::from_elem((n_dates, n_syms), false);
 
-        let date_to_idx: HashMap<i64, usize> =
+        let date_to_idx: AHashMap<i64, usize> =
             dates.iter().enumerate().map(|(i, &d)| (d, i)).collect();
 
         for i in 0..dates_arr.len() {

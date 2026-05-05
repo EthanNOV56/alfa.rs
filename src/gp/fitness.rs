@@ -237,7 +237,7 @@ impl RealBacktestFitnessEvaluator {
         let mut factor_matrix = Array2::<f64>::zeros((n_days, n_assets));
 
         for (asset_idx, columns) in self.asset_columns.iter().enumerate() {
-            let mut cache = HashMap::new();
+            let mut cache = ahash::AHashMap::new();
 
             let values = match eval_expr_vectorized(expr, columns, &mut cache) {
                 Ok(arr) => arr,

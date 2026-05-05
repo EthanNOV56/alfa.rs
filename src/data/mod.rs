@@ -12,4 +12,4 @@ pub mod source;
 pub use clickhouse::ClickHouseSource;
 pub use convention::*;
 pub use layer::{DataLayer, PriceMatrix};
-pub use source::{DataError, DataSource, QueryFilter};
+pub use source::{DataError, QueryFilter};

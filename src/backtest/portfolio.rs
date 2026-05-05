@@ -10,21 +10,22 @@ pub(crate) fn compute_quantile_groups(
 ) -> Result<Array2<usize>, String> {
     let (n_days, n_assets) = factor.dim();
     let mut groups = Array2::<usize>::zeros((n_days, n_assets));
+    let mut valid_data: Vec<(usize, f64)> = Vec::with_capacity(n_assets);
 
     for day in 0..n_days {
+        valid_data.clear();
         let factor_row = factor.row(day);
-        let mut valid_data: Vec<(usize, f64)> = factor_row
-            .iter()
-            .enumerate()
-            .filter(|&(_, &v)| !v.is_nan())
-            .map(|(i, &v)| (i, v))
-            .collect();
+        for (i, &v) in factor_row.iter().enumerate() {
+            if !v.is_nan() {
+                valid_data.push((i, v));
+            }
+        }
 
         if valid_data.len() < quantiles {
             continue;
         }
 
-        valid_data.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        valid_data.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
 
         let n_valid = valid_data.len() as f64;
         let bins = quantiles as f64;
@@ -58,12 +59,16 @@ pub(crate) fn compute_group_weights(
 ) -> Array2<f64> {
     let (n_days, n_assets) = factor.dim();
     let mut group_weights = Array2::<f64>::zeros((n_days, n_assets));
+    let mut group_assets: Vec<Vec<usize>> =
+        vec![Vec::with_capacity(n_assets / quantiles); quantiles];
 
     for day in 0..n_days {
         let labels_today = group_labels.row(day);
         let factor_today = factor.row(day);
 
-        let mut group_assets: Vec<Vec<usize>> = vec![Vec::new(); quantiles];
+        for g in 0..quantiles {
+            group_assets[g].clear();
+        }
         for asset in 0..n_assets {
             let label = labels_today[asset];
             if label > 0 && label <= quantiles {
@@ -135,13 +140,16 @@ pub(crate) fn simulate_groups(
     for group in 0..quantiles {
         let mut nv = 1.0f64;
         let mut prev_shares: Vec<f64> = vec![0.0f64; n_assets];
+        // Pre-allocate vectors to avoid per-day allocations
+        let mut in_pool = vec![false; n_assets];
+        let mut new_shares = vec![0.0f64; n_assets];
 
         for day in 1..n_days {
             let mut pool_count = 0usize;
-            let mut in_pool = vec![false; n_assets];
             for a in 0..n_assets {
-                if group_labels[[day - 1, a]] == group + 1 && tradable[[day, a]] > 0.5 {
-                    in_pool[a] = true;
+                let in_p = group_labels[[day - 1, a]] == group + 1 && tradable[[day, a]] > 0.5;
+                in_pool[a] = in_p;
+                if in_p {
                     pool_count += 1;
                 }
             }
@@ -186,7 +194,7 @@ pub(crate) fn simulate_groups(
                 total_weight = pool_count as f64;
             }
 
-            let mut new_shares: Vec<f64> = vec![0.0f64; n_assets];
+            new_shares.fill(0.0);
             let mut asset_close = 0.0f64;
             let mut fee_dollars = 0.0f64;
 
@@ -225,7 +233,7 @@ pub(crate) fn simulate_groups(
             group_returns[[day - 1, group]] = new_nv / nv - 1.0;
 
             nv = new_nv;
-            prev_shares = new_shares;
+            std::mem::swap(&mut prev_shares, &mut new_shares);
         }
     }
 

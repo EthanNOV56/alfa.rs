@@ -2,11 +2,12 @@
 //!
 //! This module provides ClickHouse-specific data source implementation.
 
-use super::{DataError, DataSource, QueryFilter};
-use std::collections::HashMap;
+use super::DataError;
+use std::sync::OnceLock;
+use std::time::Duration;
 
 /// ClickHouse data source
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ClickHouseSource {
     host: String,
     port: u16,
@@ -17,6 +18,23 @@ pub struct ClickHouseSource {
     volume_unit: u16,
     /// Amount unit (e.g., 1000 for 千元)
     amount_unit: u16,
+    /// Lazily-initialized reqwest client for HTTP keep-alive connection reuse
+    client: OnceLock<reqwest::blocking::Client>,
+}
+
+impl Clone for ClickHouseSource {
+    fn clone(&self) -> Self {
+        Self {
+            host: self.host.clone(),
+            port: self.port,
+            database: self.database.clone(),
+            username: self.username.clone(),
+            password: self.password.clone(),
+            volume_unit: self.volume_unit,
+            amount_unit: self.amount_unit,
+            client: OnceLock::new(),
+        }
+    }
 }
 
 impl ClickHouseSource {
@@ -66,6 +84,7 @@ impl ClickHouseSource {
             password,
             volume_unit,
             amount_unit,
+            client: OnceLock::new(),
         }
     }
 
@@ -79,6 +98,7 @@ impl ClickHouseSource {
             password: None,
             volume_unit: 100,
             amount_unit: 1000,
+            client: OnceLock::new(),
         }
     }
 
@@ -92,6 +112,7 @@ impl ClickHouseSource {
             password: None,
             volume_unit: 100,
             amount_unit: 1000,
+            client: OnceLock::new(),
         }
     }
 
@@ -112,6 +133,7 @@ impl ClickHouseSource {
             password: None,
             volume_unit,
             amount_unit,
+            client: OnceLock::new(),
         }
     }
 
@@ -150,203 +172,24 @@ impl ClickHouseSource {
         format!("http://{}:{}/", self.host, self.port)
     }
 
-    /// Execute a SQL query and return results as HashMap
-    pub fn query_to_hashmap(&self, sql: &str) -> Result<HashMap<String, Vec<f64>>, DataError> {
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .map_err(|e| DataError::Connection(format!("Failed to create client: {}", e)))?;
-
-        // Build query string - use GET request style (URL parameters)
-        let mut url = format!(
-            "{}?database={}&default_format=JSON&query={}",
-            self.build_url(),
-            self.database,
-            urlencoding::encode(sql)
-        );
-        if !self.username.is_empty() {
-            url.push_str(&format!("&user={}", self.username));
-        }
-        if let Some(ref password) = self.password {
-            url.push_str(&format!("&password={}", password));
-        }
-
-        let response = client
-            .get(&url)
-            .send()
-            .map_err(|e| DataError::Connection(format!("Failed to connect: {}", e)))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let text = response.text().unwrap_or_default();
-            return Err(DataError::Query(format!("HTTP {}: {}", status, text)));
-        }
-
-        // Parse JSON response
-        let json: serde_json::Value = response
-            .json()
-            .map_err(|e| DataError::Query(format!("Failed to parse JSON: {}", e)))?;
-
-        // ClickHouse returns data in "data" array with "columns" and "data"
-        let data = json.get("data").and_then(|v| v.as_array()).ok_or_else(|| {
-            DataError::Query("Invalid response format: no data array".to_string())
-        })?;
-
-        if data.is_empty() {
-            return Ok(HashMap::new());
-        }
-
-        // Get column names
-        let columns: Vec<String> = json
-            .get("columns")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.get("name").and_then(|n| n.as_str()).map(String::from))
-                    .collect()
-            })
-            .unwrap_or_else(|| {
-                // Fallback: try to get keys from first data row
-                if let Some(first_row) = data.first() {
-                    if let Some(obj) = first_row.as_object() {
-                        obj.keys().cloned().collect()
-                    } else {
-                        vec![]
-                    }
-                } else {
-                    vec![]
-                }
-            });
-
-        // Build result HashMap
-        let mut result: HashMap<String, Vec<f64>> = HashMap::new();
-        for col in &columns {
-            result.insert(col.clone(), Vec::new());
-        }
-
-        for row in data {
-            if let Some(obj) = row.as_object() {
-                for col in &columns {
-                    let val = obj.get(col).and_then(|v| v.as_f64()).unwrap_or(f64::NAN);
-                    if let Some(vec) = result.get_mut(col) {
-                        vec.push(val);
-                    }
-                }
-            }
-        }
-
-        Ok(result)
-    }
-
-    /// Fetch stock data for a symbol
-    pub fn fetch_stock_data(
-        &self,
-        symbols: &[String],
-        start_date: &str,
-        end_date: &str,
-        table_name: &str,
-    ) -> Result<HashMap<String, Vec<f64>>, DataError> {
-        let symbols_str = symbols
-            .iter()
-            .map(|s| format!("'{}'", s))
-            .collect::<Vec<_>>()
-            .join(",");
-
-        // Compute vwap conversion factor: amount_unit / volume_unit
-        let vwap_factor = self.amount_unit as f64 / self.volume_unit as f64;
-
-        let sql = format!(
-            "SELECT symbol, trading_date, open, high, low, close, volume, amount, \
-             (close - open) / open AS returns, \
-             amount * {} / volume AS vwap, \
-             adjust_factor \
-             FROM {} \
-             WHERE symbol IN ({}) \
-             AND trading_date >= '{}' \
-             AND trading_date <= '{}' \
-             ORDER BY symbol, trading_date",
-            vwap_factor, table_name, symbols_str, start_date, end_date
-        );
-
-        self.query_to_hashmap(&sql)
-    }
-
-    /// Query data with flexible filter conditions
-    ///
-    /// This is a generic query method that supports:
-    /// - Custom column selection
-    /// - Symbol filtering
-    /// - Date range filtering
-    /// - Additional SQL conditions (e.g., market_cap > 1000000000)
-    ///
-    /// # Parameters
-    /// - filter: QueryFilter containing all filter conditions
-    /// - table_name: Table name (e.g., "stock_1d")
-    ///
-    /// # Returns
-    /// - HashMap column_name -> Vec<serde_json::Value> with raw JSON values
-    pub fn query_with_filter(
-        &self,
-        filter: QueryFilter,
-        table_name: &str,
-    ) -> Result<std::collections::HashMap<String, Vec<serde_json::Value>>, DataError> {
-        // Build SELECT clause
-        let columns_str = if filter.columns.is_empty() {
-            "*".to_string()
-        } else {
-            filter.columns.join(", ")
-        };
-
-        // Build WHERE clause
-        let mut where_clauses = vec!["1=1".to_string()];
-
-        // Add symbol filter
-        if let Some(ref symbols) = filter.symbols {
-            if !symbols.is_empty() {
-                let symbols_str = symbols
-                    .iter()
-                    .map(|s| format!("'{}'", s))
-                    .collect::<Vec<_>>()
-                    .join(",");
-                where_clauses.push(format!("symbol IN ({})", symbols_str));
-            }
-        }
-
-        // Add date range filter
-        if let Some((ref start, ref end)) = filter.date_range {
-            where_clauses.push(format!("trading_date >= '{}'", start));
-            where_clauses.push(format!("trading_date <= '{}'", end));
-        }
-
-        // Add additional conditions
-        for cond in &filter.conditions {
-            where_clauses.push(cond.clone());
-        }
-
-        // Build final SQL
-        let sql = format!(
-            "SELECT {} FROM {} WHERE {} ORDER BY symbol, trading_date",
-            columns_str,
-            table_name,
-            where_clauses.join(" AND ")
-        );
-
-        // Execute query and return raw JSON values
-        self.query_to_json(&sql)
+    /// Return a shared reqwest Client (lazily initialized, reused across queries)
+    fn client(&self) -> &reqwest::blocking::Client {
+        self.client.get_or_init(|| {
+            reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(300))
+                .build()
+                .expect("Failed to create reqwest client")
+        })
     }
 
     /// Execute SQL and return raw Arrow IPC stream bytes
     ///
-    /// Uses ArrowStream format (binary, columnar) matching Python's `client.query_arrow()`.
-    /// This is the memory-efficient path — no JSON parsing, no serde_json::Value tree.
+    /// Uses ArrowStream format (binary, columnar) for efficient data transfer.
+    /// This is the primary query path — all data flows through Arrow.
     pub(crate) fn query_raw_arrow(&self, sql: &str) -> Result<Vec<u8>, DataError> {
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(300))
-            .build()
-            .map_err(|e| DataError::Connection(format!("Failed to create client: {}", e)))?;
-
         let base_url = format!("{}?database={}", self.build_url(), self.database);
         let url = format!("{}&default_format=ArrowStream", base_url);
+        let client = self.client();
 
         let mut request = client.post(&url);
         if !self.username.is_empty() {
@@ -371,248 +214,6 @@ impl ClickHouseSource {
             .bytes()
             .map(|b| b.to_vec())
             .map_err(|e| DataError::Query(format!("Failed to read response bytes: {}", e)))
-    }
-
-    /// Execute SQL and return raw JSON values (not just f64)
-    fn query_to_json(
-        &self,
-        sql: &str,
-    ) -> Result<std::collections::HashMap<String, Vec<serde_json::Value>>, DataError> {
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .map_err(|e| DataError::Connection(format!("Failed to create client: {}", e)))?;
-
-        // Build query string - use GET request style (URL parameters)
-        let mut url = format!(
-            "{}?database={}&default_format=JSON&query={}",
-            self.build_url(),
-            self.database,
-            urlencoding::encode(sql)
-        );
-        if !self.username.is_empty() {
-            url.push_str(&format!("&user={}", self.username));
-        }
-        if let Some(ref password) = self.password {
-            url.push_str(&format!("&password={}", password));
-        }
-
-        let response = client
-            .get(&url)
-            .send()
-            .map_err(|e| DataError::Connection(format!("Failed to connect: {}", e)))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let text = response.text().unwrap_or_default();
-            return Err(DataError::Query(format!("HTTP {}: {}", status, text)));
-        }
-
-        // Parse JSON response
-        let json: serde_json::Value = response
-            .json()
-            .map_err(|e| DataError::Query(format!("Failed to parse JSON: {}", e)))?;
-
-        // ClickHouse returns data in "data" array with "columns" and "data"
-        let data = json.get("data").and_then(|v| v.as_array()).ok_or_else(|| {
-            DataError::Query("Invalid response format: no data array".to_string())
-        })?;
-
-        if data.is_empty() {
-            return Ok(std::collections::HashMap::new());
-        }
-
-        // Get column names
-        let columns: Vec<String> = json
-            .get("columns")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.get("name").and_then(|n| n.as_str()).map(String::from))
-                    .collect()
-            })
-            .unwrap_or_else(|| {
-                // Fallback: try to get keys from first data row
-                if let Some(first_row) = data.first() {
-                    if let Some(obj) = first_row.as_object() {
-                        obj.keys().cloned().collect()
-                    } else {
-                        vec![]
-                    }
-                } else {
-                    vec![]
-                }
-            });
-
-        // Build result HashMap with serde_json::Value
-        use serde_json::Value;
-        let mut result: std::collections::HashMap<String, Vec<Value>> =
-            std::collections::HashMap::new();
-        for col in &columns {
-            result.insert(col.clone(), Vec::new());
-        }
-
-        for row in data {
-            if let Some(obj) = row.as_object() {
-                for col in &columns {
-                    let val = obj.get(col).cloned().unwrap_or(serde_json::Value::Null);
-                    if let Some(vec) = result.get_mut(col) {
-                        vec.push(val);
-                    }
-                }
-            }
-        }
-
-        Ok(result)
-    }
-
-    /// Get top N stocks by market cap
-    ///
-    /// # Parameters
-    /// - n: Number of stocks to return
-    /// - table_name: Table name (e.g., "stock_1d")
-    ///
-    /// # Returns
-    /// - Vec of stock symbols
-    pub fn get_top_stocks(&self, n: usize, table_name: &str) -> Result<Vec<String>, DataError> {
-        // First try market_cap, then fall back to total_mv
-        let sql = format!(
-            "SELECT symbol FROM {} ORDER BY market_cap DESC NULLS LAST LIMIT {}",
-            table_name, n
-        );
-
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .map_err(|e| DataError::Connection(format!("Failed to create client: {}", e)))?;
-
-        let mut url = format!(
-            "{}?database={}&default_format=JSONCompact&query={}",
-            self.build_url(),
-            self.database,
-            urlencoding::encode(&sql)
-        );
-        if !self.username.is_empty() {
-            url.push_str(&format!("&user={}", self.username));
-        }
-        if let Some(ref password) = self.password {
-            url.push_str(&format!("&password={}", password));
-        }
-
-        let response = client
-            .get(&url)
-            .send()
-            .map_err(|e| DataError::Connection(format!("Failed to execute query: {}", e)))?;
-
-        let text = response
-            .text()
-            .map_err(|e| DataError::Query(format!("Failed to read response: {}", e)))?;
-
-        // Parse JSON response - clickhouse returns data in "data" field
-        let json: serde_json::Value = serde_json::from_str(&text)
-            .map_err(|e| DataError::Query(format!("Failed to parse JSON: {}", e)))?;
-
-        // Check for error in response
-        if let Some(_error) = json.get("error") {
-            eprintln!("Query error: {:?}", json.get("error"));
-            // Try alternative column name
-            let alt_sql = format!(
-                "SELECT symbol FROM {} ORDER BY total_mv DESC NULLS LAST LIMIT {}",
-                table_name, n
-            );
-            let alt_url = format!(
-                "{}?database={}&default_format=JSONCompact&query={}",
-                self.build_url(),
-                self.database,
-                urlencoding::encode(&alt_sql)
-            );
-
-            let alt_response = client.get(&alt_url).send().map_err(|e| {
-                DataError::Connection(format!("Failed to execute alt query: {}", e))
-            })?;
-
-            let alt_text = alt_response
-                .text()
-                .map_err(|e| DataError::Query(format!("Failed to read alt response: {}", e)))?;
-
-            let alt_json: serde_json::Value = serde_json::from_str(&alt_text)
-                .map_err(|e| DataError::Query(format!("Failed to parse alt JSON: {}", e)))?;
-
-            let symbols: Vec<String> = alt_json["data"]
-                .as_array()
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                        .collect()
-                })
-                .unwrap_or_default();
-
-            return Ok(symbols);
-        }
-
-        let symbols: Vec<String> = json["data"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        Ok(symbols)
-    }
-}
-
-impl DataSource for ClickHouseSource {
-    fn query(&self, sql: &str) -> Result<HashMap<String, Vec<f64>>, DataError> {
-        self.query_to_hashmap(sql)
-    }
-
-    fn get_factor_data(
-        &self,
-        symbol: &str,
-        start_date: &str,
-        end_date: &str,
-    ) -> Result<HashMap<String, Vec<f64>>, DataError> {
-        let table_name = "stock_1d";
-        self.query(&format!(
-            "SELECT symbol, trading_date, open, high, low, close, volume, amount \
-             FROM {} \
-             WHERE symbol = '{}' \
-             AND trading_date >= '{}' \
-             AND trading_date <= '{}' \
-             ORDER BY trading_date",
-            table_name, symbol, start_date, end_date
-        ))
-    }
-
-    fn is_connected(&self) -> bool {
-        // Try to execute a simple query to check connection
-        let client = match reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(5))
-            .build()
-        {
-            Ok(c) => c,
-            Err(_) => return false,
-        };
-
-        // Use GET request style for connection check
-        let mut url = format!(
-            "{}?database={}&default_format=JSON&query=SELECT+1",
-            self.build_url(),
-            self.database
-        );
-        if !self.username.is_empty() {
-            url.push_str(&format!("&user={}", self.username));
-        }
-        if let Some(ref password) = self.password {
-            url.push_str(&format!("&password={}", password));
-        }
-
-        match client.get(&url).send() {
-            Ok(resp) => resp.status().is_success(),
-            Err(_) => false,
-        }
     }
 }
 
@@ -640,51 +241,14 @@ mod tests {
 
     #[test]
     fn test_clickhouse_source_from_env_defaults() {
-        // Note: This test assumes default values when env vars are not set
-        // Since we can't safely manipulate env vars in tests, we just verify the function works
         let source = ClickHouseSource::from_env();
-        // The function should not panic, and returns default values if not set
         assert!(!source.host().is_empty());
     }
 
     #[test]
     fn test_clickhouse_source_from_env_with_values() {
-        // Skip this test as it requires unsafe env manipulation
-        // In a real scenario, these would be integration tests
         let source = ClickHouseSource::new("localhost", 8123, "default");
         assert_eq!(source.host(), "localhost");
-    }
-
-    #[test]
-    fn test_clickhouse_is_connected_returns_false() {
-        let source = ClickHouseSource::new("localhost", 8123, "default");
-        assert!(!source.is_connected());
-    }
-
-    #[test]
-    fn test_clickhouse_query_returns_error() {
-        let source = ClickHouseSource::new("localhost", 8123, "default");
-        let result = source.query("SELECT * FROM test");
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        // Either Connection error or Query error (e.g., 401 Unauthorized) are acceptable
-        assert!(matches!(
-            err,
-            DataError::Connection(_) | DataError::Query(_)
-        ));
-    }
-
-    #[test]
-    fn test_clickhouse_get_factor_data_returns_error() {
-        let source = ClickHouseSource::new("localhost", 8123, "default");
-        let result = source.get_factor_data("000001.SZ", "2024-01-01", "2024-12-31");
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        // Either Connection error or Query error (e.g., 401 Unauthorized) are acceptable
-        assert!(matches!(
-            err,
-            DataError::Connection(_) | DataError::Query(_)
-        ));
     }
 
     #[test]

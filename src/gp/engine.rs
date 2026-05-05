@@ -2118,7 +2118,7 @@ impl RealBacktestFitnessEvaluator {
                 }
 
                 // Pre-populate cache with column hashes
-                let mut cache: HashMap<u64, Array1<f64>> = HashMap::new();
+                let mut cache: ahash::AHashMap<u64, Array1<f64>> = ahash::AHashMap::new();
                 for (name, arr) in &columns {
                     let mut hasher = DefaultHasher::new();
                     0u8.hash(&mut hasher);
