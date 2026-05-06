@@ -346,7 +346,11 @@ impl FactorRegistry {
             indexed.sort_by_key(|(_, (d, s))| (*d, *s));
             let perm: Vec<usize> = indexed.iter().map(|(i, _)| *i).collect();
             let groups: Vec<(i64, i64)> = indexed.iter().map(|(_, g)| *g).collect();
-            (data, false, Some(Arc::new(groups)), Some(perm))
+            // Validate perm length matches data dimensions to guard against
+            // stale/partial cache results producing mismatched permutations.
+            let perm_valid = perm.len() == n;
+            let perm_opt = if perm_valid { Some(perm) } else { None };
+            (data, false, Some(Arc::new(groups)), perm_opt)
         };
         data_layer.clear_cache_keep_symbols();
 

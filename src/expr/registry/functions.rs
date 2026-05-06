@@ -267,9 +267,9 @@ pub fn eval_function_memoized(
             let mut r = Array1::zeros(n);
             for i in 0..n {
                 r[i] = if arg_values[0][i] > 0.0 {
-                    arg_values[1][i]
+                    indexed(&arg_values[1], i)
                 } else {
-                    arg_values[2][i]
+                    indexed(&arg_values[2], i)
                 };
             }
             Ok(r)
@@ -319,9 +319,9 @@ pub fn eval_function_memoized(
             let mut r = Array1::zeros(n);
             for i in 0..n {
                 r[i] = if arg_values[1][i] > threshold {
-                    arg_values[2][i]
+                    indexed(&arg_values[2], i)
                 } else {
-                    arg_values[3][i]
+                    indexed(&arg_values[3], i)
                 };
             }
             Ok(r)
@@ -333,10 +333,10 @@ pub fn eval_function_memoized(
             let n = arg_values[0].len();
             let mut r = Array1::zeros(n);
             for i in 0..n {
-                r[i] = if arg_values[0][i] > arg_values[1][i] {
-                    arg_values[2][i]
+                r[i] = if arg_values[0][i] > indexed(&arg_values[1], i) {
+                    indexed(&arg_values[2], i)
                 } else {
-                    arg_values[3][i]
+                    indexed(&arg_values[3], i)
                 };
             }
             Ok(r)
@@ -453,6 +453,13 @@ pub fn get_literal_float(expr: &Expr) -> Option<f64> {
 // ============================================================================
 // Vectorized Evaluation Functions (SIMD-optimized)
 // ============================================================================
+
+/// Index into an Array1 with scalar broadcasting: if arr has length 1, return
+/// arr[0] regardless of i; otherwise return arr[i].
+#[inline]
+fn indexed(arr: &Array1<f64>, i: usize) -> f64 {
+    if arr.len() == 1 { arr[0] } else { arr[i] }
+}
 
 /// Vectorized memoized expression evaluation using Array1<f64> for SIMD
 pub fn eval_expr_vectorized(
@@ -584,11 +591,19 @@ fn eval_expr_impl(
                     // 0/0 → NaN, matches Python/numpy IEEE 754 behavior.
                     // NaN values are filtered downstream by winsor()/zscore().
                     let mut result = left_vals.clone();
-                    for i in 0..result.len() {
-                        if right_vals[i].abs() < 1e-10 {
-                            result[i] = f64::NAN;
-                        } else {
-                            result[i] = left_vals[i] / right_vals[i];
+                    if right_vals.len() == 1 {
+                        let rv = right_vals[0];
+                        let eps = if rv.abs() < 1e-10 { f64::NAN } else { rv };
+                        for i in 0..result.len() {
+                            result[i] = left_vals[i] / eps;
+                        }
+                    } else {
+                        for i in 0..result.len() {
+                            if right_vals[i].abs() < 1e-10 {
+                                result[i] = f64::NAN;
+                            } else {
+                                result[i] = left_vals[i] / right_vals[i];
+                            }
                         }
                     }
                     result
@@ -665,7 +680,7 @@ pub fn eval_function_vectorized(
             if args.len() >= 2 {
                 let mut result = arg_values[0].clone();
                 for i in 0..result.len() {
-                    result[i] = result[i].min(arg_values[1][i]);
+                    result[i] = result[i].min(indexed(&arg_values[1], i));
                 }
                 Ok(result)
             } else {
@@ -677,7 +692,7 @@ pub fn eval_function_vectorized(
             if args.len() >= 2 {
                 let mut result = arg_values[0].clone();
                 for i in 0..result.len() {
-                    result[i] = result[i].max(arg_values[1][i]);
+                    result[i] = result[i].max(indexed(&arg_values[1], i));
                 }
                 Ok(result)
             } else {
@@ -708,9 +723,9 @@ pub fn eval_function_vectorized(
             let mut result = arg_values[0].clone();
             for i in 0..result.len() {
                 result[i] = if arg_values[0][i] > 0.0 {
-                    arg_values[1][i]
+                    indexed(&arg_values[1], i)
                 } else {
-                    arg_values[2][i]
+                    indexed(&arg_values[2], i)
                 };
             }
             Ok(result)
@@ -718,7 +733,7 @@ pub fn eval_function_vectorized(
         "gt" | "greater" => {
             let mut result = arg_values[0].clone();
             for i in 0..result.len() {
-                result[i] = if arg_values[0][i] > arg_values[1][i] {
+                result[i] = if arg_values[0][i] > indexed(&arg_values[1], i) {
                     1.0
                 } else {
                     0.0
@@ -729,7 +744,7 @@ pub fn eval_function_vectorized(
         "lt" | "less" => {
             let mut result = arg_values[0].clone();
             for i in 0..result.len() {
-                result[i] = if arg_values[0][i] < arg_values[1][i] {
+                result[i] = if arg_values[0][i] < indexed(&arg_values[1], i) {
                     1.0
                 } else {
                     0.0
@@ -740,7 +755,7 @@ pub fn eval_function_vectorized(
         "ge" | "greater_equal" | "gte" => {
             let mut result = arg_values[0].clone();
             for i in 0..result.len() {
-                result[i] = if arg_values[0][i] >= arg_values[1][i] {
+                result[i] = if arg_values[0][i] >= indexed(&arg_values[1], i) {
                     1.0
                 } else {
                     0.0
@@ -751,7 +766,7 @@ pub fn eval_function_vectorized(
         "le" | "less_equal" | "lte" => {
             let mut result = arg_values[0].clone();
             for i in 0..result.len() {
-                result[i] = if arg_values[0][i] <= arg_values[1][i] {
+                result[i] = if arg_values[0][i] <= indexed(&arg_values[1], i) {
                     1.0
                 } else {
                     0.0
@@ -762,7 +777,7 @@ pub fn eval_function_vectorized(
         "eq" | "equal" => {
             let mut result = arg_values[0].clone();
             for i in 0..result.len() {
-                result[i] = if (arg_values[0][i] - arg_values[1][i]).abs() < 1e-10 {
+                result[i] = if (arg_values[0][i] - indexed(&arg_values[1], i)).abs() < 1e-10 {
                     1.0
                 } else {
                     0.0
@@ -773,7 +788,7 @@ pub fn eval_function_vectorized(
         "ne" | "not_equal" => {
             let mut result = arg_values[0].clone();
             for i in 0..result.len() {
-                result[i] = if (arg_values[0][i] - arg_values[1][i]).abs() >= 1e-10 {
+                result[i] = if (arg_values[0][i] - indexed(&arg_values[1], i)).abs() >= 1e-10 {
                     1.0
                 } else {
                     0.0
@@ -811,9 +826,9 @@ pub fn eval_function_vectorized(
             let mut result = arg_values[1].clone();
             for i in 0..result.len() {
                 result[i] = if arg_values[1][i] > threshold {
-                    arg_values[2][i]
+                    indexed(&arg_values[2], i)
                 } else {
-                    arg_values[3][i]
+                    indexed(&arg_values[3], i)
                 };
             }
             Ok(result)
@@ -822,12 +837,15 @@ pub fn eval_function_vectorized(
             if args.len() != 4 {
                 return Err("quesval2 requires 4 arguments".to_string());
             }
+            let n = arg_values[0].len();
             let mut result = arg_values[0].clone();
-            for i in 0..result.len() {
-                result[i] = if arg_values[0][i] > arg_values[1][i] {
-                    arg_values[2][i]
+            for i in 0..n {
+                let a = indexed(&arg_values[0], i);
+                let b = indexed(&arg_values[1], i);
+                result[i] = if a > b {
+                    indexed(&arg_values[2], i)
                 } else {
-                    arg_values[3][i]
+                    indexed(&arg_values[3], i)
                 };
             }
             Ok(result)
