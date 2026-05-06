@@ -18,22 +18,30 @@ pub fn winsor(vals: &Array1<f64>, n_symbols: usize) -> Array1<f64> {
         let end = start + n_symbols;
         let slice = &vals.as_slice().unwrap()[start..end];
 
-        // Filter out NaN values for computing mean and std
-        let valid_vals: Array1<f64> = slice.iter().filter(|v| v.is_finite()).copied().collect();
-        let n_valid = valid_vals.len();
+        // Pass 1: count + sum + sum_sq (no allocation)
+        let mut sum = 0.0;
+        let mut sum_sq = 0.0;
+        let mut count = 0usize;
+        for &v in slice {
+            if v.is_finite() {
+                sum += v;
+                sum_sq += v * v;
+                count += 1;
+            }
+        }
 
-        if n_valid == 0 {
+        if count == 0 {
             for (j, &v) in slice.iter().enumerate() {
                 result[start + j] = v;
             }
             continue;
         }
 
-        // Compute mean and std on valid values (sample std, ddof=1, matches Polars default)
-        let sum: f64 = valid_vals.iter().sum();
-        let mean = sum / n_valid as f64;
-        let variance = if n_valid > 1 {
-            valid_vals.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (n_valid - 1) as f64
+        let mean = sum / count as f64;
+        let variance = if count > 1 {
+            // Var = (Σx² - (Σx)²/n) / (n-1) — single-pass using sum + sum_sq
+            let ss = sum_sq - sum * sum / count as f64;
+            if ss > 0.0 { ss / (count - 1) as f64 } else { 0.0 }
         } else {
             0.0
         };
@@ -69,20 +77,29 @@ pub fn zscore(vals: &Array1<f64>, n_symbols: usize) -> Array1<f64> {
         let end = start + n_symbols;
         let slice = &vals.as_slice().unwrap()[start..end];
 
-        let valid_vals: Array1<f64> = slice.iter().filter(|v| v.is_finite()).copied().collect();
-        let n_valid = valid_vals.len();
+        // Pass 1: count + sum + sum_sq
+        let mut sum = 0.0;
+        let mut sum_sq = 0.0;
+        let mut count = 0usize;
+        for &v in slice {
+            if v.is_finite() {
+                sum += v;
+                sum_sq += v * v;
+                count += 1;
+            }
+        }
 
-        if n_valid == 0 {
+        if count == 0 {
             for (j, &v) in slice.iter().enumerate() {
                 result[start + j] = v;
             }
             continue;
         }
 
-        let sum: f64 = valid_vals.iter().sum();
-        let mean = sum / n_valid as f64;
-        let variance = if n_valid > 1 {
-            valid_vals.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (n_valid - 1) as f64
+        let mean = sum / count as f64;
+        let variance = if count > 1 {
+            let ss = sum_sq - sum * sum / count as f64;
+            if ss > 0.0 { ss / (count - 1) as f64 } else { 0.0 }
         } else {
             0.0
         };
