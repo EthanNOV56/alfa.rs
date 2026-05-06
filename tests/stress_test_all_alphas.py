@@ -15,11 +15,9 @@ import sys
 
 # ── Config ──────────────────────────────────────────────────────────────
 START_YEAR = 2010
-END_YEAR = 2025
-BACKTEST_BATCH_SIZE = 15  # factors per batch (tune for memory)
+END_YEAR = 2010
+BACKTEST_BATCH_SIZE = 1  # factors per batch — debug single factor at a time
 CACHE_POLICY = "drop_all"  # drop_all | keep_most_recent | keep_all
-# Memory estimate (DropAll + batch=15):
-#   PriceMatrix ~300MB + 1 DataLayer ~2GB + 15 factor mats ~150MB = ~2.5GB peak
 
 # ── Load alphas ─────────────────────────────────────────────────────────
 print("Loading alphas...")
@@ -78,18 +76,49 @@ for pf, err in register_fail[:5]:
 if len(register_fail) > 5:
     print(f"  ... and {len(register_fail) - 5} more")
 
-# ── Streaming backtest ──────────────────────────────────────────────────
-print(f"\nStreaming backtest ({len(all_alphas)} factors)...")
+# ── Per-factor backtest (one at a time to isolate panics) ──────────────
+print(f"\nPer-factor backtest ({len(all_alphas)} factors, 1 year)...")
 t1 = time.perf_counter()
 
-results = lab.backtest_each()  # uses evaluate_and_backtest_each internally
+results = []
+panics = []
+for idx, (prefix, name, expr) in enumerate(all_alphas):
+    fname = f"{prefix}_{name}"
+    try:
+        # Fresh lab per factor to avoid any cross-contamination
+        flab = al.AlfarsLab.from_env_with_config(config)
+        flab.with_filter("symbols not like '%BJ'")
+        flab.with_years(START_YEAR, END_YEAR)
+        flab.with_backtest_config(10, "equal", 1, 1, 0.0003)
+        flab.register(fname, expr)
+        r = flab.backtest_each()
+        if r:
+            results.extend(r)
+    except Exception as e:
+        panics.append((fname, str(e)[:120]))
+        print(f"  [{idx+1}/{len(all_alphas)}] PANIC {fname}: {str(e)[:80]}")
+
+    if (idx + 1) % 50 == 0:
+        dt = time.perf_counter() - t1
+        print(f"  [{idx+1}/{len(all_alphas)}] {len(results)} ok, {len(panics)} panics, {dt:.0f}s elapsed")
 
 dt = time.perf_counter() - t1
 total = time.perf_counter() - t0
 
 # ── Report ──────────────────────────────────────────────────────────────
 print(f"\n{'='*60}")
-print(f"Completed {len(results)} factors in {dt:.1f}s (total {total:.1f}s)")
+print(f"Completed: {len(results)} ok, {len(panics)} panics in {dt:.1f}s (total {total:.1f}s)")
+if len(panics) > 0:
+    print(f"\nPanics ({len(panics)}):")
+    for fname, err in panics[:20]:
+        print(f"  {fname}: {err}")
+    if len(panics) > 20:
+        print(f"  ... and {len(panics) - 20} more")
+
+if len(results) == 0:
+    print("No results to report.")
+    sys.exit(1)
+
 if len(results) > 0:
     print(f"Avg per factor: {dt/len(results):.1f}s")
 

@@ -297,36 +297,37 @@ impl FactorRegistry {
         }
 
         let has_5m = !cols_5m.is_empty();
+        let has_1d = !cols_1d.is_empty();
 
-        let (data, compact, shared_groups, perm) = if has_5m {
+        // Query data for each frequency independently. When a batch mixes
+        // 5m and 1d factors, we query both datasets and evaluate each group
+        // with the appropriate mode (compact for 5m, flat for 1d).
+        let mut data_5m: HashMap<String, Array1<f64>> = HashMap::new();
+        let mut data_1d: HashMap<String, Array1<f64>> = HashMap::new();
+
+        if has_5m {
             let mut query_fields = vec!["5m:trading_date".to_string(), "5m:symbol".to_string()];
             for c in &cols_5m {
                 query_fields.push(format!("5m:{}", c));
             }
-            let data = data_layer
+            data_5m = data_layer
                 .query(query_fields)
                 .map_err(|e| format!("DataLayer query error: {:?}", e))?;
-            (data, true, None, None)
-        } else {
+        }
+        if has_1d {
             let mut query_fields = vec!["1d:trading_date".to_string(), "1d:symbol".to_string()];
             for c in &cols_1d {
                 query_fields.push(format!("1d:{}", c));
             }
-            let mut data = data_layer
+            data_1d = data_layer
                 .query(query_fields)
                 .map_err(|e| format!("DataLayer query error: {:?}", e))?;
-            // Build shared sort order, groups, and perm once (all factors share these)
-            let n = {
-                let dates = data
-                    .get("1d:trading_date")
-                    .ok_or("1d:trading_date missing")?;
-                dates.len()
-            };
-            // Count unique dates for per-symbol stride in ts_ window functions.
-            // Data is ORDER BY symbol, trading_date → each symbol has n_dates
-            // contiguous positions. Without this, window functions cross symbols.
+        }
+
+        // Pre-compute 1d sort order and perm for the flat evaluation path.
+        let (shared_groups, perm) = if has_1d {
             let n_dates = {
-                let dates = data
+                let dates = data_1d
                     .get("1d:trading_date")
                     .ok_or("1d:trading_date missing")?;
                 let mut seen = std::collections::HashSet::new();
@@ -335,22 +336,23 @@ impl FactorRegistry {
                 });
                 seen.len()
             };
-            data.insert("_n_dates".to_string(), Array1::from_elem(1, n_dates as f64));
-            let dates = data
+            data_1d.insert("_n_dates".to_string(), Array1::from_elem(1, n_dates as f64));
+            let dates = data_1d
                 .get("1d:trading_date")
                 .ok_or("1d:trading_date missing")?;
-            let syms = data.get("1d:symbol").ok_or("1d:symbol missing")?;
+            let syms = data_1d.get("1d:symbol").ok_or("1d:symbol missing")?;
+            let n = dates.len();
             let mut indexed: Vec<(usize, (i64, i64))> = (0..n)
                 .map(|i| (i, (dates[i] as i64, syms[i] as i64)))
                 .collect();
             indexed.sort_by_key(|(_, (d, s))| (*d, *s));
-            let perm: Vec<usize> = indexed.iter().map(|(i, _)| *i).collect();
+            let perm_vec: Vec<usize> = indexed.iter().map(|(i, _)| *i).collect();
             let groups: Vec<(i64, i64)> = indexed.iter().map(|(_, g)| *g).collect();
-            // Validate perm length matches data dimensions to guard against
-            // stale/partial cache results producing mismatched permutations.
-            let perm_valid = perm.len() == n;
-            let perm_opt = if perm_valid { Some(perm) } else { None };
-            (data, false, Some(Arc::new(groups)), perm_opt)
+            let perm_valid = perm_vec.len() == n;
+            let perm_opt = if perm_valid { Some(perm_vec) } else { None };
+            (Some(Arc::new(groups)), perm_opt)
+        } else {
+            (None, None)
         };
         data_layer.clear_cache_keep_symbols();
 
@@ -376,17 +378,53 @@ impl FactorRegistry {
                 n_batches,
                 batch.len()
             );
-            let results = self.compute(batch, &data, parallel, compact)?;
-            let names: Vec<&str> = results.keys().map(|s| s.as_str()).collect();
-            let batch_slices = self.build_slices(
-                &results,
-                &names,
-                &symbols_arc,
-                &mktcap_map,
-                shared_groups.as_ref(),
-                perm.as_deref(),
-            )?;
-            all_slices.extend(batch_slices);
+
+            // Split batch by frequency: 5m factors use compact mode (5m data),
+            // 1d/bare factors use flat mode (1d data). Mixed-frequency batches
+            // previously dropped non-dominant columns silently.
+            let mut batch_5m: Vec<&str> = Vec::new();
+            let mut batch_1d: Vec<&str> = Vec::new();
+            for &name in batch {
+                let info = match self.factors.get(name) {
+                    Some(i) => i,
+                    None => continue,
+                };
+                let has_5m_col = extract_columns(&info.parsed_expr)
+                    .iter()
+                    .any(|c| c.starts_with("5m:"));
+                if has_5m_col {
+                    batch_5m.push(name);
+                } else {
+                    batch_1d.push(name);
+                }
+            }
+
+            if !batch_5m.is_empty() {
+                let results = self.compute(&batch_5m, &data_5m, parallel, true)?;
+                let names: Vec<&str> = results.keys().map(|s| s.as_str()).collect();
+                let batch_slices = self.build_slices(
+                    &results,
+                    &names,
+                    &symbols_arc,
+                    &mktcap_map,
+                    None,
+                    None, // 5m path: no shared_groups, no perm
+                )?;
+                all_slices.extend(batch_slices);
+            }
+            if !batch_1d.is_empty() {
+                let results = self.compute(&batch_1d, &data_1d, parallel, false)?;
+                let names: Vec<&str> = results.keys().map(|s| s.as_str()).collect();
+                let batch_slices = self.build_slices(
+                    &results,
+                    &names,
+                    &symbols_arc,
+                    &mktcap_map,
+                    shared_groups.as_ref(),
+                    perm.as_deref(),
+                )?;
+                all_slices.extend(batch_slices);
+            }
         }
         Ok(all_slices)
     }
