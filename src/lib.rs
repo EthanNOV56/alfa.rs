@@ -3178,6 +3178,21 @@ impl PyAlfarsLab {
         Ok((dict.into(), py_prices.into()))
     }
 
+    /// Streaming per-factor evaluate + backtest. For large factor counts
+    /// (e.g., alpha191), processes in small batches to avoid OOM.
+    fn backtest_each(&self) -> PyResult<Vec<(String, PyBacktestResult)>> {
+        let results = self
+            .inner
+            .lock()
+            .unwrap()
+            .evaluate_and_backtest_each()
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+        Ok(results
+            .into_iter()
+            .map(|(name, r)| (name, PyBacktestResult::from(r)))
+            .collect())
+    }
+
     fn run_multi(
         &self,
         factor_mats: Vec<Bound<'_, PyArray2<f64>>>,

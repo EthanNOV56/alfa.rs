@@ -121,6 +121,100 @@ impl AlfarsLab {
         Ok((matrices, prices))
     }
 
+    /// Streaming per-factor evaluate + backtest — avoids OOM with many factors.
+    ///
+    /// Processes factors in small batches (5 per batch). For each batch:
+    /// accumulates FactorSlices across all years, then backtests each factor
+    /// independently. Matrices and slices are released per-factor, bounding
+    /// peak memory to ~6GB regardless of total factor count.
+    ///
+    /// Returns per-factor results ordered by factor name.
+    pub fn evaluate_and_backtest_each(
+        &self,
+    ) -> Result<Vec<(String, BacktestResult)>, String> {
+        let (start_year, end_year) = self.years()?;
+        let base_filter = self.dl.pre_filter().to_string();
+
+        // Query full PriceMatrix once — shared by all factors
+        let start_full = format!("{}-01-01", start_year);
+        let end_full = format!("{}-01-01", end_year + 1);
+        let mut dl = DataLayer::new(self.source.clone());
+        dl.set_pre_filter(&format!("{}:{} {}", start_full, end_full, base_filter));
+        let prices = dl
+            .query_price_matrix()
+            .map_err(|e| format!("Price query: {:?}", e))?;
+
+        let factor_names = self.registry.list();
+        if factor_names.is_empty() {
+            return Err("No factors registered".to_string());
+        }
+
+        // Collect expressions from the main registry
+        let expr_map: HashMap<String, String> = factor_names
+            .iter()
+            .filter_map(|name| {
+                self.registry
+                    .get(name)
+                    .map(|info| (name.clone(), info.expression.clone()))
+            })
+            .collect();
+
+        const BATCH_SIZE: usize = 5;
+        let mut results: Vec<(String, BacktestResult)> = Vec::with_capacity(factor_names.len());
+
+        for batch in factor_names.chunks(BATCH_SIZE) {
+            // Accumulate per-factor slices across years
+            let mut batch_slices: HashMap<String, Vec<FactorSlice>> = batch
+                .iter()
+                .map(|n| (n.clone(), Vec::with_capacity((end_year - start_year + 1) as usize)))
+                .collect();
+
+            for year in start_year..=end_year {
+                let start = format!("{}-01-01", year);
+                let end = format!("{}-01-01", year + 1);
+
+                // Temp registry with just this batch's factors
+                let mut batch_reg = FactorRegistry::new();
+                for name in batch {
+                    if let Some(expr) = expr_map.get(name) {
+                        batch_reg
+                            .register(name, expr)
+                            .map_err(|e| format!("Year {}: {}", year, e))?;
+                    }
+                }
+
+                let mut year_dl = DataLayer::new(self.source.clone());
+                year_dl.set_pre_filter(&format!("{}:{} {}", start, end, base_filter));
+                let year_results = batch_reg
+                    .compute_cs_pipeline(&mut year_dl)
+                    .map_err(|e| format!("Year {}: {}", year, e))?;
+
+                for (name, slice) in year_results {
+                    if let Some(vec) = batch_slices.get_mut(&name) {
+                        vec.push(slice);
+                    }
+                }
+                // year_dl and batch_reg dropped here
+            }
+
+            // All years collected for this batch — backtest each factor
+            let engine = BacktestEngine::with_config(self.backtest_config.clone());
+            for name in batch {
+                if let Some(slices) = batch_slices.remove(name) {
+                    let mat = prices.build_factor_matrix(&slices);
+                    match engine.run_with_prices(mat, &prices) {
+                        Ok(result) => results.push((name.clone(), result)),
+                        Err(e) => eprintln!("  [warn] backtest {}: {}", name, e),
+                    }
+                    // mat and slices dropped here
+                }
+            }
+        }
+
+        results.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(results)
+    }
+
     /// Multi-factor equal-weight combination backtest.
     pub fn run_multi(
         &self,

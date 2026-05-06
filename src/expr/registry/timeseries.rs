@@ -212,7 +212,10 @@ pub fn ts_sum(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     if window == 0 {
         let mut cumsum = 0.0;
         for i in 0..n {
-            cumsum += vals[i];
+            // Skip NaN — otherwise NaN propagates to all subsequent cumsum.
+            if vals[i].is_finite() {
+                cumsum += vals[i];
+            }
             result[i] = cumsum;
         }
         return result;
@@ -369,7 +372,7 @@ pub fn ts_correlation(vals1: &Array1<f64>, vals2: &Array1<f64>, window: usize) -
         }
 
         let denom = (var1 * var2).sqrt();
-        result[i] = if denom > 1e-10 { cov / denom } else { 0.0 };
+        result[i] = if denom.is_finite() && denom > 1e-10 { cov / denom } else { f64::NAN };
     }
     result
 }
@@ -413,10 +416,24 @@ pub fn sma(vals: &Array1<f64>, alpha: f64) -> Array1<f64> {
         return result;
     }
 
-    result[0] = vals[0];
+    // Skip leading NaN — otherwise EMA recurrence propagates NaN forever.
+    let mut start = 0;
+    while start < n && vals[start].is_nan() {
+        result[start] = f64::NAN;
+        start += 1;
+    }
+    if start >= n {
+        return result;
+    }
 
-    for i in 1..n {
-        result[i] = alpha * vals[i] + (1.0 - alpha) * result[i - 1];
+    result[start] = vals[start];
+
+    for i in (start + 1)..n {
+        if vals[i].is_nan() {
+            result[i] = result[i - 1];
+        } else {
+            result[i] = alpha * vals[i] + (1.0 - alpha) * result[i - 1];
+        }
     }
     result
 }
@@ -625,19 +642,27 @@ pub fn delay(vals: &Array1<f64>, periods: usize) -> Array1<f64> {
     result
 }
 
-/// Scale values to have mean 0 and std 1
+/// Scale values to have mean 0 and std 1. NaN values are left as NaN.
 pub fn scale(vals: &Array1<f64>) -> Array1<f64> {
     let n = vals.len();
     if n == 0 {
         return Array1::zeros(0);
     }
-    let sum: f64 = vals.iter().sum();
-    let mean = sum / n as f64;
-    let std = (vals.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n as f64).sqrt();
-    if std < 1e-10 {
-        return Array1::zeros(n);
+    // Compute mean/std on finite values only — a single NaN would otherwise
+    // make mean=NaN, std=NaN, and mapv would turn ALL output to NaN.
+    let valid: Vec<f64> = vals.iter().filter(|v| v.is_finite()).copied().collect();
+    let n_valid = valid.len();
+    if n_valid < 2 {
+        return Array1::from_elem(n, f64::NAN);
     }
-    vals.mapv(|v| (v - mean) / std)
+    let sum: f64 = valid.iter().sum();
+    let mean = sum / n_valid as f64;
+    let variance = valid.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n_valid as f64;
+    let std = variance.sqrt();
+    if std < 1e-10 {
+        return Array1::from_elem(n, f64::NAN);
+    }
+    vals.mapv(|v| if v.is_finite() { (v - mean) / std } else { v })
 }
 
 /// Sign of values
@@ -779,10 +804,10 @@ pub fn ts_rsquare(vals: &Array1<f64>, window: usize) -> Array1<f64> {
             ss_tot += (y - y_mean).powi(2);
         }
 
-        result[i] = if ss_tot > 1e-12 {
+        result[i] = if ss_tot.is_finite() && ss_tot > 1e-12 {
             1.0 - ss_res / ss_tot
         } else {
-            0.0
+            f64::NAN
         };
     }
     result
