@@ -9,10 +9,10 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
 pub use crate::expr::registry::timeseries::{
-    cap_neu, decay_linear, delay, highday, lowday, quesval, quesval2, rank, scale, sign, sma,
-    ts_argmax, ts_argmin, ts_correlation, ts_count, ts_cov, ts_delta, ts_max, ts_mean, ts_min,
-    ts_product, ts_quantile, ts_rank, ts_resi, ts_rsquare, ts_slope, ts_std, ts_sum, winsor, wma,
-    zscore,
+    cap_neu, decay_linear, delay, highday, lowday, per_symbol_ts, quesval, quesval2, rank, scale,
+    sign, sma, ts_argmax, ts_argmin, ts_correlation, ts_count, ts_cov, ts_delta, ts_max, ts_mean,
+    ts_min, ts_product, ts_quantile, ts_rank, ts_resi, ts_rsquare, ts_slope, ts_std, ts_sum,
+    winsor, wma, zscore,
 };
 
 /// Extract column names from an expression
@@ -1733,29 +1733,82 @@ pub fn eval_ts_function_vectorized(
     let vals = eval_expr_vectorized(&args[0], data, cache)?;
     let window = args.get(1).and_then(|a| get_literal_int(a)).unwrap_or(20);
 
+    // Per-symbol stride: when data is ordered as (symbol, date), n_dates tells
+    // ts_ window functions where each symbol's time series begins and ends.
+    let n_dates = data
+        .get("_n_dates")
+        .map(|a| a[0] as usize)
+        .filter(|&n| n > 1);
+
+    // Wrap single-series ts_ functions for per-symbol processing
+    let ts1 = |f: fn(&Array1<f64>, usize) -> Array1<f64>| match n_dates {
+        Some(n) => Ok(per_symbol_ts(&vals, n, |v| f(v, window))),
+        None => Ok(f(&vals, window)),
+    };
+
     match name {
-        "ts_mean" => Ok(ts_mean(&vals, window)),
-        "ts_sum" => Ok(ts_sum(&vals, window)),
-        "ts_count" => Ok(ts_count(&vals, window)),
-        "ts_std" => Ok(ts_std(&vals, window)),
-        "ts_max" => Ok(ts_max(&vals, window)),
-        "ts_min" => Ok(ts_min(&vals, window)),
-        "ts_rank" => Ok(ts_rank(&vals, window)),
-        "ts_argmax" => Ok(ts_argmax(&vals, window)),
-        "ts_argmin" => Ok(ts_argmin(&vals, window)),
-        "ts_delta" => Ok(ts_delta(&vals, window)),
-        "ts_product" => Ok(ts_product(&vals, window)),
+        "ts_mean" => ts1(ts_mean),
+        "ts_sum" => ts1(ts_sum),
+        "ts_count" => ts1(ts_count),
+        "ts_std" => ts1(ts_std),
+        "ts_max" => ts1(ts_max),
+        "ts_min" => ts1(ts_min),
+        "ts_rank" => ts1(ts_rank),
+        "ts_argmax" => ts1(ts_argmax),
+        "ts_argmin" => ts1(ts_argmin),
+        "ts_delta" => ts1(ts_delta),
+        "ts_product" => ts1(ts_product),
+        "ts_delay" => ts1(delay),
+        "ts_decay_linear" => ts1(decay_linear),
+        "ts_slope" => ts1(ts_slope),
+        "ts_rsquare" => ts1(ts_rsquare),
+        "ts_resi" => ts1(ts_resi),
+        "ts_lowday" => ts1(lowday),
+        "ts_highday" => ts1(highday),
+        "ts_wma" => ts1(wma),
+        // Two-series functions: eval second arg first
         "ts_correlation" => {
             let vals2 = eval_expr_vectorized(&args[1], data, cache)?;
-            Ok(ts_correlation(&vals, &vals2, window))
+            match n_dates {
+                Some(n) => {
+                    let n_syms = vals.len() / n;
+                    let mut result = Array1::zeros(vals.len());
+                    for s in 0..n_syms {
+                        let start = s * n;
+                        let end = start + n;
+                        let chunk1 = Array1::from_vec(vals.as_slice().unwrap()[start..end].to_vec());
+                        let chunk2 = Array1::from_vec(vals2.as_slice().unwrap()[start..end].to_vec());
+                        let r = ts_correlation(&chunk1, &chunk2, window);
+                        result.as_slice_mut().unwrap()[start..end]
+                            .copy_from_slice(r.as_slice().unwrap());
+                    }
+                    Ok(result)
+                }
+                None => Ok(ts_correlation(&vals, &vals2, window)),
+            }
         }
         "ts_covariance" | "ts_cov" => {
             let vals2 = eval_expr_vectorized(&args[1], data, cache)?;
-            Ok(ts_cov(&vals, &vals2, window))
+            match n_dates {
+                Some(n) => {
+                    let n_syms = vals.len() / n;
+                    let mut result = Array1::zeros(vals.len());
+                    for s in 0..n_syms {
+                        let start = s * n;
+                        let end = start + n;
+                        let chunk1 = Array1::from_vec(vals.as_slice().unwrap()[start..end].to_vec());
+                        let chunk2 = Array1::from_vec(vals2.as_slice().unwrap()[start..end].to_vec());
+                        let r = ts_cov(&chunk1, &chunk2, window);
+                        result.as_slice_mut().unwrap()[start..end]
+                            .copy_from_slice(r.as_slice().unwrap());
+                    }
+                    Ok(result)
+                }
+                None => Ok(ts_cov(&vals, &vals2, window)),
+            }
         }
-        "ts_delay" => Ok(delay(&vals, window)),
-        "ts_decay_linear" => Ok(decay_linear(&vals, window)),
-        "ts_sma" => {
+        // sma uses alpha, not window: handle separately
+        "ts_sma" | "sma" => {
             let m = args.get(2).and_then(|a| get_literal_int(a)).unwrap_or(2);
             let alpha = m as f64 / window as f64;
             let alpha = if alpha > 0.0 && alpha <= 1.0 {
@@ -1763,38 +1816,41 @@ pub fn eval_ts_function_vectorized(
             } else {
                 0.5
             };
-            Ok(sma(&vals, alpha))
+            match n_dates {
+                Some(n) => Ok(per_symbol_ts(&vals, n, |v| sma(v, alpha))),
+                None => Ok(sma(&vals, alpha)),
+            }
         }
         "ts_quantile" => {
             let q = args
                 .get(2)
                 .and_then(|a| get_literal_float(a))
                 .unwrap_or(0.5);
-            Ok(ts_quantile(&vals, window, q))
+            match n_dates {
+                Some(n) => {
+                    let n_syms = vals.len() / n;
+                    let mut result = Array1::zeros(vals.len());
+                    for s in 0..n_syms {
+                        let start = s * n;
+                        let end = start + n;
+                        let chunk =
+                            Array1::from_vec(vals.as_slice().unwrap()[start..end].to_vec());
+                        let r = ts_quantile(&chunk, window, q);
+                        result.as_slice_mut().unwrap()[start..end]
+                            .copy_from_slice(r.as_slice().unwrap());
+                    }
+                    Ok(result)
+                }
+                None => Ok(ts_quantile(&vals, window, q)),
+            }
         }
-        "ts_slope" => Ok(ts_slope(&vals, window)),
-        "ts_rsquare" => Ok(ts_rsquare(&vals, window)),
-        "ts_resi" => Ok(ts_resi(&vals, window)),
-        "ts_lowday" => Ok(lowday(&vals, window)),
-        "ts_highday" => Ok(highday(&vals, window)),
-        "ts_wma" => Ok(wma(&vals, window)),
-        // Backward-compat bare names
-        "sma" => {
-            let m = args.get(2).and_then(|a| get_literal_int(a)).unwrap_or(2);
-            let alpha = m as f64 / window as f64;
-            let alpha = if alpha > 0.0 && alpha <= 1.0 {
-                alpha
-            } else {
-                0.5
-            };
-            Ok(sma(&vals, alpha))
-        }
-        "lowday" => Ok(lowday(&vals, window)),
-        "highday" => Ok(highday(&vals, window)),
-        "wma" => Ok(wma(&vals, window)),
-        "min" => Ok(ts_min(&vals, window)),
-        "max" => Ok(ts_max(&vals, window)),
-        "sum" => Ok(ts_sum(&vals, window)),
+        // Backward-compat bare names (single-series)
+        "lowday" => ts1(lowday),
+        "highday" => ts1(highday),
+        "wma" => ts1(wma),
+        "min" => ts1(ts_min),
+        "max" => ts1(ts_max),
+        "sum" => ts1(ts_sum),
         _ => Err(format!("Unknown ts function: {}", name)),
     }
 }

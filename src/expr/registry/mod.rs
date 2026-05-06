@@ -315,15 +315,37 @@ impl FactorRegistry {
             for c in &cols_1d {
                 query_fields.push(format!("1d:{}", c));
             }
-            let data = data_layer
+            let mut data = data_layer
                 .query(query_fields)
                 .map_err(|e| format!("DataLayer query error: {:?}", e))?;
             // Build shared sort order, groups, and perm once (all factors share these)
+            let n = {
+                let dates = data
+                    .get("1d:trading_date")
+                    .ok_or("1d:trading_date missing")?;
+                dates.len()
+            };
+            // Count unique dates for per-symbol stride in ts_ window functions.
+            // Data is ORDER BY symbol, trading_date → each symbol has n_dates
+            // contiguous positions. Without this, window functions cross symbols.
+            let n_dates = {
+                let dates = data
+                    .get("1d:trading_date")
+                    .ok_or("1d:trading_date missing")?;
+                let mut seen = std::collections::HashSet::new();
+                dates.iter().filter(|d| d.is_finite()).for_each(|&d| {
+                    seen.insert(d.to_bits());
+                });
+                seen.len()
+            };
+            data.insert(
+                "_n_dates".to_string(),
+                Array1::from_elem(1, n_dates as f64),
+            );
             let dates = data
                 .get("1d:trading_date")
                 .ok_or("1d:trading_date missing")?;
             let syms = data.get("1d:symbol").ok_or("1d:symbol missing")?;
-            let n = dates.len();
             let mut indexed: Vec<(usize, (i64, i64))> = (0..n)
                 .map(|i| (i, (dates[i] as i64, syms[i] as i64)))
                 .collect();
