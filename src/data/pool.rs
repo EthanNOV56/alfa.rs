@@ -141,7 +141,8 @@ pub struct DataPool {
     pre_filter: String,
 
     /// Shared price matrix — lazy-init via get_prices(), never evicted.
-    prices: Mutex<Option<Arc<PriceMatrix>>>,
+    /// Stored as (date_range_key, Arc<PriceMatrix>).
+    prices: Mutex<Option<(String, Arc<PriceMatrix>)>>,
 
     /// Cached DataLayers keyed by year.
     year_caches: Mutex<HashMap<i32, DataLayer>>,
@@ -173,22 +174,38 @@ impl DataPool {
         }
     }
 
-    /// Get or initialise the shared PriceMatrix.
+    /// Get or initialise the shared PriceMatrix for the given date range.
     ///
-    /// Queries ClickHouse once; subsequent calls return `Arc::clone` of the
-    /// cached result (no additional I/O).
-    pub fn get_prices(&self) -> Result<Arc<PriceMatrix>, crate::data::source::DataError> {
-        let mut guard = self.prices.lock().unwrap();
-        if let Some(ref prices) = *guard {
-            return Ok(Arc::clone(prices));
+    /// Queries ClickHouse once per date range; subsequent calls with the same
+    /// range return `Arc::clone` of the cached result (no additional I/O).
+    pub fn get_prices(
+        &self,
+        start_date: &str,
+        end_date: &str,
+    ) -> Result<Arc<PriceMatrix>, crate::data::source::DataError> {
+        // Cache key: date range string. If range changes, re-query.
+        let cache_key = format!("{}:{}", start_date, end_date);
+        {
+            let guard = self.prices.lock().unwrap();
+            if let Some(ref cached) = *guard {
+                if cached.0 == cache_key {
+                    return Ok(Arc::clone(&cached.1));
+                }
+            }
         }
 
+        let filter = if self.pre_filter.is_empty() {
+            format!("{}:{}", start_date, end_date)
+        } else {
+            format!("{}:{} {}", start_date, end_date, self.pre_filter)
+        };
         let mut dl = DataLayer::new(self.source.clone());
-        dl.set_pre_filter(&self.pre_filter);
+        dl.set_pre_filter(&filter);
         let prices = dl.query_price_matrix()?;
 
         let arc = Arc::new(prices);
-        *guard = Some(Arc::clone(&arc));
+        let mut guard = self.prices.lock().unwrap();
+        *guard = Some((cache_key, Arc::clone(&arc)));
         Ok(arc)
     }
 
@@ -321,10 +338,9 @@ impl DataPool {
         &self.pre_filter
     }
 
-    /// Set the base pre_filter (clears cached prices since they may be stale).
+    /// Set the base pre_filter (invalidates cached prices since they may be stale).
     pub fn set_pre_filter(&mut self, filter: &str) {
         self.pre_filter = filter.to_string();
-        // Invalidate cached prices
         *self.prices.lock().unwrap() = None;
     }
 

@@ -112,9 +112,11 @@ impl AlfarsLab {
             self.pool.return_year(year, year_dl);
         }
 
+        let start_full = format!("{}-01-01", start_year);
+        let end_full = format!("{}-01-01", end_year + 1);
         let prices = self
             .pool
-            .get_prices()
+            .get_prices(&start_full, &end_full)
             .map_err(|e| format!("Price query: {:?}", e))?;
 
         let mut matrices = HashMap::new();
@@ -147,9 +149,11 @@ impl AlfarsLab {
         let batch_size = pool_config.backtest_batch_size;
 
         // Query full PriceMatrix once — shared Arc across all factors
+        let start_full = format!("{}-01-01", start_year);
+        let end_full = format!("{}-01-01", end_year + 1);
         let prices = self
             .pool
-            .get_prices()
+            .get_prices(&start_full, &end_full)
             .map_err(|e| format!("Price query: {:?}", e))?;
 
         let factor_names = self.registry.list();
@@ -336,9 +340,11 @@ impl AlfarsLab {
         let base_filter = self.pool.pre_filter().to_string();
 
         // Use pool's shared PriceMatrix
+        let start_full = format!("{}-01-01", start_year);
+        let end_full = format!("{}-01-01", end_year + 1);
         let prices_arc = self
             .pool
-            .get_prices()
+            .get_prices(&start_full, &end_full)
             .map_err(|e| format!("Price query: {:?}", e))?;
 
         // Slice to top N symbols if needed
@@ -453,9 +459,12 @@ impl AlfarsLab {
     /// Queries price data for the configured year range, builds aligned
     /// factor/qcut matrices, and runs the backtest engine.
     pub fn run(&self, panel: &FactorPanel) -> Result<BacktestResult, String> {
+        let (start_year, end_year) = self.years()?;
+        let start_full = format!("{}-01-01", start_year);
+        let end_full = format!("{}-01-01", end_year + 1);
         let prices = self
             .pool
-            .get_prices()
+            .get_prices(&start_full, &end_full)
             .map_err(|e| format!("Price query: {:?}", e))?;
 
         let factor_mat = panel.build_factor_matrix(&prices);
