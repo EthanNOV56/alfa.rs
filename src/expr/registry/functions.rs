@@ -1833,8 +1833,7 @@ pub fn eval_ts_function_vectorized(
                     for s in 0..n_syms {
                         let start = s * n;
                         let end = start + n;
-                        let chunk =
-                            vals.slice(ndarray::s![start..end]).to_owned();
+                        let chunk = vals.slice(ndarray::s![start..end]).to_owned();
                         let r = ts_quantile(&chunk, window, q);
                         result.as_slice_mut().unwrap()[start..end]
                             .copy_from_slice(r.as_slice().unwrap());

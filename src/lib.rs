@@ -748,6 +748,10 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyAlfarsLab>()?;
     m.add_class::<PyFactorPanel>()?;
 
+    // Data pipeline configuration
+    m.add_class::<PyCachePolicy>()?;
+    m.add_class::<PyDataPoolConfig>()?;
+
     // Threading control
     m.add_function(wrap_pyfunction!(set_num_threads, m)?)?;
 
@@ -1462,7 +1466,7 @@ impl PyGpEngine {
         };
 
         let mut evaluator =
-            RealBacktestFitnessEvaluator::with_split(data_arrays, prices, split_config);
+            RealBacktestFitnessEvaluator::with_split(data_arrays, Arc::new(prices), split_config);
 
         let weights = HashMap::from([
             ("ic".to_string(), weight_ic),
@@ -3043,8 +3047,103 @@ impl PyFactorCombiner {
 
 // ── AlfarsLab ──────────────────────────────────────────────────────────
 
+use crate::data::pool::{CachePolicy, DataPoolConfig};
 use crate::expr::registry::config::FactorPanel;
 use crate::lab::AlfarsLab;
+
+// ── DataPoolConfig (Python-exposed config) ────────────────────────────
+
+/// Cache policy for year-level DataLayers (5m data).
+///
+/// Controls memory/time tradeoff:
+/// - DropAll: lowest memory, highest ClickHouse load
+/// - KeepMostRecent: ~2 GB overhead, good for sequential years
+/// - KeepAll: ~2 GB/year, zero re-queries
+/// - KeepN(n): ~2 GB × n, precise tuning
+#[pyclass(name = "CachePolicy")]
+#[derive(Clone)]
+struct PyCachePolicy {
+    inner: CachePolicy,
+}
+
+#[pymethods]
+impl PyCachePolicy {
+    #[staticmethod]
+    fn drop_all() -> Self {
+        Self {
+            inner: CachePolicy::DropAll,
+        }
+    }
+
+    #[staticmethod]
+    fn keep_most_recent() -> Self {
+        Self {
+            inner: CachePolicy::KeepMostRecent,
+        }
+    }
+
+    #[staticmethod]
+    fn keep_all() -> Self {
+        Self {
+            inner: CachePolicy::KeepAll,
+        }
+    }
+
+    #[staticmethod]
+    fn keep_n(n: usize) -> Self {
+        Self {
+            inner: CachePolicy::KeepN(n),
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!("{:?}", self.inner)
+    }
+}
+
+/// Configuration for the data pipeline.
+///
+/// All hyper-parameters are documented with their memory implications.
+///
+/// ```python
+/// config = DataPoolConfig(
+///     cache_policy=CachePolicy.keep_all(),
+///     calc_parallel_years=5,
+///     memory_budget_bytes=24_000_000_000,
+///     backtest_batch_size=20,
+/// )
+/// lab = AlfarsLab.from_env_with_config(config)
+/// ```
+#[pyclass(name = "DataPoolConfig")]
+#[derive(Clone)]
+struct PyDataPoolConfig {
+    inner: DataPoolConfig,
+}
+
+#[pymethods]
+impl PyDataPoolConfig {
+    #[new]
+    #[pyo3(signature = (cache_policy=None, calc_parallel_years=5, memory_budget_bytes=0, backtest_batch_size=5))]
+    fn new(
+        cache_policy: Option<PyCachePolicy>,
+        calc_parallel_years: usize,
+        memory_budget_bytes: usize,
+        backtest_batch_size: usize,
+    ) -> Self {
+        Self {
+            inner: DataPoolConfig {
+                cache_policy: cache_policy.map(|p| p.inner).unwrap_or_default(),
+                calc_parallel_years,
+                memory_budget_bytes,
+                backtest_batch_size,
+            },
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!("{:?}", self.inner)
+    }
+}
 
 /// Opaque FactorPanel handle returned by AlfarsLab.calc().
 /// Pass to AlfarsLab.run() for backtesting.
@@ -3087,6 +3186,26 @@ impl PyAlfarsLab {
         Self {
             inner: std::sync::Mutex::new(AlfarsLab::new(
                 crate::data::clickhouse::ClickHouseSource::from_env(),
+            )),
+        }
+    }
+
+    /// Create an AlfarsLab with a custom DataPoolConfig.
+    ///
+    /// ```python
+    /// config = DataPoolConfig(
+    ///     cache_policy=CachePolicy.keep_all(),
+    ///     backtest_batch_size=20,
+    /// )
+    /// lab = AlfarsLab.from_env_with_config(config)
+    /// ```
+    #[staticmethod]
+    fn from_env_with_config(config: &PyDataPoolConfig) -> Self {
+        dotenv::dotenv().ok();
+        Self {
+            inner: std::sync::Mutex::new(AlfarsLab::new_with_config(
+                crate::data::clickhouse::ClickHouseSource::from_env(),
+                config.inner.clone(),
             )),
         }
     }

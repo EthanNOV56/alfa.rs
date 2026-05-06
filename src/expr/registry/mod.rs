@@ -9,10 +9,7 @@ pub mod functions;
 pub mod parser;
 pub mod timeseries;
 
-pub use config::{
-    CALC_PARALLEL_YEARS, ColumnMeta, ComputeConfig, FactorInfo, FactorPanel, FactorResult,
-    FactorSlice,
-};
+pub use config::{ColumnMeta, ComputeConfig, FactorInfo, FactorPanel, FactorResult, FactorSlice};
 pub use parser::parse_expression;
 
 use crate::data::layer::DataLayer;
@@ -338,10 +335,7 @@ impl FactorRegistry {
                 });
                 seen.len()
             };
-            data.insert(
-                "_n_dates".to_string(),
-                Array1::from_elem(1, n_dates as f64),
-            );
+            data.insert("_n_dates".to_string(), Array1::from_elem(1, n_dates as f64));
             let dates = data
                 .get("1d:trading_date")
                 .ok_or("1d:trading_date missing")?;
@@ -891,7 +885,11 @@ mod tests {
     fn test_delay() {
         let vals = Array1::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0]);
         let result = timeseries::delay(&vals, 2);
-        assert_eq!(result.to_vec(), vec![0.0, 0.0, 1.0, 2.0, 3.0]);
+        assert!(result[0].is_nan());
+        assert!(result[1].is_nan());
+        assert_eq!(result[2], 1.0);
+        assert_eq!(result[3], 2.0);
+        assert_eq!(result[4], 3.0);
     }
 
     #[test]
@@ -913,7 +911,11 @@ mod tests {
     fn test_delta() {
         let vals = Array1::from_vec(vec![10.0, 12.0, 11.0, 15.0, 14.0]);
         let result = timeseries::ts_delta(&vals, 1);
-        assert_eq!(result.to_vec(), vec![0.0, 2.0, -1.0, 4.0, -1.0]);
+        assert!(result[0].is_nan());
+        assert_eq!(result[1], 2.0);
+        assert_eq!(result[2], -1.0);
+        assert_eq!(result[3], 4.0);
+        assert_eq!(result[4], -1.0);
     }
 
     #[test]

@@ -33,7 +33,35 @@ impl BacktestEngine {
         Self { config }
     }
 
-    /// Run the backtest with explicit data matrices
+    /// Run the backtest with explicit data matrices (owned convenience wrapper).
+    ///
+    /// Prefer `run_ref()` with shared references when price arrays are reused
+    /// across multiple backtests (e.g. GP mining) — avoids cloning large arrays.
+    pub fn run(
+        &self,
+        factor: Array2<f64>,
+        returns: Array2<f64>,
+        adj_factor: Array2<f64>,
+        close: Array2<f64>,
+        open: Array2<f64>,
+        vwap: Array2<f64>,
+        tradable: Array2<f64>,
+    ) -> Result<BacktestResult, String> {
+        self.run_ref(
+            factor,
+            &returns,
+            &adj_factor,
+            &close,
+            &open,
+            &vwap,
+            &tradable,
+        )
+    }
+
+    /// Run the backtest with borrowed price arrays (zero-clone optimization).
+    ///
+    /// Takes `factor` by value (per-call data) but borrows all price arrays
+    /// so they can be shared across many backtest evaluations without cloning.
     ///
     /// # Parameters
     /// - `factor`: Factor values matrix [n_days, n_assets]
@@ -63,15 +91,15 @@ impl BacktestEngine {
     ///
     /// - **Suitable for**: Factor IC/IR evaluation, alpha discovery, strategy exploration
     /// - **Not suitable for**: Live trading, realistic P&L estimation, broker compatibility
-    pub fn run(
+    pub fn run_ref(
         &self,
         factor: Array2<f64>,
-        returns: Array2<f64>,
-        adj_factor: Array2<f64>,
-        close: Array2<f64>,
-        open: Array2<f64>,
-        vwap: Array2<f64>,
-        tradable: Array2<f64>,
+        returns: &Array2<f64>,
+        adj_factor: &Array2<f64>,
+        close: &Array2<f64>,
+        open: &Array2<f64>,
+        vwap: &Array2<f64>,
+        tradable: &Array2<f64>,
     ) -> Result<BacktestResult, String> {
         assert_eq!(
             factor.shape(),
@@ -251,7 +279,8 @@ impl BacktestEngine {
     /// Run backtest with a `PriceMatrix` instead of individual arrays.
     ///
     /// `adj_factor` is set to all-1.0 because `query_price_matrix()` already
-    /// forward-adjusts prices.
+    /// forward-adjusts prices. Uses `run_ref` so price arrays are not cloned
+    /// — the PriceMatrix must outlive the backtest.
     pub fn run_with_prices(
         &self,
         factor: Array2<f64>,
@@ -259,32 +288,43 @@ impl BacktestEngine {
     ) -> Result<BacktestResult, String> {
         let (n_dates, n_syms) = factor.dim();
         let adj_factor = Array2::<f64>::from_elem((n_dates, n_syms), 1.0);
-        let mut result = self.run(
+        let mut result = self.run_ref(
             factor,
-            prices.returns.clone(),
-            adj_factor,
-            prices.close.clone(),
-            prices.open.clone(),
-            prices.vwap.clone(),
-            prices.tradable.clone(),
+            &prices.returns,
+            &adj_factor,
+            &prices.close,
+            &prices.open,
+            &prices.vwap,
+            &prices.tradable,
         )?;
         result.dates = prices.dates.clone();
         Ok(result)
     }
 
-    /// IC-only backtest: skip P&L simulation, compute only IC series and turnover.
-    /// Much faster than `run()` because it avoids NAV simulation on all assets.
+    /// IC-only backtest (owned convenience wrapper).
+    ///
+    /// Prefer `run_ic_only_ref()` for shared returns data.
     pub fn run_ic_only(
         &self,
         factor: Array2<f64>,
         returns: Array2<f64>,
+    ) -> Result<BacktestResult, String> {
+        self.run_ic_only_ref(factor, &returns)
+    }
+
+    /// IC-only backtest: skip P&L simulation, compute only IC series and turnover.
+    /// Much faster than `run()` because it avoids NAV simulation on all assets.
+    pub fn run_ic_only_ref(
+        &self,
+        factor: Array2<f64>,
+        returns: &Array2<f64>,
     ) -> Result<BacktestResult, String> {
         assert_eq!(factor.shape(), returns.shape());
         let (n_days, n_assets) = factor.dim();
         let quantiles = self.config.quantiles;
 
         let group_labels = super::portfolio::compute_quantile_groups(&factor, quantiles)?;
-        let (ic_series, ic_mean, ic_ir) = super::metrics::compute_ic_series(&factor, &returns)?;
+        let (ic_series, ic_mean, ic_ir) = super::metrics::compute_ic_series(&factor, returns)?;
         let turnover = super::metrics::compute_turnover(&group_labels);
 
         Ok(BacktestResult {
@@ -315,15 +355,14 @@ impl BacktestEngine {
         factor: Array2<f64>,
         prices: &PriceMatrix,
     ) -> Result<BacktestResult, String> {
-        let mut result = self.run_ic_only(factor, prices.returns.clone())?;
+        let mut result = self.run_ic_only_ref(factor, &prices.returns)?;
         result.dates = prices.dates.clone();
         Ok(result)
     }
 
-    /// Multi-factor equal-weight combination backtest.
+    /// Multi-factor equal-weight combination backtest (owned convenience wrapper).
     ///
-    /// Takes a list of factor matrices (all same shape), averages them
-    /// element-wise with equal weight, then runs the standard `run()`.
+    /// Prefer `run_multi_ref()` for shared price data.
     pub fn run_multi(
         &self,
         factors: &[Array2<f64>],
@@ -333,6 +372,30 @@ impl BacktestEngine {
         open: Array2<f64>,
         vwap: Array2<f64>,
         tradable: Array2<f64>,
+    ) -> Result<BacktestResult, String> {
+        self.run_multi_ref(
+            factors,
+            &returns,
+            &adj_factor,
+            &close,
+            &open,
+            &vwap,
+            &tradable,
+        )
+    }
+
+    /// Multi-factor equal-weight combination backtest (zero-clone, borrows price arrays).
+    ///
+    /// Combines factors by equal-weight averaging, then runs `run_ref`.
+    pub fn run_multi_ref(
+        &self,
+        factors: &[Array2<f64>],
+        returns: &Array2<f64>,
+        adj_factor: &Array2<f64>,
+        close: &Array2<f64>,
+        open: &Array2<f64>,
+        vwap: &Array2<f64>,
+        tradable: &Array2<f64>,
     ) -> Result<BacktestResult, String> {
         if factors.is_empty() {
             return Err("No factors provided".to_string());
@@ -360,7 +423,7 @@ impl BacktestEngine {
             }
         }
 
-        self.run(combined, returns, adj_factor, close, open, vwap, tradable)
+        self.run_ref(combined, returns, adj_factor, close, open, vwap, tradable)
     }
 
     /// Multi-factor equal-weight combination backtest with PriceMatrix.
@@ -374,14 +437,14 @@ impl BacktestEngine {
         }
         let (n_dates, n_syms) = factors[0].dim();
         let adj_factor = Array2::<f64>::from_elem((n_dates, n_syms), 1.0);
-        let mut result = self.run_multi(
+        let mut result = self.run_multi_ref(
             factors,
-            prices.returns.clone(),
-            adj_factor,
-            prices.close.clone(),
-            prices.open.clone(),
-            prices.vwap.clone(),
-            prices.tradable.clone(),
+            &prices.returns,
+            &adj_factor,
+            &prices.close,
+            &prices.open,
+            &prices.vwap,
+            &prices.tradable,
         )?;
         result.dates = prices.dates.clone();
         Ok(result)

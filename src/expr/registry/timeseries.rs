@@ -41,7 +41,11 @@ pub fn winsor(vals: &Array1<f64>, n_symbols: usize) -> Array1<f64> {
         let variance = if count > 1 {
             // Var = (Σx² - (Σx)²/n) / (n-1) — single-pass using sum + sum_sq
             let ss = sum_sq - sum * sum / count as f64;
-            if ss > 0.0 { ss / (count - 1) as f64 } else { 0.0 }
+            if ss > 0.0 {
+                ss / (count - 1) as f64
+            } else {
+                0.0
+            }
         } else {
             0.0
         };
@@ -99,7 +103,11 @@ pub fn zscore(vals: &Array1<f64>, n_symbols: usize) -> Array1<f64> {
         let mean = sum / count as f64;
         let variance = if count > 1 {
             let ss = sum_sq - sum * sum / count as f64;
-            if ss > 0.0 { ss / (count - 1) as f64 } else { 0.0 }
+            if ss > 0.0 {
+                ss / (count - 1) as f64
+            } else {
+                0.0
+            }
         } else {
             0.0
         };
@@ -224,7 +232,11 @@ pub fn ts_mean(vals: &Array1<f64>, window: usize) -> Array1<f64> {
                 count += 1;
             }
         }
-        result[i] = if count > 0 { sum / count as f64 } else { f64::NAN };
+        result[i] = if count > 0 {
+            sum / count as f64
+        } else {
+            f64::NAN
+        };
     }
     result
 }
@@ -287,9 +299,10 @@ pub fn ts_max(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     for i in 0..n {
         let start = i.saturating_sub(window.saturating_sub(1));
         let slice = &vals.as_slice().unwrap()[start..=i];
-        let max_val = slice.iter().filter(|v| v.is_finite()).fold(f64::NAN, |a, &b| {
-            if a.is_nan() { b } else { a.max(b) }
-        });
+        let max_val = slice
+            .iter()
+            .filter(|v| v.is_finite())
+            .fold(f64::NAN, |a, &b| if a.is_nan() { b } else { a.max(b) });
         result[i] = max_val;
     }
     result
@@ -302,9 +315,10 @@ pub fn ts_min(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     for i in 0..n {
         let start = i.saturating_sub(window.saturating_sub(1));
         let slice = &vals.as_slice().unwrap()[start..=i];
-        let min_val = slice.iter().filter(|v| v.is_finite()).fold(f64::NAN, |a, &b| {
-            if a.is_nan() { b } else { a.min(b) }
-        });
+        let min_val = slice
+            .iter()
+            .filter(|v| v.is_finite())
+            .fold(f64::NAN, |a, &b| if a.is_nan() { b } else { a.min(b) });
         result[i] = min_val;
     }
     result
@@ -365,14 +379,17 @@ pub fn ts_argmax(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     for i in 0..n {
         let start = i.saturating_sub(window.saturating_sub(1));
         let slice = &vals.as_slice().unwrap()[start..=i];
-        let max_val = slice.iter().filter(|v| v.is_finite()).fold(f64::NAN, |a, &b| {
-            if a.is_nan() { b } else { a.max(b) }
-        });
+        let max_val = slice
+            .iter()
+            .filter(|v| v.is_finite())
+            .fold(f64::NAN, |a, &b| if a.is_nan() { b } else { a.max(b) });
         if max_val.is_nan() {
             result[i] = f64::NAN;
             continue;
         }
-        let pos = slice.iter().position(|&x| (x - max_val).abs() < f64::EPSILON);
+        let pos = slice
+            .iter()
+            .position(|&x| (x - max_val).abs() < f64::EPSILON);
         result[i] = pos.map(|p| (slice.len() - p) as f64).unwrap_or(f64::NAN);
     }
     result
@@ -385,14 +402,17 @@ pub fn ts_argmin(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     for i in 0..n {
         let start = i.saturating_sub(window.saturating_sub(1));
         let slice = &vals.as_slice().unwrap()[start..=i];
-        let min_val = slice.iter().filter(|v| v.is_finite()).fold(f64::NAN, |a, &b| {
-            if a.is_nan() { b } else { a.min(b) }
-        });
+        let min_val = slice
+            .iter()
+            .filter(|v| v.is_finite())
+            .fold(f64::NAN, |a, &b| if a.is_nan() { b } else { a.min(b) });
         if min_val.is_nan() {
             result[i] = f64::NAN;
             continue;
         }
-        let pos = slice.iter().position(|&x| (x - min_val).abs() < f64::EPSILON);
+        let pos = slice
+            .iter()
+            .position(|&x| (x - min_val).abs() < f64::EPSILON);
         result[i] = pos.map(|p| (slice.len() - p) as f64).unwrap_or(f64::NAN);
     }
     result
@@ -441,7 +461,11 @@ pub fn ts_correlation(vals1: &Array1<f64>, vals2: &Array1<f64>, window: usize) -
         }
 
         let denom = (var1 * var2).sqrt();
-        result[i] = if denom.is_finite() && denom > 1e-10 { cov / denom } else { f64::NAN };
+        result[i] = if denom.is_finite() && denom > 1e-10 {
+            cov / denom
+        } else {
+            f64::NAN
+        };
     }
     result
 }
@@ -531,7 +555,11 @@ pub fn lowday(vals: &Array1<f64>, window: usize) -> Array1<f64> {
             continue;
         }
 
-        let finite: Vec<(usize, &f64)> = slice.iter().enumerate().filter(|(_, v)| v.is_finite()).collect();
+        let finite: Vec<(usize, &f64)> = slice
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| v.is_finite())
+            .collect();
         if finite.is_empty() {
             result[i] = f64::NAN;
             continue;
@@ -562,7 +590,11 @@ pub fn highday(vals: &Array1<f64>, window: usize) -> Array1<f64> {
             continue;
         }
 
-        let finite: Vec<(usize, &f64)> = slice.iter().enumerate().filter(|(_, v)| v.is_finite()).collect();
+        let finite: Vec<(usize, &f64)> = slice
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| v.is_finite())
+            .collect();
         if finite.is_empty() {
             result[i] = f64::NAN;
             continue;
@@ -976,7 +1008,11 @@ pub fn ts_resi(vals: &Array1<f64>, window: usize) -> Array1<f64> {
             }
         }
 
-        let beta = if var_t.is_finite() && var_t > 1e-12 { cov / var_t } else { f64::NAN };
+        let beta = if var_t.is_finite() && var_t > 1e-12 {
+            cov / var_t
+        } else {
+            f64::NAN
+        };
         if beta.is_nan() {
             result[i] = f64::NAN;
             continue;
@@ -1054,7 +1090,11 @@ mod tests {
     fn test_delay() {
         let vals = Array1::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0]);
         let result = delay(&vals, 2);
-        assert_eq!(result.to_vec(), vec![0.0, 0.0, 1.0, 2.0, 3.0]);
+        assert!(result[0].is_nan());
+        assert!(result[1].is_nan());
+        assert_eq!(result[2], 1.0);
+        assert_eq!(result[3], 2.0);
+        assert_eq!(result[4], 3.0);
     }
 
     #[test]
@@ -1076,7 +1116,11 @@ mod tests {
     fn test_delta() {
         let vals = Array1::from_vec(vec![10.0, 12.0, 11.0, 15.0, 14.0]);
         let result = ts_delta(&vals, 1);
-        assert_eq!(result.to_vec(), vec![0.0, 2.0, -1.0, 4.0, -1.0]);
+        assert!(result[0].is_nan());
+        assert_eq!(result[1], 2.0);
+        assert_eq!(result[2], -1.0);
+        assert_eq!(result[3], 4.0);
+        assert_eq!(result[4], -1.0);
     }
 
     #[test]

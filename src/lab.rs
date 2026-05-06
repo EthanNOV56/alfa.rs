@@ -1,7 +1,8 @@
 //! AlfarsLab — unified entry point for factor research workflows.
 //!
-//! Encapsulates ClickHouseSource, DataLayer, and FactorRegistry behind
-//! a simple two-phase API: register → calc → run.
+//! Encapsulates ClickHouseSource, DataPool, and FactorRegistry behind
+//! a simple API: register → calc → run (or evaluate_and_backtest_each
+//! for streaming multi-factor).
 //!
 //! ```ignore
 //! let mut lab = AlfarsLab::new(ClickHouseSource::from_env())
@@ -16,12 +17,14 @@
 //! ```
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::backtest::{BacktestConfig, BacktestEngine, BacktestResult};
 use crate::data::clickhouse::ClickHouseSource;
 use crate::data::layer::{DataLayer, PriceMatrix};
+use crate::data::pool::{DataPool, DataPoolConfig};
 use crate::expr::registry::FactorRegistry;
-use crate::expr::registry::config::{CALC_PARALLEL_YEARS, FactorPanel, FactorSlice};
+use crate::expr::registry::config::{FactorPanel, FactorSlice};
 use crate::gp::evolution::run_gp;
 use crate::gp::fitness::RealBacktestFitnessEvaluator;
 use crate::gp::types::{Function, GPConfig, Terminal, to_parseable_string};
@@ -30,8 +33,7 @@ use rand::SeedableRng;
 use rand::rngs::StdRng;
 
 pub struct AlfarsLab {
-    source: ClickHouseSource,
-    dl: DataLayer,
+    pool: DataPool,
     registry: FactorRegistry,
     backtest_config: BacktestConfig,
     start_year: Option<i32>,
@@ -41,8 +43,17 @@ pub struct AlfarsLab {
 impl AlfarsLab {
     pub fn new(source: ClickHouseSource) -> Self {
         Self {
-            dl: DataLayer::new(source.clone()),
-            source,
+            pool: DataPool::new(source, String::new(), DataPoolConfig::default()),
+            registry: FactorRegistry::new(),
+            backtest_config: BacktestConfig::default(),
+            start_year: None,
+            end_year: None,
+        }
+    }
+
+    pub fn new_with_config(source: ClickHouseSource, pool_config: DataPoolConfig) -> Self {
+        Self {
+            pool: DataPool::new(source, String::new(), pool_config),
             registry: FactorRegistry::new(),
             backtest_config: BacktestConfig::default(),
             start_year: None,
@@ -51,7 +62,7 @@ impl AlfarsLab {
     }
 
     pub fn with_filter(mut self, filter: &str) -> Self {
-        self.dl.set_pre_filter(filter);
+        self.pool.set_pre_filter(filter);
         self
     }
 
@@ -73,6 +84,9 @@ impl AlfarsLab {
 
     /// Evaluate all registered factors (raw values + CS pipeline), returning
     /// factor matrices aligned to a common PriceMatrix. For multi-factor backtest.
+    ///
+    /// NOTE: For large factor sets (100+), consider `evaluate_and_backtest_each()`
+    /// which processes factors in configurable batches to avoid OOM.
     pub fn evaluate(
         &self,
     ) -> Result<
@@ -83,27 +97,24 @@ impl AlfarsLab {
         String,
     > {
         let (start_year, end_year) = self.years()?;
-        let base_filter = self.dl.pre_filter().to_string();
+        let base_filter = self.pool.pre_filter().to_string();
         let mut all_slices = Vec::new();
 
         for year in start_year..=end_year {
             let start = format!("{}-01-01", year);
             let end = format!("{}-01-01", year + 1);
-            let mut year_dl = DataLayer::new(self.source.clone());
-            year_dl.set_pre_filter(&format!("{}:{} {}", start, end, base_filter));
+            let mut year_dl = self.pool.borrow_year(year, &start, &end);
             let results = self
                 .registry
                 .compute_cs_pipeline(&mut year_dl)
                 .map_err(|e| format!("Year {}: {}", year, e))?;
             all_slices.extend(results.into_values());
+            self.pool.return_year(year, year_dl);
         }
 
-        let start_full = format!("{}-01-01", start_year);
-        let end_full = format!("{}-01-01", end_year + 1);
-        let mut dl = DataLayer::new(self.source.clone());
-        dl.set_pre_filter(&format!("{}:{} {}", start_full, end_full, base_filter));
-        let prices = dl
-            .query_price_matrix()
+        let prices = self
+            .pool
+            .get_prices()
             .map_err(|e| format!("Price query: {:?}", e))?;
 
         let mut matrices = HashMap::new();
@@ -118,30 +129,27 @@ impl AlfarsLab {
             }
             matrices.insert(name, prices.build_factor_matrix(&factor_slices));
         }
-        Ok((matrices, prices))
+        // Extract owned PriceMatrix from Arc (clone) for return
+        Ok((matrices, (*prices).clone()))
     }
 
     /// Streaming per-factor evaluate + backtest — avoids OOM with many factors.
     ///
-    /// Processes factors in small batches (5 per batch). For each batch:
-    /// accumulates FactorSlices across all years, then backtests each factor
-    /// independently. Matrices and slices are released per-factor, bounding
-    /// peak memory to ~6GB regardless of total factor count.
+    /// Processes factors in configurable batches (`DataPoolConfig.backtest_batch_size`).
+    /// For each batch: accumulates FactorSlices across all years using DataPool
+    /// (with configurable caching), then backtests each factor independently.
+    /// Matrices and slices are released per-factor, bounding peak memory.
     ///
     /// Returns per-factor results ordered by factor name.
-    pub fn evaluate_and_backtest_each(
-        &self,
-    ) -> Result<Vec<(String, BacktestResult)>, String> {
+    pub fn evaluate_and_backtest_each(&self) -> Result<Vec<(String, BacktestResult)>, String> {
         let (start_year, end_year) = self.years()?;
-        let base_filter = self.dl.pre_filter().to_string();
+        let pool_config = self.pool.config();
+        let batch_size = pool_config.backtest_batch_size;
 
-        // Query full PriceMatrix once — shared by all factors
-        let start_full = format!("{}-01-01", start_year);
-        let end_full = format!("{}-01-01", end_year + 1);
-        let mut dl = DataLayer::new(self.source.clone());
-        dl.set_pre_filter(&format!("{}:{} {}", start_full, end_full, base_filter));
-        let prices = dl
-            .query_price_matrix()
+        // Query full PriceMatrix once — shared Arc across all factors
+        let prices = self
+            .pool
+            .get_prices()
             .map_err(|e| format!("Price query: {:?}", e))?;
 
         let factor_names = self.registry.list();
@@ -159,14 +167,18 @@ impl AlfarsLab {
             })
             .collect();
 
-        const BATCH_SIZE: usize = 5;
         let mut results: Vec<(String, BacktestResult)> = Vec::with_capacity(factor_names.len());
 
-        for batch in factor_names.chunks(BATCH_SIZE) {
+        for batch in factor_names.chunks(batch_size) {
             // Accumulate per-factor slices across years
             let mut batch_slices: HashMap<String, Vec<FactorSlice>> = batch
                 .iter()
-                .map(|n| (n.clone(), Vec::with_capacity((end_year - start_year + 1) as usize)))
+                .map(|n| {
+                    (
+                        n.clone(),
+                        Vec::with_capacity((end_year - start_year + 1) as usize),
+                    )
+                })
                 .collect();
 
             for year in start_year..=end_year {
@@ -183,8 +195,7 @@ impl AlfarsLab {
                     }
                 }
 
-                let mut year_dl = DataLayer::new(self.source.clone());
-                year_dl.set_pre_filter(&format!("{}:{} {}", start, end, base_filter));
+                let mut year_dl = self.pool.borrow_year(year, &start, &end);
                 let year_results = batch_reg
                     .compute_cs_pipeline(&mut year_dl)
                     .map_err(|e| format!("Year {}: {}", year, e))?;
@@ -194,7 +205,7 @@ impl AlfarsLab {
                         vec.push(slice);
                     }
                 }
-                // year_dl and batch_reg dropped here
+                self.pool.return_year(year, year_dl);
             }
 
             // All years collected for this batch — backtest each factor
@@ -226,7 +237,7 @@ impl AlfarsLab {
     }
 
     pub fn set_filter(&mut self, filter: &str) {
-        self.dl.set_pre_filter(filter);
+        self.pool.set_pre_filter(filter);
     }
 
     pub fn set_years(&mut self, start: i32, end: i32) {
@@ -248,17 +259,22 @@ impl AlfarsLab {
     /// Compute all registered factors across the configured year range,
     /// writing results to `csv_path`. Returns the FactorPanel for subsequent
     /// backtest calls.
+    ///
+    /// Uses `DataPoolConfig.calc_parallel_years` for parallel year processing.
     pub fn calc(&self, csv_path: &str) -> Result<FactorPanel, String> {
         let (start_year, end_year) = self.years()?;
-        let base_filter = self.dl.pre_filter().to_string();
+        let pool_config = self.pool.config();
+        let parallel_years = pool_config.calc_parallel_years;
 
         let years: Vec<i32> = (start_year..=end_year).collect();
 
-        // Bounded parallel: each year creates its own DataLayer which is dropped
-        // inside the closure, freeing ~2GB raw data. Only FactorSlices (~45MB/year)
-        // are retained. Peak memory with CALC_PARALLEL_YEARS=5 is ~17GB single-factor.
+        // Bounded parallel: each year uses pool.borrow_year/return_year.
+        // Peak memory depends on DataPoolConfig.cache_policy and calc_parallel_years.
+        let pool_ref = &self.pool;
+        let registry_ref = &self.registry;
+
         let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(CALC_PARALLEL_YEARS.min(years.len()))
+            .num_threads(parallel_years.min(years.len()))
             .build()
             .map_err(|e| format!("rayon pool: {}", e))?;
 
@@ -269,15 +285,14 @@ impl AlfarsLab {
                 .map(|&year| {
                     let start = format!("{}-01-01", year);
                     let end = format!("{}-01-01", year + 1);
-                    let mut year_dl = DataLayer::new(self.source.clone());
-                    year_dl.set_pre_filter(&format!("{}:{} {}", start, end, base_filter));
+                    let mut year_dl = pool_ref.borrow_year(year, &start, &end);
 
-                    let results = self
-                        .registry
+                    let results = registry_ref
                         .compute_cs_pipeline(&mut year_dl)
                         .map_err(|e| format!("Year {}: {}", year, e))?;
 
                     let slices: Vec<FactorSlice> = results.into_values().collect();
+                    pool_ref.return_year(year, year_dl);
                     Ok::<_, String>((year, slices))
                 })
                 .collect::<Result<Vec<_>, _>>()
@@ -308,9 +323,9 @@ impl AlfarsLab {
 
     /// Run genetic programming to discover alpha factors.
     ///
-    /// Queries price data for the configured year range, runs GP evolution
-    /// with real backtest-based fitness evaluation, and returns discovered
-    /// expressions with their metrics.
+    /// Queries price data for the configured year range (once, shared via Arc),
+    /// runs GP evolution with real backtest-based fitness evaluation, and
+    /// returns discovered expressions with their metrics.
     pub fn mine_factors(
         &self,
         gp_config: GPConfig,
@@ -318,39 +333,40 @@ impl AlfarsLab {
         max_symbols: usize,
     ) -> Result<Vec<(String, f64, f64, f64, f64, usize)>, String> {
         let (start_year, end_year) = self.years()?;
-        let base_filter = self.dl.pre_filter().to_string();
-        let start_full = format!("{}-01-01", start_year);
-        let end_full = format!("{}-01-01", end_year + 1);
+        let base_filter = self.pool.pre_filter().to_string();
 
-        let mut dl = DataLayer::new(self.source.clone());
-        dl.set_pre_filter(&format!("{}:{} {}", start_full, end_full, base_filter));
-        let mut prices = dl
-            .query_price_matrix()
+        // Use pool's shared PriceMatrix
+        let prices_arc = self
+            .pool
+            .get_prices()
             .map_err(|e| format!("Price query: {:?}", e))?;
 
-        // Slice to top N symbols if limited
-        if max_symbols > 0 && prices.symbols.len() > max_symbols {
-            prices = Self::slice_price_matrix_top(&prices, max_symbols);
-        }
+        // Slice to top N symbols if needed
+        let prices_arc = if max_symbols > 0 && prices_arc.symbols.len() > max_symbols {
+            Arc::new(Self::slice_price_matrix_top(&prices_arc, max_symbols))
+        } else {
+            prices_arc
+        };
 
+        // Build data HashMap from Arc (one-time clone for evaluator construction)
         let mut data = HashMap::new();
-        if prices.close.dim() == prices.returns.dim() {
-            data.insert("close".to_string(), prices.close.clone());
+        if prices_arc.close.dim() == prices_arc.returns.dim() {
+            data.insert("close".to_string(), prices_arc.close.clone());
         }
-        if prices.open.dim() == prices.returns.dim() {
-            data.insert("open".to_string(), prices.open.clone());
+        if prices_arc.open.dim() == prices_arc.returns.dim() {
+            data.insert("open".to_string(), prices_arc.open.clone());
         }
-        if prices.high.dim() == prices.returns.dim() {
-            data.insert("high".to_string(), prices.high.clone());
+        if prices_arc.high.dim() == prices_arc.returns.dim() {
+            data.insert("high".to_string(), prices_arc.high.clone());
         }
-        if prices.low.dim() == prices.returns.dim() {
-            data.insert("low".to_string(), prices.low.clone());
+        if prices_arc.low.dim() == prices_arc.returns.dim() {
+            data.insert("low".to_string(), prices_arc.low.clone());
         }
-        if prices.vwap.dim() == prices.returns.dim() {
-            data.insert("vwap".to_string(), prices.vwap.clone());
+        if prices_arc.vwap.dim() == prices_arc.returns.dim() {
+            data.insert("vwap".to_string(), prices_arc.vwap.clone());
         }
 
-        let evaluator = RealBacktestFitnessEvaluator::new(data, prices);
+        let evaluator = RealBacktestFitnessEvaluator::new(data, prices_arc);
 
         let terminals = vec![
             Terminal::Ephemeral,
@@ -437,16 +453,9 @@ impl AlfarsLab {
     /// Queries price data for the configured year range, builds aligned
     /// factor/qcut matrices, and runs the backtest engine.
     pub fn run(&self, panel: &FactorPanel) -> Result<BacktestResult, String> {
-        let (start_year, end_year) = self.years()?;
-        let base_filter = self.dl.pre_filter().to_string();
-        let start_full = format!("{}-01-01", start_year);
-        let end_full = format!("{}-01-01", end_year + 1);
-
-        let mut dl = DataLayer::new(self.source.clone());
-        dl.set_pre_filter(&format!("{}:{} {}", start_full, end_full, base_filter));
-
-        let prices = dl
-            .query_price_matrix()
+        let prices = self
+            .pool
+            .get_prices()
             .map_err(|e| format!("Price query: {:?}", e))?;
 
         let factor_mat = panel.build_factor_matrix(&prices);

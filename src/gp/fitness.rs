@@ -21,6 +21,7 @@ use ndarray::Array2;
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 use std::sync::atomic;
 use std::sync::{Mutex, RwLock};
 
@@ -45,7 +46,7 @@ pub trait FitnessEvaluator: Send + Sync {
 pub struct RealBacktestFitnessEvaluator {
     /// Pre-built per-asset columns: asset_columns[asset_idx][col_name] = time series
     asset_columns: Vec<HashMap<String, ndarray::Array1<f64>>>,
-    prices: PriceMatrix,
+    prices: Arc<PriceMatrix>,
     weights: HashMap<String, f64>, // Feature weights for multi-objective optimization
     min_valid_days: usize,         // Minimum days required for valid backtest
     // Data split configuration
@@ -62,7 +63,7 @@ pub struct RealBacktestFitnessEvaluator {
 
 impl RealBacktestFitnessEvaluator {
     /// Create a new evaluator with a PriceMatrix for backtesting.
-    pub fn new(data: HashMap<String, Array2<f64>>, prices: PriceMatrix) -> Self {
+    pub fn new(data: HashMap<String, Array2<f64>>, prices: Arc<PriceMatrix>) -> Self {
         let asset_columns = Self::build_asset_columns(&data);
         Self {
             asset_columns,
@@ -80,7 +81,7 @@ impl RealBacktestFitnessEvaluator {
     /// Create a new evaluator with train/test/validation split.
     pub fn with_split(
         data: HashMap<String, Array2<f64>>,
-        prices: PriceMatrix,
+        prices: Arc<PriceMatrix>,
         split_config: DataSplitConfig,
     ) -> Self {
         let n_days = prices.returns.shape()[0];
@@ -272,7 +273,7 @@ impl RealBacktestFitnessEvaluator {
 
         let engine = BacktestEngine::with_config(config);
 
-        match engine.run_with_prices(factor.clone(), &self.prices) {
+        match engine.run_with_prices(factor.clone(), &*self.prices) {
             Ok(result) => {
                 if result.ic_mean.is_nan() || result.ic_ir.is_nan() {
                     None
@@ -743,8 +744,9 @@ impl FitnessEvaluator for BacktestFitnessEvaluator {
 pub struct CachedFitnessEvaluator<E: FitnessEvaluator> {
     evaluator: E,
     cache: Mutex<LruCache<String, f64>>,
-    /// Maps normalized expression strings to fitness values for deduplication
-    dedup: Mutex<HashMap<String, f64>>,
+    /// Maps normalized expression strings to fitness values for deduplication.
+    /// Bounded LRU to prevent unbounded growth across many GP runs.
+    dedup: Mutex<LruCache<String, f64>>,
     /// Count of evaluations skipped due to semantic deduplication
     dedup_hits: atomic::AtomicU64,
     /// Count of total fitness evaluations (cache misses only)
@@ -758,7 +760,7 @@ impl<E: FitnessEvaluator> CachedFitnessEvaluator<E> {
         Self {
             evaluator,
             cache: Mutex::new(LruCache::new(cap)),
-            dedup: Mutex::new(HashMap::new()),
+            dedup: Mutex::new(LruCache::new(cap)),
             dedup_hits: atomic::AtomicU64::new(0),
             total_evals: atomic::AtomicU64::new(0),
         }
@@ -807,7 +809,7 @@ impl<E: FitnessEvaluator> FitnessEvaluator for CachedFitnessEvaluator<E> {
         // Check semantic deduplication
         let normalized = normalize_expression(expr);
         {
-            let dedup = self.dedup.lock().unwrap();
+            let mut dedup = self.dedup.lock().unwrap();
             if let Some(&cached) = dedup.get(&normalized) {
                 // Found structurally equivalent expression — reuse fitness
                 self.dedup_hits.fetch_add(1, atomic::Ordering::Relaxed);
@@ -828,7 +830,7 @@ impl<E: FitnessEvaluator> FitnessEvaluator for CachedFitnessEvaluator<E> {
         }
         {
             let mut dedup = self.dedup.lock().unwrap();
-            dedup.insert(normalized, fitness);
+            dedup.put(normalized, fitness);
         }
 
         fitness
@@ -841,7 +843,7 @@ impl<E: FitnessEvaluator> FitnessEvaluator for CachedFitnessEvaluator<E> {
         // First pass: check both caches
         {
             let mut cache = self.cache.lock().unwrap();
-            let dedup = self.dedup.lock().unwrap();
+            let mut dedup = self.dedup.lock().unwrap();
 
             for (idx, expr) in exprs.iter().enumerate() {
                 let key = format!("{:?}", expr);
@@ -878,7 +880,7 @@ impl<E: FitnessEvaluator> FitnessEvaluator for CachedFitnessEvaluator<E> {
                     to_compute.into_iter().zip(computed.into_iter())
                 {
                     cache.put(key, fitness);
-                    dedup.insert(normalized, fitness);
+                    dedup.put(normalized, fitness);
                     results[idx] = fitness;
                 }
             }

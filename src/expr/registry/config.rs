@@ -3,20 +3,6 @@
 use crate::expr::ast::Expr;
 use std::sync::Arc;
 
-/// Number of years to process in parallel during calc().
-///
-/// Benchmarked on WCR 2010-2025 (16 cores, 32GB RAM, single CH node):
-///   threads=1:  84.1s  calc=78.0s  peak=6GB
-///   threads=3:  42.8s  calc=35.4s  peak=9.5GB
-///   threads=4:  36.9s  calc=29.4s  peak=10.4GB
-///   threads=5:  31.3s  calc=23.8s  peak=17.0GB  ← best
-///   threads=6:  37.5s  calc=29.4s  peak=18.6GB  (CH contention)
-///
-/// 5 is the sweet spot: maximum throughput before ClickHouse server
-/// contention dominates. Peak memory ~17GB with single-factor workload;
-/// multi-factor workloads add ~45MB/year/factor of retained FactorSlice data.
-pub const CALC_PARALLEL_YEARS: usize = 5;
-
 /// Configuration for resource limits and timeout to prevent system overload
 #[derive(Debug, Clone)]
 pub struct ComputeConfig {
