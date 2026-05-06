@@ -1776,8 +1776,8 @@ pub fn eval_ts_function_vectorized(
                     for s in 0..n_syms {
                         let start = s * n;
                         let end = start + n;
-                        let chunk1 = Array1::from_vec(vals.as_slice().unwrap()[start..end].to_vec());
-                        let chunk2 = Array1::from_vec(vals2.as_slice().unwrap()[start..end].to_vec());
+                        let chunk1 = vals.slice(ndarray::s![start..end]).to_owned();
+                        let chunk2 = vals2.slice(ndarray::s![start..end]).to_owned();
                         let r = ts_correlation(&chunk1, &chunk2, window);
                         result.as_slice_mut().unwrap()[start..end]
                             .copy_from_slice(r.as_slice().unwrap());
@@ -1796,8 +1796,8 @@ pub fn eval_ts_function_vectorized(
                     for s in 0..n_syms {
                         let start = s * n;
                         let end = start + n;
-                        let chunk1 = Array1::from_vec(vals.as_slice().unwrap()[start..end].to_vec());
-                        let chunk2 = Array1::from_vec(vals2.as_slice().unwrap()[start..end].to_vec());
+                        let chunk1 = vals.slice(ndarray::s![start..end]).to_owned();
+                        let chunk2 = vals2.slice(ndarray::s![start..end]).to_owned();
                         let r = ts_cov(&chunk1, &chunk2, window);
                         result.as_slice_mut().unwrap()[start..end]
                             .copy_from_slice(r.as_slice().unwrap());
@@ -1834,7 +1834,7 @@ pub fn eval_ts_function_vectorized(
                         let start = s * n;
                         let end = start + n;
                         let chunk =
-                            Array1::from_vec(vals.as_slice().unwrap()[start..end].to_vec());
+                            vals.slice(ndarray::s![start..end]).to_owned();
                         let r = ts_quantile(&chunk, window, q);
                         result.as_slice_mut().unwrap()[start..end]
                             .copy_from_slice(r.as_slice().unwrap());

@@ -199,12 +199,15 @@ pub fn ts_mean(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     for i in 0..n {
         let start = i.saturating_sub(window.saturating_sub(1));
         let slice = &vals.as_slice().unwrap()[start..=i];
-        let valid: Vec<f64> = slice.iter().filter(|v| v.is_finite()).copied().collect();
-        result[i] = if valid.is_empty() {
-            f64::NAN
-        } else {
-            valid.iter().sum::<f64>() / valid.len() as f64
-        };
+        let mut sum = 0.0;
+        let mut count = 0usize;
+        for &v in slice {
+            if v.is_finite() {
+                sum += v;
+                count += 1;
+            }
+        }
+        result[i] = if count > 0 { sum / count as f64 } else { f64::NAN };
     }
     result
 }
@@ -297,14 +300,29 @@ pub fn ts_std(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     for i in 0..n {
         let start = i.saturating_sub(window.saturating_sub(1));
         let slice = &vals.as_slice().unwrap()[start..=i];
-        let valid: Vec<f64> = slice.iter().filter(|v| v.is_finite()).copied().collect();
-        if valid.len() < 2 {
+        // Pass 1: count + sum
+        let mut sum = 0.0;
+        let mut count = 0usize;
+        for &v in slice {
+            if v.is_finite() {
+                sum += v;
+                count += 1;
+            }
+        }
+        if count < 2 {
             result[i] = f64::NAN;
             continue;
         }
-        let mean = valid.iter().sum::<f64>() / valid.len() as f64;
-        let variance = valid.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / valid.len() as f64;
-        result[i] = variance.sqrt();
+        let mean = sum / count as f64;
+        // Pass 2: variance
+        let mut sum_sq = 0.0;
+        for &v in slice {
+            if v.is_finite() {
+                let d = v - mean;
+                sum_sq += d * d;
+            }
+        }
+        result[i] = (sum_sq / count as f64).sqrt();
     }
     result
 }
@@ -373,32 +391,36 @@ pub fn ts_correlation(vals1: &Array1<f64>, vals2: &Array1<f64>, window: usize) -
         let slice1 = &vals1.as_slice().unwrap()[start..=i];
         let slice2 = &vals2.as_slice().unwrap()[start..=i];
 
-        let pairs: Vec<(f64, f64)> = slice1
-            .iter()
-            .zip(slice2.iter())
-            .filter(|(a, b)| a.is_finite() && b.is_finite())
-            .map(|(a, b)| (*a, *b))
-            .collect();
-
-        if pairs.len() < 2 {
+        // Pass 1: count + sums
+        let mut sum1 = 0.0;
+        let mut sum2 = 0.0;
+        let mut count = 0usize;
+        for (a, b) in slice1.iter().zip(slice2.iter()) {
+            if a.is_finite() && b.is_finite() {
+                sum1 += a;
+                sum2 += b;
+                count += 1;
+            }
+        }
+        if count < 2 {
             result[i] = f64::NAN;
             continue;
         }
+        let mean1 = sum1 / count as f64;
+        let mean2 = sum2 / count as f64;
 
-        let len = pairs.len() as f64;
-        let mean1: f64 = pairs.iter().map(|(a, _)| a).sum::<f64>() / len;
-        let mean2: f64 = pairs.iter().map(|(_, b)| b).sum::<f64>() / len;
-
+        // Pass 2: covariance + variances
         let mut cov = 0.0;
         let mut var1 = 0.0;
         let mut var2 = 0.0;
-
-        for &(a, b) in &pairs {
-            let d1 = a - mean1;
-            let d2 = b - mean2;
-            cov += d1 * d2;
-            var1 += d1 * d1;
-            var2 += d2 * d2;
+        for (a, b) in slice1.iter().zip(slice2.iter()) {
+            if a.is_finite() && b.is_finite() {
+                let d1 = a - mean1;
+                let d2 = b - mean2;
+                cov += d1 * d2;
+                var1 += d1 * d1;
+                var2 += d2 * d2;
+            }
         }
 
         let denom = (var1 * var2).sqrt();
@@ -417,24 +439,32 @@ pub fn ts_cov(vals1: &Array1<f64>, vals2: &Array1<f64>, window: usize) -> Array1
         let slice1 = &vals1.as_slice().unwrap()[start..=i];
         let slice2 = &vals2.as_slice().unwrap()[start..=i];
 
-        let pairs: Vec<(f64, f64)> = slice1
-            .iter()
-            .zip(slice2.iter())
-            .filter(|(a, b)| a.is_finite() && b.is_finite())
-            .map(|(a, b)| (*a, *b))
-            .collect();
-
-        if pairs.len() < 2 {
+        // Pass 1: count + sums
+        let mut sum1 = 0.0;
+        let mut sum2 = 0.0;
+        let mut count = 0usize;
+        for (a, b) in slice1.iter().zip(slice2.iter()) {
+            if a.is_finite() && b.is_finite() {
+                sum1 += a;
+                sum2 += b;
+                count += 1;
+            }
+        }
+        if count < 2 {
             result[i] = f64::NAN;
             continue;
         }
+        let mean1 = sum1 / count as f64;
+        let mean2 = sum2 / count as f64;
 
-        let len = pairs.len() as f64;
-        let mean1: f64 = pairs.iter().map(|(a, _)| a).sum::<f64>() / len;
-        let mean2: f64 = pairs.iter().map(|(_, b)| b).sum::<f64>() / len;
-
-        let cov = pairs.iter().fold(0.0, |acc, (a, b)| acc + (a - mean1) * (b - mean2));
-        result[i] = cov / (len - 1.0);
+        // Pass 2: covariance
+        let mut cov = 0.0;
+        for (a, b) in slice1.iter().zip(slice2.iter()) {
+            if a.is_finite() && b.is_finite() {
+                cov += (a - mean1) * (b - mean2);
+            }
+        }
+        result[i] = cov / (count - 1) as f64;
     }
     result
 }
@@ -578,12 +608,15 @@ pub fn ts_product(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     for i in 0..n {
         let start = i.saturating_sub(window.saturating_sub(1));
         let slice = &vals.as_slice().unwrap()[start..=i];
-        let valid: Vec<f64> = slice.iter().filter(|v| v.is_finite()).copied().collect();
-        result[i] = if valid.is_empty() {
-            f64::NAN
-        } else {
-            valid.iter().fold(1.0, |acc, &v| acc * v)
-        };
+        let mut prod = 1.0;
+        let mut any = false;
+        for &v in slice {
+            if v.is_finite() {
+                prod *= v;
+                any = true;
+            }
+        }
+        result[i] = if any { prod } else { f64::NAN };
     }
     result
 }
@@ -799,31 +832,34 @@ pub fn ts_slope(vals: &Array1<f64>, window: usize) -> Array1<f64> {
         let start = i.saturating_sub(window.saturating_sub(1));
         let slice = &vals.as_slice().unwrap()[start..=i];
 
-        // Collect valid (t, y) pairs, excluding NaN
-        let pairs: Vec<(f64, f64)> = slice
-            .iter()
-            .enumerate()
-            .filter(|(_, y)| y.is_finite())
-            .map(|(j, &y)| (j as f64, y))
-            .collect();
-
-        if pairs.len() < 2 {
+        // Pass 1: count + sums
+        let mut sum_t = 0.0;
+        let mut sum_y = 0.0;
+        let mut count = 0usize;
+        for (j, &y) in slice.iter().enumerate() {
+            if y.is_finite() {
+                sum_t += j as f64;
+                sum_y += y;
+                count += 1;
+            }
+        }
+        if count < 2 {
             result[i] = f64::NAN;
             continue;
         }
+        let t_mean = sum_t / count as f64;
+        let y_mean = sum_y / count as f64;
 
-        let len = pairs.len() as f64;
-        let t_mean = pairs.iter().map(|(t, _)| t).sum::<f64>() / len;
-        let y_mean = pairs.iter().map(|(_, y)| y).sum::<f64>() / len;
-
+        // Pass 2: cov + var_t
         let mut cov = 0.0;
         let mut var_t = 0.0;
-        for &(t, y) in &pairs {
-            let dt = t - t_mean;
-            cov += dt * (y - y_mean);
-            var_t += dt * dt;
+        for (j, &y) in slice.iter().enumerate() {
+            if y.is_finite() {
+                let dt = j as f64 - t_mean;
+                cov += dt * (y - y_mean);
+                var_t += dt * dt;
+            }
         }
-
         result[i] = if var_t.is_finite() && var_t > 1e-12 {
             cov / var_t
         } else {
@@ -879,7 +915,6 @@ pub fn ts_rsquare(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     result
 }
 
-/// Rolling regression residual: y_last - (intercept + slope * t_last)
 /// Rolling regression residual. NaN values are excluded from the regression.
 pub fn ts_resi(vals: &Array1<f64>, window: usize) -> Array1<f64> {
     let n = vals.len();
@@ -889,35 +924,39 @@ pub fn ts_resi(vals: &Array1<f64>, window: usize) -> Array1<f64> {
         let start = i.saturating_sub(window.saturating_sub(1));
         let slice = &vals.as_slice().unwrap()[start..=i];
 
-        let pairs: Vec<(f64, f64)> = slice
-            .iter()
-            .enumerate()
-            .filter(|(_, y)| y.is_finite())
-            .map(|(j, &y)| (j as f64, y))
-            .collect();
-
-        if pairs.len() < 2 {
-            result[i] = f64::NAN;
-            continue;
-        }
-
-        let len = pairs.len() as f64;
         let last_val = slice[slice.len() - 1];
         if !last_val.is_finite() {
             result[i] = f64::NAN;
             continue;
         }
-        let t_last = (slice.len() - 1) as f64;
 
-        let t_mean = pairs.iter().map(|(t, _)| t).sum::<f64>() / len;
-        let y_mean = pairs.iter().map(|(_, y)| y).sum::<f64>() / len;
+        // Pass 1: count + sums
+        let mut sum_t = 0.0;
+        let mut sum_y = 0.0;
+        let mut count = 0usize;
+        for (j, &y) in slice.iter().enumerate() {
+            if y.is_finite() {
+                sum_t += j as f64;
+                sum_y += y;
+                count += 1;
+            }
+        }
+        if count < 2 {
+            result[i] = f64::NAN;
+            continue;
+        }
+        let t_mean = sum_t / count as f64;
+        let y_mean = sum_y / count as f64;
 
+        // Pass 2: cov + var_t
         let mut cov = 0.0;
         let mut var_t = 0.0;
-        for &(t, y) in &pairs {
-            let dt = t - t_mean;
-            cov += dt * (y - y_mean);
-            var_t += dt * dt;
+        for (j, &y) in slice.iter().enumerate() {
+            if y.is_finite() {
+                let dt = j as f64 - t_mean;
+                cov += dt * (y - y_mean);
+                var_t += dt * dt;
+            }
         }
 
         let beta = if var_t.is_finite() && var_t > 1e-12 { cov / var_t } else { f64::NAN };
@@ -926,7 +965,7 @@ pub fn ts_resi(vals: &Array1<f64>, window: usize) -> Array1<f64> {
             continue;
         }
         let intercept = y_mean - beta * t_mean;
-        let y_pred = intercept + beta * t_last;
+        let y_pred = intercept + beta * (slice.len() - 1) as f64;
 
         result[i] = last_val - y_pred;
     }
@@ -947,7 +986,7 @@ where
     for s in 0..n_symbols {
         let start = s * n_dates;
         let end = start + n_dates;
-        let chunk = Array1::from_vec(vals.as_slice().unwrap()[start..end].to_vec());
+        let chunk = vals.slice(ndarray::s![start..end]).to_owned();
         let chunk_result = f(&chunk);
         let src = chunk_result.as_slice().unwrap();
         result.as_slice_mut().unwrap()[start..end].copy_from_slice(src);
