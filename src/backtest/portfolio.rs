@@ -123,6 +123,12 @@ pub(crate) fn compute_group_weights(
 }
 
 /// Simulate per-group NAV using pre-computed group labels.
+///
+/// `rebalance_freq` controls how often (in trading days) the portfolio rebalances.
+/// 1 = daily, 5 = weekly, 20 = monthly.
+///
+/// On non-rebalance days, existing shares are held unchanged and only revalued
+/// at close prices — weights drift with price movements. No trading or fees occur.
 pub(crate) fn simulate_groups(
     group_labels: &Array2<usize>,
     group_weights: &Array2<f64>,
@@ -134,6 +140,7 @@ pub(crate) fn simulate_groups(
     close: &Array2<f64>,
     vwap: &Array2<f64>,
     fee_rate: f64,
+    rebalance_freq: usize,
 ) -> Result<Array2<f64>, String> {
     let mut group_returns = Array2::<f64>::zeros((n_days - 1, quantiles));
 
@@ -145,95 +152,116 @@ pub(crate) fn simulate_groups(
         let mut new_shares = vec![0.0f64; n_assets];
 
         for day in 1..n_days {
-            let mut pool_count = 0usize;
-            for a in 0..n_assets {
-                let in_p = group_labels[[day - 1, a]] == group + 1 && tradable[[day, a]] > 0.5;
-                in_pool[a] = in_p;
-                if in_p {
-                    pool_count += 1;
-                }
-            }
+            let is_rebalance_day = (day - 1) % rebalance_freq == 0;
 
-            let mut asset = 0.0f64;
-            for a in 0..n_assets {
-                if tradable[[day, a]] > 0.5 {
-                    let s = prev_shares[a];
-                    if s.is_finite() && s != 0.0 {
-                        asset += s * open[[day, a]];
-                    }
-                }
-            }
-            if asset <= 0.0 {
-                asset = nv;
-            }
-
-            if pool_count == 0 {
-                let mut asset_close = 0.0f64;
+            if is_rebalance_day {
+                // --- Rebalance day: compute pool from group_labels, trade to target weights ---
+                let mut pool_count = 0usize;
                 for a in 0..n_assets {
-                    let cl = close[[day, a]];
-                    if cl.is_finite() && prev_shares[a].is_finite() {
-                        asset_close += prev_shares[a] * cl;
+                    let in_p = group_labels[[day - 1, a]] == group + 1 && tradable[[day, a]] > 0.5;
+                    in_pool[a] = in_p;
+                    if in_p {
+                        pool_count += 1;
                     }
                 }
-                let new_nv = asset_close.max(0.0);
-                group_returns[[day - 1, group]] = new_nv / nv - 1.0;
-                nv = new_nv;
-                continue;
-            }
 
-            let mut total_weight = 0.0f64;
-            for a in 0..n_assets {
-                if in_pool[a] {
-                    let w = group_weights[[day - 1, a]];
-                    if w.is_finite() && w > 0.0 {
-                        total_weight += w;
+                let mut asset = 0.0f64;
+                for a in 0..n_assets {
+                    if tradable[[day, a]] > 0.5 {
+                        let s = prev_shares[a];
+                        if s.is_finite() && s != 0.0 {
+                            asset += s * open[[day, a]];
+                        }
                     }
                 }
-            }
-            if total_weight == 0.0 {
-                total_weight = pool_count as f64;
-            }
+                if asset <= 0.0 {
+                    asset = nv;
+                }
 
-            new_shares.fill(0.0);
-            let mut asset_close = 0.0f64;
-            let mut fee_dollars = 0.0f64;
+                if pool_count == 0 {
+                    let mut asset_close = 0.0f64;
+                    for a in 0..n_assets {
+                        let cl = close[[day, a]];
+                        if cl.is_finite() && prev_shares[a].is_finite() {
+                            asset_close += prev_shares[a] * cl;
+                        }
+                    }
+                    let new_nv = asset_close.max(0.0);
+                    group_returns[[day - 1, group]] = new_nv / nv - 1.0;
+                    nv = new_nv;
+                    continue;
+                }
 
-            for a in 0..n_assets {
-                if in_pool[a] {
-                    let op = open[[day, a]];
-                    let w = group_weights[[day - 1, a]];
-                    let alloc = if w.is_finite() && w > 0.0 {
-                        asset * (w / total_weight)
-                    } else {
-                        asset / pool_count as f64
-                    };
-                    if op.is_finite() && op > 0.0 {
-                        new_shares[a] = alloc / op;
+                let mut total_weight = 0.0f64;
+                for a in 0..n_assets {
+                    if in_pool[a] {
+                        let w = group_weights[[day - 1, a]];
+                        if w.is_finite() && w > 0.0 {
+                            total_weight += w;
+                        }
+                    }
+                }
+                if total_weight == 0.0 {
+                    total_weight = pool_count as f64;
+                }
+
+                new_shares.fill(0.0);
+                let mut asset_close = 0.0f64;
+                let mut fee_dollars = 0.0f64;
+
+                for a in 0..n_assets {
+                    if in_pool[a] {
+                        let op = open[[day, a]];
+                        let w = group_weights[[day - 1, a]];
+                        let alloc = if w.is_finite() && w > 0.0 {
+                            asset * (w / total_weight)
+                        } else {
+                            asset / pool_count as f64
+                        };
+                        if op.is_finite() && op > 0.0 {
+                            new_shares[a] = alloc / op;
+                            let cl = close[[day, a]];
+                            if cl.is_finite() {
+                                asset_close += new_shares[a] * cl;
+                            }
+                        }
+                    } else if tradable[[day, a]] <= 0.5 {
+                        new_shares[a] = prev_shares[a];
                         let cl = close[[day, a]];
                         if cl.is_finite() {
                             asset_close += new_shares[a] * cl;
                         }
                     }
-                } else if tradable[[day, a]] <= 0.5 {
-                    new_shares[a] = prev_shares[a];
-                    let cl = close[[day, a]];
-                    if cl.is_finite() {
-                        asset_close += new_shares[a] * cl;
+
+                    let delta = new_shares[a] - prev_shares[a];
+                    let vp = vwap[[day, a]];
+                    if delta.abs() > 1e-15 && vp.is_finite() && vp > 0.0 {
+                        fee_dollars += delta.abs() * fee_rate * vp;
                     }
                 }
 
-                let delta = new_shares[a] - prev_shares[a];
-                let vp = vwap[[day, a]];
-                if delta.abs() > 1e-15 && vp.is_finite() && vp > 0.0 {
-                    fee_dollars += delta.abs() * fee_rate * vp;
+                let new_nv = (asset_close - fee_dollars).max(0.0);
+                group_returns[[day - 1, group]] = new_nv / nv - 1.0;
+
+                nv = new_nv;
+                std::mem::swap(&mut prev_shares, &mut new_shares);
+            } else {
+                // --- Hold day: no rebalance, no trading, just revalue existing shares at close ---
+                let mut asset_close = 0.0f64;
+                for a in 0..n_assets {
+                    let s = prev_shares[a];
+                    if s.is_finite() && s > 0.0 {
+                        let cl = close[[day, a]];
+                        if cl.is_finite() {
+                            asset_close += s * cl;
+                        }
+                    }
                 }
+                let new_nv = asset_close.max(0.0);
+                group_returns[[day - 1, group]] = new_nv / nv - 1.0;
+                nv = new_nv;
+                // prev_shares unchanged — no trading
             }
-
-            let new_nv = (asset_close - fee_dollars).max(0.0);
-            group_returns[[day - 1, group]] = new_nv / nv - 1.0;
-
-            nv = new_nv;
-            std::mem::swap(&mut prev_shares, &mut new_shares);
         }
     }
 

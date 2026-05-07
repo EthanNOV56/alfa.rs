@@ -1017,6 +1017,7 @@ async fn run_backtest(
         weight_method,
         long_top_n,
         short_top_n,
+        rebalance_freq: 1,
         fee_config,
         position_config: Default::default(),
         limit_up_down_config: Default::default(),

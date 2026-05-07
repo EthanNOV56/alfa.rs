@@ -90,6 +90,8 @@ pub struct BacktestConfig {
     pub long_top_n: usize,
     /// Number of top stocks to go short
     pub short_top_n: usize,
+    /// Rebalance frequency in trading days (1 = daily, 5 = weekly, 20 = monthly)
+    pub rebalance_freq: usize,
     /// Fee configuration (commission, slippage)
     pub fee_config: FeeConfig,
     /// Position configuration (long/short ratios)
@@ -105,6 +107,7 @@ impl Default for BacktestConfig {
             weight_method: WeightMethod::Equal,
             long_top_n: 1,
             short_top_n: 1,
+            rebalance_freq: 1,
             fee_config: FeeConfig::default(),
             position_config: PositionConfig::default(),
             limit_up_down_config: LimitUpDownConfig::default(),

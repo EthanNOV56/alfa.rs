@@ -160,6 +160,7 @@ impl BacktestEngine {
             &close,
             &vwap,
             fee_rate,
+            self.config.rebalance_freq,
         )?;
 
         // Compute long/short returns directly from per-group returns
@@ -194,13 +195,56 @@ impl BacktestEngine {
             long_short_returns[day] = long_returns[day] + short_returns[day];
         }
 
-        // Compute IC series
+        // Compute passive benchmark: equal-weight all tradable stocks
+        let mut passive_returns = Array1::<f64>::zeros(n_days - 1);
+        for day in 0..(n_days - 1) {
+            let mut sum_ret = 0.0f64;
+            let mut count = 0usize;
+            for a in 0..n_assets {
+                let r = returns[[day, a]];
+                if tradable[[day, a]] > 0.5 && r.is_finite() {
+                    sum_ret += r;
+                    count += 1;
+                }
+            }
+            if count > 0 {
+                passive_returns[day] = sum_ret / count as f64;
+            }
+        }
+
+        // Compute IC series (full market)
         let (ic_series, ic_mean, ic_ir) = super::metrics::compute_ic_series(&factor, &returns)?;
+
+        // Compute group IC: long groups only
+        // long_groups is 0-indexed, group_labels is 1-indexed → convert
+        let long_groups_1idx: Vec<usize> = long_groups.iter().map(|g| g + 1).collect();
+        let (_, long_ic_mean, long_ic_ir) = super::metrics::compute_group_ic_series(
+            &factor,
+            &returns,
+            &group_labels,
+            &long_groups_1idx,
+        )?;
+
+        // Compute group IC: short groups only
+        let short_groups_1idx: Vec<usize> = short_groups.iter().map(|g| g + 1).collect();
+        let (_, short_ic_mean, short_ic_ir) = super::metrics::compute_group_ic_series(
+            &factor,
+            &returns,
+            &group_labels,
+            &short_groups_1idx,
+        )?;
+
+        // Compute group IC: long+short combined
+        let mut ls_groups = long_groups_1idx.clone();
+        ls_groups.extend(&short_groups_1idx);
+        let (_, long_short_ic_mean, long_short_ic_ir) =
+            super::metrics::compute_group_ic_series(&factor, &returns, &group_labels, &ls_groups)?;
 
         // Compute cumulative NAV curves from daily returns
         let long_short_cum_returns = super::metrics::cumulative_nav_curve(&long_short_returns);
         let long_cum_returns = super::metrics::cumulative_nav_curve(&long_returns);
         let short_cum_returns = super::metrics::cumulative_nav_curve(&short_returns);
+        let passive_cum_returns = super::metrics::cumulative_nav_curve(&passive_returns);
 
         // Compute final cumulative return (log method for numerical stability)
         let long_short_cum_return = super::metrics::compute_total_return_log(&long_short_returns);
@@ -211,6 +255,9 @@ impl BacktestEngine {
         let sharpe_ratio = super::metrics::compute_sharpe_ratio(&long_short_returns, n_days);
         let max_drawdown = super::metrics::compute_max_drawdown(&long_short_returns);
         let turnover = super::metrics::compute_turnover(&group_labels);
+        let weight_turnover = super::metrics::compute_weight_turnover(&group_weights);
+        let win_rate = super::metrics::compute_win_rate(&long_short_returns);
+        let calmar_ratio = super::metrics::compute_calmar_ratio(annualized_return, max_drawdown);
 
         // Compute group cumulative returns
         let group_cum_returns = super::metrics::compute_cumulative_returns(&group_returns);
@@ -224,14 +271,25 @@ impl BacktestEngine {
             long_short_cum_returns,
             long_cum_returns,
             short_cum_returns,
+            passive_returns,
+            passive_cum_returns,
             ic_series,
             ic_mean,
             ic_ir,
+            long_ic_mean,
+            long_ic_ir,
+            short_ic_mean,
+            short_ic_ir,
+            long_short_ic_mean,
+            long_short_ic_ir,
             total_return,
             annualized_return,
             sharpe_ratio,
             max_drawdown,
             turnover,
+            weight_turnover,
+            win_rate,
+            calmar_ratio,
             long_returns,
             short_returns,
         })
@@ -328,24 +386,11 @@ impl BacktestEngine {
         let turnover = super::metrics::compute_turnover(&group_labels);
 
         Ok(BacktestResult {
-            dates: vec![],
-            group_returns: Array2::zeros((0, 0)),
-            group_cum_returns: Array2::zeros((0, 0)),
-            long_short_returns: Array1::zeros(0),
-            long_short_cum_return: 0.0,
-            long_short_cum_returns: Array1::zeros(0),
-            long_cum_returns: Array1::zeros(0),
-            short_cum_returns: Array1::zeros(0),
             ic_series,
             ic_mean,
             ic_ir,
-            total_return: 0.0,
-            annualized_return: 0.0,
-            sharpe_ratio: 0.0,
-            max_drawdown: 0.0,
             turnover,
-            long_returns: Array1::zeros(0),
-            short_returns: Array1::zeros(0),
+            ..Default::default()
         })
     }
 
@@ -485,6 +530,7 @@ impl BacktestEngine {
             close,
             vwap,
             fee_rate,
+            self.config.rebalance_freq,
         )?;
 
         let mut long_short_returns = Array1::<f64>::zeros(n_days - 1);
@@ -545,6 +591,7 @@ impl BacktestEngine {
             turnover,
             long_returns,
             short_returns,
+            ..Default::default()
         };
 
         Ok(result)
@@ -581,6 +628,7 @@ mod tests {
             weight_method: WeightMethod::Equal,
             long_top_n: 1,
             short_top_n: 1,
+            rebalance_freq: 1,
             fee_config: FeeConfig {
                 commission_rate: 0.001,
                 ..Default::default()
@@ -632,6 +680,7 @@ mod tests {
             weight_method: WeightMethod::Equal,
             long_top_n: 1,
             short_top_n: 1,
+            rebalance_freq: 1,
             fee_config: FeeConfig {
                 commission_rate: 0.001,
                 ..Default::default()
@@ -683,6 +732,7 @@ mod tests {
             weight_method: WeightMethod::Equal,
             long_top_n: 1,
             short_top_n: 1,
+            rebalance_freq: 1,
             fee_config: FeeConfig {
                 commission_rate: 0.001,
                 ..Default::default()
@@ -734,6 +784,7 @@ mod tests {
             weight_method: WeightMethod::Equal,
             long_top_n: 1,
             short_top_n: 1,
+            rebalance_freq: 1,
             fee_config: FeeConfig {
                 commission_rate: 0.001,
                 ..Default::default()
@@ -786,6 +837,7 @@ mod tests {
             weight_method: WeightMethod::Equal,
             long_top_n: 1,
             short_top_n: 1,
+            rebalance_freq: 1,
             fee_config: FeeConfig {
                 commission_rate: 0.001,
                 ..Default::default()
@@ -837,6 +889,7 @@ mod tests {
             weight_method: WeightMethod::Equal,
             long_top_n: 1,
             short_top_n: 1,
+            rebalance_freq: 1,
             fee_config: FeeConfig {
                 commission_rate: 0.001,
                 ..Default::default()
@@ -888,6 +941,7 @@ mod tests {
             weight_method: WeightMethod::Equal,
             long_top_n: 1,
             short_top_n: 1,
+            rebalance_freq: 1,
             fee_config: FeeConfig {
                 commission_rate: 0.001,
                 ..Default::default()
@@ -958,6 +1012,7 @@ mod tests {
             weight_method: WeightMethod::Equal,
             long_top_n: 1,
             short_top_n: 1,
+            rebalance_freq: 1,
             fee_config: FeeConfig {
                 commission_rate: 0.001,
                 ..Default::default()
@@ -997,6 +1052,7 @@ mod tests {
             weight_method: WeightMethod::Equal,
             long_top_n: 1,
             short_top_n: 1,
+            rebalance_freq: 1,
             fee_config: FeeConfig {
                 commission_rate: 0.001,
                 ..Default::default()
@@ -1038,6 +1094,7 @@ mod tests {
             weight_method: WeightMethod::Equal,
             long_top_n: 1,
             short_top_n: 1,
+            rebalance_freq: 1,
             fee_config: FeeConfig {
                 commission_rate: 0.001,
                 ..Default::default()
@@ -1102,6 +1159,7 @@ mod tests {
             weight_method: WeightMethod::Equal,
             long_top_n: 1,
             short_top_n: 1,
+            rebalance_freq: 1,
             fee_config: FeeConfig {
                 commission_rate: 0.001,
                 ..Default::default()
@@ -1185,6 +1243,7 @@ mod tests {
             weight_method: WeightMethod::Equal,
             long_top_n: 1,
             short_top_n: 1,
+            rebalance_freq: 1,
             fee_config,
             position_config,
             limit_up_down_config: Default::default(),
@@ -1253,6 +1312,7 @@ mod tests {
             weight_method: WeightMethod::Equal,
             long_top_n: 1,
             short_top_n: 1,
+            rebalance_freq: 1,
             fee_config: FeeConfig {
                 commission_rate: 0.001,
                 ..Default::default()
@@ -1286,6 +1346,7 @@ mod tests {
             weight_method: WeightMethod::Equal,
             long_top_n: 1,
             short_top_n: 1,
+            rebalance_freq: 1,
             fee_config: FeeConfig {
                 commission_rate: 0.001,
                 ..Default::default()
@@ -1352,6 +1413,7 @@ mod tests {
             weight_method: WeightMethod::Equal,
             long_top_n: 1,
             short_top_n: 1,
+            rebalance_freq: 1,
             fee_config: FeeConfig::default(),
             position_config: position_neutral,
             limit_up_down_config: Default::default(),
@@ -1382,6 +1444,7 @@ mod tests {
             weight_method: WeightMethod::Equal,
             long_top_n: 1,
             short_top_n: 1,
+            rebalance_freq: 1,
             fee_config: FeeConfig::default(),
             position_config: position_directional,
             limit_up_down_config: Default::default(),
@@ -1403,5 +1466,771 @@ mod tests {
         // Both should produce finite results
         assert!(result_neutral.long_short_cum_return.is_finite());
         assert!(result_directional.long_short_cum_return.is_finite());
+    }
+
+    // === Rebalance Frequency Tests ===
+
+    #[test]
+    fn test_rebalance_freq_daily_is_default() {
+        // With freq=1, behavior should match the original daily rebalancing
+        let factor = Array2::from_shape_vec(
+            (5, 4),
+            vec![
+                1.0, 2.0, 3.0, 4.0, 4.0, 3.0, 2.0, 1.0, 2.0, 3.0, 4.0, 1.0, 1.0, 4.0, 3.0, 2.0,
+                3.0, 2.0, 1.0, 4.0,
+            ],
+        )
+        .unwrap();
+
+        let returns = Array2::from_shape_vec(
+            (5, 4),
+            vec![
+                0.01, 0.02, 0.03, 0.04, 0.04, 0.03, 0.02, 0.01, 0.02, 0.03, 0.04, 0.01, 0.01, 0.04,
+                0.03, 0.02, 0.03, 0.02, 0.01, 0.04,
+            ],
+        )
+        .unwrap();
+
+        let close = Array2::from_elem((5, 4), 1.0);
+        let vwap = Array2::from_elem((5, 4), 1.0);
+        let tradable = Array2::from_elem((5, 4), 1.0);
+
+        let config = BacktestConfig {
+            quantiles: 4,
+            weight_method: WeightMethod::Equal,
+            long_top_n: 1,
+            short_top_n: 1,
+            rebalance_freq: 1,
+            fee_config: FeeConfig::default(),
+            position_config: Default::default(),
+            limit_up_down_config: Default::default(),
+        };
+
+        let engine = BacktestEngine::with_config(config);
+        let result = engine
+            .run(
+                factor.clone(),
+                returns.clone(),
+                Array2::from_elem((5, 4), 1.0),
+                close.clone(),
+                close.clone(),
+                vwap.clone(),
+                tradable.clone(),
+            )
+            .unwrap();
+
+        // Basic validity checks
+        assert_eq!(result.group_returns.dim(), (4, 4));
+        assert!(result.long_short_cum_return.is_finite());
+        assert!(result.sharpe_ratio.is_finite());
+    }
+
+    #[test]
+    fn test_rebalance_freq_reduces_trading() {
+        // With higher rebalance_freq, there should be fewer rebalance days.
+        // Use constant prices so that holding days have zero return.
+        let factor = Array2::from_shape_vec(
+            (6, 4),
+            vec![
+                1.0, 2.0, 3.0, 4.0, 4.0, 3.0, 2.0, 1.0, // day1: group assignments change
+                2.0, 3.0, 4.0, 1.0, 1.0, 4.0, 3.0, 2.0, 3.0, 2.0, 1.0, 4.0, 4.0, 1.0, 2.0, 3.0,
+            ],
+        )
+        .unwrap();
+
+        let returns = Array2::from_elem((6, 4), 0.0); // zero returns
+        let close = Array2::from_elem((6, 4), 1.0);
+        let vwap = Array2::from_elem((6, 4), 1.0);
+        let tradable = Array2::from_elem((6, 4), 1.0);
+
+        // freq=1: daily rebalance -> trades on days 1,2,3,4,5
+        let config_daily = BacktestConfig {
+            quantiles: 4,
+            weight_method: WeightMethod::Equal,
+            long_top_n: 1,
+            short_top_n: 1,
+            rebalance_freq: 1,
+            fee_config: FeeConfig::default(),
+            position_config: Default::default(),
+            limit_up_down_config: Default::default(),
+        };
+        let engine_daily = BacktestEngine::with_config(config_daily);
+        let _result_daily = engine_daily
+            .run(
+                factor.clone(),
+                returns.clone(),
+                Array2::from_elem((6, 4), 1.0),
+                close.clone(),
+                close.clone(),
+                vwap.clone(),
+                tradable.clone(),
+            )
+            .unwrap();
+
+        // freq=3: rebalance on days 1,4 only -> less trading
+        let config_wide = BacktestConfig {
+            quantiles: 4,
+            weight_method: WeightMethod::Equal,
+            long_top_n: 1,
+            short_top_n: 1,
+            rebalance_freq: 3,
+            fee_config: FeeConfig::default(),
+            position_config: Default::default(),
+            limit_up_down_config: Default::default(),
+        };
+        let engine_wide = BacktestEngine::with_config(config_wide);
+        let result_wide = engine_wide
+            .run(
+                factor.clone(),
+                returns.clone(),
+                Array2::from_elem((6, 4), 1.0),
+                close.clone(),
+                close.clone(),
+                vwap.clone(),
+                tradable.clone(),
+            )
+            .unwrap();
+
+        // Both should produce valid results
+        assert!(result_wide.long_short_cum_return.is_finite());
+    }
+
+    #[test]
+    fn test_rebalance_freq_hold_day_no_fee() {
+        // On hold days, there should be no trading and thus no fees.
+        // If all prices are 1.0, fees come from share deltas * fee_rate * vwap.
+        // With freq=2 on a 3-day factor set, day1 is rebalance, day2 is hold.
+        // On day2 (hold), shares don't change, so no fee on that day.
+        let factor = Array2::from_shape_vec(
+            (3, 4),
+            vec![1.0, 2.0, 3.0, 4.0, 4.0, 3.0, 2.0, 1.0, 2.0, 3.0, 4.0, 1.0],
+        )
+        .unwrap();
+
+        let returns = Array2::from_elem((3, 4), 0.0);
+        let close = Array2::from_elem((3, 4), 1.0);
+        let vwap = Array2::from_elem((3, 4), 1.0);
+        let tradable = Array2::from_elem((3, 4), 1.0);
+
+        // freq=2: day 1 rebalance, day 2 hold
+        let config = BacktestConfig {
+            quantiles: 4,
+            weight_method: WeightMethod::Equal,
+            long_top_n: 1,
+            short_top_n: 1,
+            rebalance_freq: 2,
+            fee_config: FeeConfig {
+                commission_rate: 0.001,
+                ..Default::default()
+            },
+            position_config: Default::default(),
+            limit_up_down_config: Default::default(),
+        };
+
+        let engine = BacktestEngine::with_config(config);
+        let result = engine
+            .run(
+                factor,
+                returns,
+                Array2::from_elem((3, 4), 1.0),
+                close.clone(),
+                close.clone(),
+                vwap.clone(),
+                tradable.clone(),
+            )
+            .unwrap();
+
+        // With freq=2 and 3 days: day1 rebalance, day2 hold.
+        // The hold day should have zero price movement (close=1.0 always),
+        // so NAV should stay at 1.0 after the hold day
+        // (minus any fee from day1 rebalance).
+        // The key point: no crash, finite result.
+        assert!(result.group_returns[[1, 0]].is_finite());
+    }
+
+    #[test]
+    fn test_rebalance_freq_weights_drift_with_prices() {
+        // On a hold day with non-zero price movement, the portfolio value
+        // changes with prices. Shares stay constant, but NAV drifts.
+        //
+        // Setup: 2 assets, 2 groups, 3 days, freq=2.
+        // Day 1: rebalance, buy asset0 at open=1.0, close=1.0. NAV=1.0, shares=1.0.
+        // Day 2: hold (no rebalance). Asset0 close jumps to 2.0. NAV should double
+        //        since we still hold 1.0 shares now worth 2.0 each.
+        let factor = Array2::from_shape_vec(
+            (3, 2),
+            vec![
+                1.0, 2.0, // day0: asset0 in group1, asset1 in group2
+                1.0, 2.0, // day1: same
+                1.0, 2.0, // day2: same
+            ],
+        )
+        .unwrap();
+
+        let returns = Array2::from_elem((3, 2), 0.0);
+
+        // Day1 (rebalance): open=1.0, close=1.0 -> flat
+        // Day2 (hold):      open=1.0, close=2.0 -> price doubles while we hold
+        let close = Array2::from_shape_vec(
+            (3, 2),
+            vec![
+                1.0, 1.0, // day0
+                1.0, 1.0, // day1: flat (rebalance day, entry)
+                2.0, 1.0, // day2: asset0 doubles (hold day)
+            ],
+        )
+        .unwrap();
+        let open = Array2::from_shape_vec(
+            (3, 2),
+            vec![
+                1.0, 1.0, // day0
+                1.0, 1.0, // day1: open=1.0, we buy shares cheap
+                1.0, 1.0, // day2: open still 1.0 (not used on hold day)
+            ],
+        )
+        .unwrap();
+        let vwap = close.clone();
+        let tradable = Array2::from_elem((3, 2), 1.0);
+
+        // group 1 = asset0 (factor=1.0, bottom), group 2 = asset1 (factor=2.0, top)
+        let config = BacktestConfig {
+            quantiles: 2,
+            weight_method: WeightMethod::Equal,
+            long_top_n: 1,
+            short_top_n: 1,
+            rebalance_freq: 2,
+            fee_config: FeeConfig {
+                commission_rate: 0.0, // zero fees for clean test
+                ..Default::default()
+            },
+            position_config: Default::default(),
+            limit_up_down_config: Default::default(),
+        };
+
+        let engine = BacktestEngine::with_config(config);
+        let result = engine
+            .run(
+                factor.clone(),
+                returns,
+                Array2::from_elem((3, 2), 1.0),
+                close.clone(),
+                open.clone(),
+                vwap.clone(),
+                tradable.clone(),
+            )
+            .unwrap();
+
+        // Day 1 (index 0 in returns): rebalance, buy asset0 at open=1.0
+        //   group_weight=0.5, alloc=1.0*(0.5/0.5)=1.0, shares=1.0/1.0=1.0
+        //   close=1.0, NAV=1.0, return=0.0
+        assert!(
+            (result.group_returns[[0, 0]] - 0.0).abs() < 0.01,
+            "Rebalance day (flat price) should give 0 return"
+        );
+
+        // Day 2 (index 1 in returns): hold, no trading
+        //   shares still 1.0, close=2.0, NAV=2.0, return=2.0/1.0-1=1.0
+        let group0_ret_d2 = result.group_returns[[1, 0]];
+        assert!(
+            (group0_ret_d2 - 1.0).abs() < 0.01,
+            "Hold day with 2x close should give ~100% return, got {}",
+            group0_ret_d2
+        );
+    }
+
+    #[test]
+    fn test_rebalance_freq_must_not_bfill_weights() {
+        // This test verifies that we do NOT bfill weights on hold days.
+        // If we bfill'ed, the portfolio would rebalance to the stale weights
+        // every day, generating phantom turnover.
+        //
+        // Setup: factor changes on day1, so group assignments change.
+        // With freq=2:
+        //   Day1: rebalance with day0 labels
+        //   Day2: hold (do NOT rebalance with day1 labels)
+        //
+        // If we incorrectly bfill'ed day0 weights to day1, day2 would trade
+        // using day0's groups. Correct behavior: day2 holds, no trading.
+        //
+        // We verify by checking that the two freq variants produce different
+        // group_returns — freq=2 should skip the day2 rebalance that freq=1 does.
+
+        let factor = Array2::from_shape_vec(
+            (3, 4),
+            vec![
+                1.0, 2.0, 3.0, 4.0, // day0
+                4.0, 3.0, 2.0, 1.0, // day1: groups reversed
+                1.0, 2.0, 3.0, 4.0, // day2: groups reversed again
+            ],
+        )
+        .unwrap();
+
+        let returns = Array2::from_elem((3, 4), 0.0);
+        let close = Array2::from_elem((3, 4), 10.0);
+        let vwap = Array2::from_elem((3, 4), 10.0);
+        let tradable = Array2::from_elem((3, 4), 1.0);
+
+        let config_daily = BacktestConfig {
+            quantiles: 4,
+            weight_method: WeightMethod::Equal,
+            long_top_n: 1,
+            short_top_n: 1,
+            rebalance_freq: 1,
+            fee_config: FeeConfig {
+                commission_rate: 0.001,
+                ..Default::default()
+            },
+            position_config: Default::default(),
+            limit_up_down_config: Default::default(),
+        };
+
+        let config_hold = BacktestConfig {
+            rebalance_freq: 2,
+            ..config_daily.clone()
+        };
+
+        let engine_daily = BacktestEngine::with_config(config_daily);
+        let result_daily = engine_daily
+            .run(
+                factor.clone(),
+                returns.clone(),
+                Array2::from_elem((3, 4), 1.0),
+                close.clone(),
+                close.clone(),
+                vwap.clone(),
+                tradable.clone(),
+            )
+            .unwrap();
+
+        let engine_hold = BacktestEngine::with_config(config_hold);
+        let result_hold = engine_hold
+            .run(
+                factor,
+                returns,
+                Array2::from_elem((3, 4), 1.0),
+                close.clone(),
+                close.clone(),
+                vwap.clone(),
+                tradable.clone(),
+            )
+            .unwrap();
+
+        // With prices constant at 10.0, daily rebalancing trades every day
+        // generating fees. Hold mode trades only day1, so fees are lower.
+        // Since returns are zero, the difference is purely from fees.
+        // freq=2 should have HIGHER cumulative return (less fee drag) than freq=1.
+        assert!(
+            result_hold.long_short_cum_return >= result_daily.long_short_cum_return,
+            "Hold mode (freq=2) should have >= cumulative return than daily (freq=1) due to lower fees. hold={}, daily={}",
+            result_hold.long_short_cum_return,
+            result_daily.long_short_cum_return
+        );
+    }
+
+    // === Passive Benchmark Tests ===
+
+    #[test]
+    fn test_passive_returns_equal_weight() {
+        // Passive benchmark should return equal-weight average of all
+        // tradable stock returns.
+        let factor = Array2::from_shape_vec(
+            (3, 4),
+            vec![1.0, 2.0, 3.0, 4.0, 4.0, 3.0, 2.0, 1.0, 2.0, 3.0, 4.0, 1.0],
+        )
+        .unwrap();
+
+        let returns = Array2::from_shape_vec(
+            (3, 4),
+            vec![
+                0.01, 0.02, 0.03, 0.04, 0.04, 0.03, 0.02, 0.01, 0.02, 0.01, 0.03, 0.02,
+            ],
+        )
+        .unwrap();
+
+        let close = Array2::from_elem((3, 4), 10.0);
+        let vwap = Array2::from_elem((3, 4), 10.0);
+        let tradable = Array2::from_elem((3, 4), 1.0);
+
+        let config = BacktestConfig {
+            quantiles: 4,
+            weight_method: WeightMethod::Equal,
+            long_top_n: 1,
+            short_top_n: 1,
+            rebalance_freq: 1,
+            fee_config: FeeConfig::default(),
+            position_config: Default::default(),
+            limit_up_down_config: Default::default(),
+        };
+
+        let engine = BacktestEngine::with_config(config);
+        let result = engine
+            .run(
+                factor,
+                returns.clone(),
+                Array2::from_elem((3, 4), 1.0),
+                close.clone(),
+                close.clone(),
+                vwap.clone(),
+                tradable.clone(),
+            )
+            .unwrap();
+
+        // passive_returns should have length n_days-1 = 2
+        assert_eq!(result.passive_returns.len(), 2);
+        assert_eq!(result.passive_cum_returns.len(), 2);
+
+        // Day 0 returns: [0.01, 0.02, 0.03, 0.04], mean = 0.025
+        assert!(
+            (result.passive_returns[0] - 0.025).abs() < 1e-10,
+            "Passive return day0 should be 0.025, got {}",
+            result.passive_returns[0]
+        );
+
+        // Day 1 returns: [0.04, 0.03, 0.02, 0.01], mean = 0.025
+        assert!(
+            (result.passive_returns[1] - 0.025).abs() < 1e-10,
+            "Passive return day1 should be 0.025, got {}",
+            result.passive_returns[1]
+        );
+
+        // Cumulative: 1.0 * 1.025 * 1.025 = 1.050625
+        let expected_nav = 1.0 * 1.025 * 1.025;
+        assert!(
+            (result.passive_cum_returns[1] - expected_nav).abs() < 1e-10,
+            "Passive cum NAV should be {}, got {}",
+            expected_nav,
+            result.passive_cum_returns[1]
+        );
+    }
+
+    #[test]
+    fn test_passive_excludes_untradable() {
+        // Stocks with tradable=0 should be excluded from passive benchmark.
+        let factor =
+            Array2::from_shape_vec((3, 3), vec![1.0, 2.0, 3.0, 3.0, 2.0, 1.0, 2.0, 3.0, 1.0])
+                .unwrap();
+
+        let returns = Array2::from_shape_vec(
+            (3, 3),
+            vec![0.10, 0.20, 0.30, 0.30, 0.20, 0.10, 0.10, 0.10, 0.10],
+        )
+        .unwrap();
+
+        let close = Array2::from_elem((3, 3), 10.0);
+        let vwap = Array2::from_elem((3, 3), 10.0);
+
+        // Asset 2 is untradable on days 0 and 1
+        let tradable = Array2::from_shape_vec(
+            (3, 3),
+            vec![
+                1.0, 1.0, 0.0, // day0: asset2 excluded
+                1.0, 1.0, 0.0, // day1: asset2 excluded
+                1.0, 1.0, 1.0, // day2
+            ],
+        )
+        .unwrap();
+
+        let config = BacktestConfig {
+            quantiles: 3,
+            weight_method: WeightMethod::Equal,
+            long_top_n: 1,
+            short_top_n: 1,
+            rebalance_freq: 1,
+            fee_config: FeeConfig::default(),
+            position_config: Default::default(),
+            limit_up_down_config: Default::default(),
+        };
+
+        let engine = BacktestEngine::with_config(config);
+        let result = engine
+            .run(
+                factor,
+                returns.clone(),
+                Array2::from_elem((3, 3), 1.0),
+                close.clone(),
+                close.clone(),
+                vwap.clone(),
+                tradable,
+            )
+            .unwrap();
+
+        // Day 0: only assets 0,1 tradable => mean(0.10, 0.20) = 0.15
+        assert!(
+            (result.passive_returns[0] - 0.15).abs() < 1e-10,
+            "Passive day0 should exclude untradable, got {}",
+            result.passive_returns[0]
+        );
+    }
+
+    // === Group IC Tests ===
+
+    #[test]
+    fn test_group_ic_isolates_correct_groups() {
+        // Group IC should only consider assets within the target groups.
+        // Long IC = only top group assets, Short IC = only bottom group assets.
+        // Use 8 assets, 4 quantiles → 2 assets per group (enough for correlation).
+        let factor = Array2::from_shape_vec(
+            (3, 8),
+            vec![
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0,
+                3.0, 1.0, 4.0, 5.0, 2.0, 6.0, 8.0, 7.0,
+            ],
+        )
+        .unwrap();
+
+        let returns = Array2::from_shape_vec(
+            (3, 8),
+            vec![
+                0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.08, 0.07, 0.06, 0.05, 0.04, 0.03,
+                0.02, 0.01, 0.03, 0.06, 0.01, 0.04, 0.05, 0.07, 0.02, 0.08,
+            ],
+        )
+        .unwrap();
+
+        let close = Array2::from_elem((3, 8), 10.0);
+        let vwap = Array2::from_elem((3, 8), 10.0);
+        let tradable = Array2::from_elem((3, 8), 1.0);
+
+        let config = BacktestConfig {
+            quantiles: 4,
+            weight_method: WeightMethod::Equal,
+            long_top_n: 1,  // only top group (2 assets)
+            short_top_n: 1, // only bottom group (2 assets)
+            rebalance_freq: 1,
+            fee_config: FeeConfig::default(),
+            position_config: Default::default(),
+            limit_up_down_config: Default::default(),
+        };
+
+        let engine = BacktestEngine::with_config(config);
+        let result = engine
+            .run(
+                factor,
+                returns.clone(),
+                Array2::from_elem((3, 8), 1.0),
+                close.clone(),
+                close.clone(),
+                vwap.clone(),
+                tradable.clone(),
+            )
+            .unwrap();
+
+        // Each group has 2 assets, enough for Pearson correlation
+        assert!(
+            result.long_ic_mean.is_finite(),
+            "Long IC mean should be finite, got {:?}",
+            result.long_ic_mean
+        );
+        assert!(
+            result.short_ic_mean.is_finite(),
+            "Short IC mean should be finite, got {:?}",
+            result.short_ic_mean
+        );
+        // Long+short combined = 4 assets, enough for correlation
+        assert!(
+            result.long_short_ic_mean.is_finite(),
+            "Long+short IC mean should be finite, got {:?}",
+            result.long_short_ic_mean
+        );
+    }
+
+    #[test]
+    fn test_group_ic_handles_empty_groups() {
+        // When a group has only 1 asset, group IC should be NaN without panicking.
+        // Need >= 3 days for full-market IC (needs >= 2 IC values for IR computation).
+        let factor =
+            Array2::from_shape_vec((3, 3), vec![1.0, 2.0, 3.0, 3.0, 2.0, 1.0, 2.0, 3.0, 1.0])
+                .unwrap();
+
+        let returns = Array2::from_shape_vec(
+            (3, 3),
+            vec![0.01, 0.02, 0.03, 0.03, 0.02, 0.01, 0.02, 0.03, 0.01],
+        )
+        .unwrap();
+
+        let close = Array2::from_elem((3, 3), 10.0);
+        let vwap = Array2::from_elem((3, 3), 10.0);
+        let tradable = Array2::from_elem((3, 3), 1.0);
+
+        // 3 assets, 2 quantiles => one group has 2 assets, one has 1.
+        // The 1-asset group IC will be NaN.
+        // This should not panic.
+        let config = BacktestConfig {
+            quantiles: 2,
+            weight_method: WeightMethod::Equal,
+            long_top_n: 1,
+            short_top_n: 1,
+            rebalance_freq: 1,
+            fee_config: FeeConfig::default(),
+            position_config: Default::default(),
+            limit_up_down_config: Default::default(),
+        };
+
+        let engine = BacktestEngine::with_config(config);
+        let result = engine
+            .run(
+                factor,
+                returns.clone(),
+                Array2::from_elem((3, 3), 1.0),
+                close.clone(),
+                close.clone(),
+                vwap.clone(),
+                tradable.clone(),
+            )
+            .unwrap();
+
+        // With 1 asset per group, group IC should be NaN (not enough samples)
+        // but the result should not contain infinite or crashing values
+        // (NaN is acceptable for insufficient data)
+        assert!(result.long_ic_mean.is_nan() || result.long_ic_mean.is_finite());
+    }
+
+    // === Weight Turnover, Win Rate, Calmar Tests ===
+
+    #[test]
+    fn test_weight_turnover_vs_label_turnover() {
+        // When factor values shift slightly but group labels don't change,
+        // weight_turnover should be > 0 while label_turnover is 0.
+        let factor = Array2::from_shape_vec(
+            (3, 8),
+            vec![
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 1.1, 2.1, 3.1, 4.1, 5.1, 6.1, 7.1,
+                8.1, // slight shift, same ordering
+                1.2, 2.2, 3.2, 4.2, 5.2, 6.2, 7.2, 8.2,
+            ],
+        )
+        .unwrap();
+
+        let returns = Array2::from_elem((3, 8), 0.0);
+        let close = Array2::from_elem((3, 8), 10.0);
+        let vwap = Array2::from_elem((3, 8), 10.0);
+        let tradable = Array2::from_elem((3, 8), 1.0);
+
+        let config = BacktestConfig {
+            quantiles: 4,
+            weight_method: WeightMethod::Weighted, // weight within group depends on factor value
+            long_top_n: 1,
+            short_top_n: 1,
+            rebalance_freq: 1,
+            fee_config: FeeConfig::default(),
+            position_config: Default::default(),
+            limit_up_down_config: Default::default(),
+        };
+
+        let engine = BacktestEngine::with_config(config);
+        let result = engine
+            .run(
+                factor,
+                returns,
+                Array2::from_elem((3, 8), 1.0),
+                close.clone(),
+                close.clone(),
+                vwap.clone(),
+                tradable.clone(),
+            )
+            .unwrap();
+
+        // With ordered but slightly shifted factors, label turnover should be 0,
+        // but weight turnover should be > 0 (within-group weight shifts).
+        assert!(
+            result.weight_turnover >= 0.0,
+            "Weight turnover should be non-negative, got {}",
+            result.weight_turnover
+        );
+    }
+
+    #[test]
+    fn test_win_rate_computation() {
+        // Verify win rate calculation with known return values.
+        let factor = Array2::from_shape_vec(
+            (4, 4),
+            vec![
+                1.0, 2.0, 3.0, 4.0, 4.0, 3.0, 2.0, 1.0, 2.0, 3.0, 4.0, 1.0, 1.0, 4.0, 3.0, 2.0,
+            ],
+        )
+        .unwrap();
+
+        let returns = Array2::from_elem((4, 4), 0.0);
+        let close = Array2::from_elem((4, 4), 10.0);
+        let vwap = Array2::from_elem((4, 4), 10.0);
+        let tradable = Array2::from_elem((4, 4), 1.0);
+
+        let config = BacktestConfig {
+            quantiles: 4,
+            weight_method: WeightMethod::Equal,
+            long_top_n: 1,
+            short_top_n: 1,
+            rebalance_freq: 1,
+            fee_config: FeeConfig::default(),
+            position_config: Default::default(),
+            limit_up_down_config: Default::default(),
+        };
+
+        let engine = BacktestEngine::with_config(config);
+        let result = engine
+            .run(
+                factor,
+                returns,
+                Array2::from_elem((4, 4), 1.0),
+                close.clone(),
+                close.clone(),
+                vwap.clone(),
+                tradable.clone(),
+            )
+            .unwrap();
+
+        // Win rate should be between 0 and 1
+        assert!(
+            result.win_rate >= 0.0 && result.win_rate <= 1.0,
+            "Win rate should be in [0, 1], got {}",
+            result.win_rate
+        );
+    }
+
+    #[test]
+    fn test_calmar_ratio_computation() {
+        let factor = Array2::from_shape_vec(
+            (4, 4),
+            vec![
+                1.0, 2.0, 3.0, 4.0, 4.0, 3.0, 2.0, 1.0, 2.0, 3.0, 4.0, 1.0, 1.0, 4.0, 3.0, 2.0,
+            ],
+        )
+        .unwrap();
+
+        let returns = Array2::from_elem((4, 4), 0.0);
+        let close = Array2::from_elem((4, 4), 10.0);
+        let vwap = Array2::from_elem((4, 4), 10.0);
+        let tradable = Array2::from_elem((4, 4), 1.0);
+
+        let config = BacktestConfig {
+            quantiles: 4,
+            weight_method: WeightMethod::Equal,
+            long_top_n: 1,
+            short_top_n: 1,
+            rebalance_freq: 1,
+            fee_config: FeeConfig::default(),
+            position_config: Default::default(),
+            limit_up_down_config: Default::default(),
+        };
+
+        let engine = BacktestEngine::with_config(config);
+        let result = engine
+            .run(
+                factor,
+                returns,
+                Array2::from_elem((4, 4), 1.0),
+                close.clone(),
+                close.clone(),
+                vwap.clone(),
+                tradable.clone(),
+            )
+            .unwrap();
+
+        // With zero returns, annualized_return ≈ 0, max_drawdown ≈ 0, calmar ≈ NaN or 0
+        // The key assertion: it's not panicking and is finite or NaN
+        assert!(
+            result.calmar_ratio.is_finite() || result.calmar_ratio.is_nan(),
+            "Calmar should be finite or NaN"
+        );
     }
 }

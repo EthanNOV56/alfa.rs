@@ -887,6 +887,7 @@ struct PyBacktestEngine {
 #[pymethods]
 impl PyBacktestEngine {
     #[new]
+    #[pyo3(signature = (quantiles, weight_method, long_top_n, short_top_n, commission_rate, rebalance_freq=1))]
     fn new(
         _py: Python<'_>,
         quantiles: usize,
@@ -894,6 +895,7 @@ impl PyBacktestEngine {
         long_top_n: usize,
         short_top_n: usize,
         commission_rate: f64,
+        rebalance_freq: usize,
     ) -> PyResult<Self> {
         let wmethod = match weight_method {
             "equal" => WeightMethod::Equal,
@@ -915,6 +917,7 @@ impl PyBacktestEngine {
             weight_method: wmethod,
             long_top_n,
             short_top_n,
+            rebalance_freq,
             fee_config,
             position_config: Default::default(),
             limit_up_down_config: Default::default(),
@@ -1059,6 +1062,18 @@ struct PyBacktestResult {
     ic_mean: f64,
     #[pyo3(get)]
     ic_ir: f64,
+    #[pyo3(get)]
+    long_ic_mean: f64,
+    #[pyo3(get)]
+    long_ic_ir: f64,
+    #[pyo3(get)]
+    short_ic_mean: f64,
+    #[pyo3(get)]
+    short_ic_ir: f64,
+    #[pyo3(get)]
+    long_short_ic_mean: f64,
+    #[pyo3(get)]
+    long_short_ic_ir: f64,
     /// Total return
     #[pyo3(get)]
     total_return: f64,
@@ -1071,15 +1086,30 @@ struct PyBacktestResult {
     /// Maximum drawdown
     #[pyo3(get)]
     max_drawdown: f64,
-    /// Turnover rate
+    /// Turnover rate (group-label-based)
     #[pyo3(get)]
     turnover: f64,
+    /// Weight-based turnover rate
+    #[pyo3(get)]
+    weight_turnover: f64,
+    /// Win rate: fraction of days with positive long-short return
+    #[pyo3(get)]
+    win_rate: f64,
+    /// Calmar ratio: annualized_return / max_drawdown
+    #[pyo3(get)]
+    calmar_ratio: f64,
     /// Long-only returns
     #[pyo3(get)]
     long_returns: Py<PyArray1<f64>>,
     /// Short-only returns
     #[pyo3(get)]
     short_returns: Py<PyArray1<f64>>,
+    /// Passive benchmark daily returns (equal-weight all tradable stocks)
+    #[pyo3(get)]
+    passive_returns: Py<PyArray1<f64>>,
+    /// Passive benchmark cumulative NAV curve
+    #[pyo3(get)]
+    passive_cum_returns: Py<PyArray1<f64>>,
 }
 
 impl From<BacktestResult> for PyBacktestResult {
@@ -1096,13 +1126,24 @@ impl From<BacktestResult> for PyBacktestResult {
             ic_series: result.ic_series.into_pyarray(py).into(),
             ic_mean: result.ic_mean,
             ic_ir: result.ic_ir,
+            long_ic_mean: result.long_ic_mean,
+            long_ic_ir: result.long_ic_ir,
+            short_ic_mean: result.short_ic_mean,
+            short_ic_ir: result.short_ic_ir,
+            long_short_ic_mean: result.long_short_ic_mean,
+            long_short_ic_ir: result.long_short_ic_ir,
             total_return: result.total_return,
             annualized_return: result.annualized_return,
             sharpe_ratio: result.sharpe_ratio,
             max_drawdown: result.max_drawdown,
             turnover: result.turnover,
+            weight_turnover: result.weight_turnover,
+            win_rate: result.win_rate,
+            calmar_ratio: result.calmar_ratio,
             long_returns: result.long_returns.into_pyarray(py).into(),
             short_returns: result.short_returns.into_pyarray(py).into(),
+            passive_returns: result.passive_returns.into_pyarray(py).into(),
+            passive_cum_returns: result.passive_cum_returns.into_pyarray(py).into(),
         })
         .unwrap()
     }
@@ -1145,6 +1186,7 @@ fn quantile_backtest(
         weight_method: wmethod,
         long_top_n,
         short_top_n,
+        rebalance_freq: 1,
         fee_config,
         position_config: Default::default(),
         limit_up_down_config: Default::default(),
@@ -3219,6 +3261,7 @@ impl PyAlfarsLab {
         self.inner.lock().unwrap().set_years(start, end);
     }
 
+    #[pyo3(signature = (quantiles, weight_method, long_top_n, short_top_n, commission_rate, rebalance_freq=1))]
     fn with_backtest_config(
         &self,
         quantiles: usize,
@@ -3226,6 +3269,7 @@ impl PyAlfarsLab {
         long_top_n: usize,
         short_top_n: usize,
         commission_rate: f64,
+        rebalance_freq: usize,
     ) -> PyResult<()> {
         let wm = match weight_method {
             "equal" => WeightMethod::Equal,
@@ -3241,6 +3285,7 @@ impl PyAlfarsLab {
             weight_method: wm,
             long_top_n,
             short_top_n,
+            rebalance_freq,
             fee_config: backtest::FeeConfig {
                 commission_rate,
                 ..Default::default()

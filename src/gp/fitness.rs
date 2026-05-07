@@ -266,6 +266,7 @@ impl RealBacktestFitnessEvaluator {
             weight_method: WeightMethod::Equal,
             long_top_n: 1,
             short_top_n: 1,
+            rebalance_freq: 1,
             fee_config: self.fee_config.clone(),
             limit_up_down_config: Default::default(),
             position_config: self.position_config.clone(),

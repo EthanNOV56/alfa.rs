@@ -30,12 +30,28 @@ pub struct BacktestResult {
     pub long_cum_returns: Array1<f64>,
     /// Short leg cumulative NAV curve [n_days-1]
     pub short_cum_returns: Array1<f64>,
+    /// Passive benchmark daily returns (equal-weight all tradable stocks)
+    pub passive_returns: Array1<f64>,
+    /// Passive benchmark cumulative NAV curve [n_days-1]
+    pub passive_cum_returns: Array1<f64>,
     /// IC series
     pub ic_series: Array1<f64>,
     /// IC mean
     pub ic_mean: f64,
     /// IC IR (Information Ratio)
     pub ic_ir: f64,
+    /// Long group IC mean (top quantile groups only)
+    pub long_ic_mean: f64,
+    /// Long group IC IR
+    pub long_ic_ir: f64,
+    /// Short group IC mean (bottom quantile groups only)
+    pub short_ic_mean: f64,
+    /// Short group IC IR
+    pub short_ic_ir: f64,
+    /// Long+short combined IC mean
+    pub long_short_ic_mean: f64,
+    /// Long+short combined IC IR
+    pub long_short_ic_ir: f64,
     /// Total return
     pub total_return: f64,
     /// Annualized return
@@ -44,12 +60,54 @@ pub struct BacktestResult {
     pub sharpe_ratio: f64,
     /// Maximum drawdown
     pub max_drawdown: f64,
-    /// Turnover rate
+    /// Turnover rate (group-label-based)
     pub turnover: f64,
+    /// Weight-based turnover rate (sum of absolute weight changes)
+    pub weight_turnover: f64,
+    /// Win rate: fraction of days with positive long-short return
+    pub win_rate: f64,
+    /// Calmar ratio: annualized_return / max_drawdown
+    pub calmar_ratio: f64,
     /// Long-only returns
     pub long_returns: Array1<f64>,
     /// Short-only returns
     pub short_returns: Array1<f64>,
+}
+
+impl Default for BacktestResult {
+    fn default() -> Self {
+        Self {
+            dates: vec![],
+            group_returns: Array2::zeros((0, 0)),
+            group_cum_returns: Array2::zeros((0, 0)),
+            long_short_returns: Array1::zeros(0),
+            long_short_cum_return: 0.0,
+            long_short_cum_returns: Array1::zeros(0),
+            long_cum_returns: Array1::zeros(0),
+            short_cum_returns: Array1::zeros(0),
+            passive_returns: Array1::zeros(0),
+            passive_cum_returns: Array1::zeros(0),
+            ic_series: Array1::zeros(0),
+            ic_mean: 0.0,
+            ic_ir: 0.0,
+            long_ic_mean: 0.0,
+            long_ic_ir: 0.0,
+            short_ic_mean: 0.0,
+            short_ic_ir: 0.0,
+            long_short_ic_mean: 0.0,
+            long_short_ic_ir: 0.0,
+            total_return: 0.0,
+            annualized_return: 0.0,
+            sharpe_ratio: 0.0,
+            max_drawdown: 0.0,
+            turnover: 0.0,
+            weight_turnover: 0.0,
+            win_rate: 0.0,
+            calmar_ratio: 0.0,
+            long_returns: Array1::zeros(0),
+            short_returns: Array1::zeros(0),
+        }
+    }
 }
 
 impl BacktestResult {
