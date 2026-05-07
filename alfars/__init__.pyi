@@ -180,9 +180,30 @@ class BacktestResult:
     group_cum_returns: npt.NDArray
     long_short_returns: npt.NDArray
     long_short_cum_return: float
+    long_short_cum_returns: npt.NDArray
+    long_cum_returns: npt.NDArray
+    short_cum_returns: npt.NDArray
+    passive_returns: npt.NDArray
+    passive_cum_returns: npt.NDArray
     ic_series: npt.NDArray
     ic_mean: float
     ic_ir: float
+    long_ic_mean: float
+    long_ic_ir: float
+    short_ic_mean: float
+    short_ic_ir: float
+    long_short_ic_mean: float
+    long_short_ic_ir: float
+    total_return: float
+    annualized_return: float
+    sharpe_ratio: float
+    max_drawdown: float
+    turnover: float
+    weight_turnover: float
+    win_rate: float
+    calmar_ratio: float
+    long_returns: npt.NDArray
+    short_returns: npt.NDArray
 
     def summary(self) -> str:
         """Return a summary string of the backtest results."""
@@ -765,14 +786,25 @@ class BacktestResult:
     long_short_cum_returns: npt.NDArray[np.float64]
     long_cum_returns: npt.NDArray[np.float64]
     short_cum_returns: npt.NDArray[np.float64]
+    passive_returns: npt.NDArray[np.float64]
+    passive_cum_returns: npt.NDArray[np.float64]
     ic_series: npt.NDArray[np.float64]
     ic_mean: float
     ic_ir: float
+    long_ic_mean: float
+    long_ic_ir: float
+    short_ic_mean: float
+    short_ic_ir: float
+    long_short_ic_mean: float
+    long_short_ic_ir: float
     total_return: float
     annualized_return: float
     sharpe_ratio: float
     max_drawdown: float
     turnover: float
+    weight_turnover: float
+    win_rate: float
+    calmar_ratio: float
     long_returns: npt.NDArray[np.float64]
     short_returns: npt.NDArray[np.float64]
 
