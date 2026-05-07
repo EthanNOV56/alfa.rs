@@ -66,8 +66,8 @@ impl BacktestEngine {
     /// # Parameters
     /// - `factor`: Factor values matrix [n_days, n_assets]
     /// - `returns`: Return values matrix [n_days, n_assets]
-    /// - `adj_factor`: Optional adjustment factors for pre-adjusted prices (前复权)
-    /// - `volume`: Optional volume data for slippage calculation
+    /// - `adj_factor`: adjustment factors for pre-adjusted prices (前复权)
+    /// - `volume`: volume data for slippage calculation
     ///
     /// # Important Limitations (for Research vs Production)
     ///

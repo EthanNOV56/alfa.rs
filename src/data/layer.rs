@@ -29,16 +29,13 @@ pub struct PreFilter {
     pub conditions: Vec<String>,
 }
 
-const TABLE_1D: &str = "stock_1d";
-const TABLE_5M: &str = "stock_5m";
-
 /// Map canonical column name to actual DB column/expression per table.
 /// Always returns `db_expr AS col` so the Arrow result uses canonical names.
-fn canonical_to_sql(table: &str, col: &str) -> String {
+fn canonical_to_sql(col: &str, is_5m: bool) -> String {
     let expr = match col {
         "open" | "high" | "low" | "close" => col.to_string(),
         "vol" => {
-            if table == TABLE_5M {
+            if is_5m {
                 "vol".into()
             } else {
                 "volume".into()
@@ -46,7 +43,7 @@ fn canonical_to_sql(table: &str, col: &str) -> String {
         }
         "amount" => "amount".into(),
         "vwap" => {
-            if table == TABLE_5M {
+            if is_5m {
                 format!("amount * {} / vol", 10)
             } else {
                 format!("amount * {} / volume", 10)
@@ -503,10 +500,8 @@ impl DataLayer {
         prefix: &str,
     ) -> Result<HashMap<String, Array1<f64>>, DataError> {
         // Build SQL with canonical→DB column mapping
-        let sql_columns: Vec<String> = columns
-            .iter()
-            .map(|c| canonical_to_sql(table_name, c))
-            .collect();
+        let is_5m = prefix == "5m";
+        let sql_columns: Vec<String> = columns.iter().map(|c| canonical_to_sql(c, is_5m)).collect();
         let columns_str = sql_columns.join(", ");
         let mut where_clauses = vec!["1=1".to_string()];
 
@@ -693,7 +688,8 @@ impl DataLayer {
                 cols.push(col.clone());
             }
         }
-        self.query_arrow_impl(&cols, TABLE_1D, pre, "1d")
+        let table_1d = self.source.table_1d().to_string();
+        self.query_arrow_impl(&cols, &table_1d, pre, "1d")
     }
 
     /// Query 5m data with specific columns
@@ -708,7 +704,8 @@ impl DataLayer {
                 cols.push(col.clone());
             }
         }
-        self.query_arrow_impl(&cols, TABLE_5M, pre, "5m")
+        let table_5m = self.source.table_5m().to_string();
+        self.query_arrow_impl(&cols, &table_5m, pre, "5m")
     }
 
     /// Build a (date, symbol) → free_float_cap map for cap_neu neutralization.

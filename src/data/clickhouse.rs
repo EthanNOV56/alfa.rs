@@ -18,6 +18,10 @@ pub struct ClickHouseSource {
     volume_unit: u16,
     /// Amount unit (e.g., 1000 for 千元)
     amount_unit: u16,
+    /// Table name for daily data (configurable: "stock_1d" or "stock_1day")
+    table_1d: String,
+    /// Table name for 5-minute data (configurable: "stock_5m" or "stock_5min")
+    table_5m: String,
     /// Lazily-initialized reqwest client for HTTP keep-alive connection reuse
     client: OnceLock<reqwest::blocking::Client>,
 }
@@ -32,6 +36,8 @@ impl Clone for ClickHouseSource {
             password: self.password.clone(),
             volume_unit: self.volume_unit,
             amount_unit: self.amount_unit,
+            table_1d: self.table_1d.clone(),
+            table_5m: self.table_5m.clone(),
             client: OnceLock::new(),
         }
     }
@@ -84,6 +90,8 @@ impl ClickHouseSource {
             password,
             volume_unit,
             amount_unit,
+            table_1d: "stock_1d".to_string(),
+            table_5m: "stock_5m".to_string(),
             client: OnceLock::new(),
         }
     }
@@ -98,6 +106,8 @@ impl ClickHouseSource {
             password: None,
             volume_unit: 100,
             amount_unit: 1000,
+            table_1d: "stock_1d".to_string(),
+            table_5m: "stock_5m".to_string(),
             client: OnceLock::new(),
         }
     }
@@ -112,6 +122,8 @@ impl ClickHouseSource {
             password: None,
             volume_unit: 100,
             amount_unit: 1000,
+            table_1d: "stock_1d".to_string(),
+            table_5m: "stock_5m".to_string(),
             client: OnceLock::new(),
         }
     }
@@ -133,6 +145,8 @@ impl ClickHouseSource {
             password: None,
             volume_unit,
             amount_unit,
+            table_1d: "stock_1d".to_string(),
+            table_5m: "stock_5m".to_string(),
             client: OnceLock::new(),
         }
     }
@@ -165,6 +179,29 @@ impl ClickHouseSource {
     /// Amount unit (yuan per unit, default 1000 for 千元)
     pub fn amount_unit(&self) -> f64 {
         self.amount_unit as f64
+    }
+
+    /// Get the daily table name
+    pub fn table_1d(&self) -> &str {
+        &self.table_1d
+    }
+
+    /// Get the 5-minute table name
+    pub fn table_5m(&self) -> &str {
+        &self.table_5m
+    }
+
+    /// Set password for ClickHouse authentication
+    pub fn with_password(mut self, password: Option<String>) -> Self {
+        self.password = password;
+        self
+    }
+
+    /// Set custom table names for daily and 5-minute data
+    pub fn with_tables(mut self, table_1d: &str, table_5m: &str) -> Self {
+        self.table_1d = table_1d.to_string();
+        self.table_5m = table_5m.to_string();
+        self
     }
 
     /// Build the ClickHouse HTTP URL
@@ -214,6 +251,41 @@ impl ClickHouseSource {
             .bytes()
             .map(|b| b.to_vec())
             .map_err(|e| DataError::Query(format!("Failed to read response bytes: {}", e)))
+    }
+
+    /// Execute SQL and return text response in JSONEachRow format.
+    ///
+    /// Used for metadata queries (list tables, get columns, etc.) where
+    /// Arrow format is unnecessary overhead. The caller parses the JSON
+    /// lines as needed.
+    #[allow(dead_code)]
+    pub(crate) fn query_text(&self, sql: &str) -> Result<String, DataError> {
+        let base_url = format!("{}?database={}", self.build_url(), self.database);
+        let url = format!("{}&default_format=JSONEachRow", base_url);
+        let client = self.client();
+
+        let mut request = client.post(&url);
+        if !self.username.is_empty() {
+            request = request.query(&[("user", &self.username)]);
+        }
+        if let Some(ref password) = self.password {
+            request = request.query(&[("password", password)]);
+        }
+
+        let response = request
+            .body(sql.to_string())
+            .send()
+            .map_err(|e| DataError::Connection(format!("Failed to connect: {}", e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().unwrap_or_default();
+            return Err(DataError::Query(format!("HTTP {}: {}", status, text)));
+        }
+
+        response
+            .text()
+            .map_err(|e| DataError::Query(format!("Failed to read response text: {}", e)))
     }
 }
 

@@ -5,6 +5,7 @@
 use alfars::WeightMethod;
 use alfars::backtest::{BacktestConfig, BacktestEngine, BacktestResult, FeeConfig};
 use alfars::data::clickhouse::ClickHouseSource;
+use alfars::data::layer::PriceMatrix;
 use alfars::expr::registry::FactorRegistry;
 use alfars::gp::GPConfig;
 use alfars::lab::AlfarsLab;
@@ -364,11 +365,11 @@ fn load_saved_db_config() -> DbConfig {
 /// Save database config to file (without password for security, except connection status)
 fn save_db_config(config: &DbConfig) {
     let config_dir = get_config_dir();
-    if !config_dir.exists() {
-        if let Err(e) = fs::create_dir_all(&config_dir) {
-            eprintln!("Failed to create config directory: {}", e);
-            return;
-        }
+    if !config_dir.exists()
+        && let Err(e) = fs::create_dir_all(&config_dir)
+    {
+        eprintln!("Failed to create config directory: {}", e);
+        return;
     }
 
     let config_path = config_dir.join("db_config.json");
@@ -421,11 +422,11 @@ fn load_saved_column_mappings() -> TableColumnMappings {
 /// Save column mappings to file
 fn save_column_mappings(mappings: &TableColumnMappings) {
     let config_dir = get_config_dir();
-    if !config_dir.exists() {
-        if let Err(e) = fs::create_dir_all(&config_dir) {
-            eprintln!("Failed to create config directory: {}", e);
-            return;
-        }
+    if !config_dir.exists()
+        && let Err(e) = fs::create_dir_all(&config_dir)
+    {
+        eprintln!("Failed to create config directory: {}", e);
+        return;
     }
 
     let config_path = config_dir.join("column_mappings.json");
@@ -604,12 +605,23 @@ struct CachedFactor {
     low: Vec<Vec<f64>>,
 }
 
+/// Cached AlfarsLab evaluation result (new path)
+#[derive(Clone)]
+#[allow(dead_code)]
+struct CachedLabResult {
+    /// Factor matrices keyed by name (from lab.evaluate())
+    factor_matrices: HashMap<String, Array2<f64>>,
+    /// Full price matrix
+    price_matrix: PriceMatrix,
+}
+
 #[derive(Clone)]
 struct AppState {
     db_config: Arc<RwLock<DbConfig>>,
     column_mappings: Arc<RwLock<TableColumnMappings>>,
     table_mapping: Arc<RwLock<TableMapping>>,
     factor_cache: Arc<RwLock<HashMap<String, CachedFactor>>>,
+    lab_cache: Arc<RwLock<HashMap<String, CachedLabResult>>>,
 }
 
 /// Run backtest and return NAV data
@@ -802,7 +814,7 @@ async fn run_backtest(
                 "[run_backtest] Factor stats: valid={}, nan={}, inf={}",
                 valid_count, nan_count, inf_count
             );
-            if let Some(first) = result.values.first() {
+            if let Some(_first) = result.values.first() {
                 eprintln!("[run_backtest] First 5 values: {:?}", &result.values[..5]);
             }
 
@@ -1257,143 +1269,42 @@ async fn compute_factor(
         )
     })?;
 
-    // Load data from database
-    let loaded = load_data_from_config(&state, data_source).await?;
-
-    // Get dimensions
-    let n_days = loaded.close.len();
-    let n_assets = if n_days > 0 { loaded.close[0].len() } else { 0 };
-
     eprintln!(
-        "[compute_factor] Computing factor '{}' with {} days x {} assets",
-        req.factor_id, n_days, n_assets
+        "[compute_factor] Computing factor '{}' via AlfarsLab",
+        req.factor_id
     );
 
-    // Prepare data for FactorRegistry: transpose and flatten
-    // FactorRegistry expects data in format: each column is flattened [asset0_day0, asset0_day1, ..., asset0_dayN-1, asset1_day0, ...]
-    // Our data is [day0_asset0, day0_asset1, ..., day1_asset0, ...] so we need to transpose
-    use std::collections::HashMap;
-
-    let mut data: HashMap<String, Vec<f64>> = HashMap::new();
-
-    // For each column, transpose and flatten
-    let mut close_flat: Vec<f64> = Vec::with_capacity(n_days * n_assets);
-    let mut open_flat: Vec<f64> = Vec::with_capacity(n_days * n_assets);
-    let mut high_flat: Vec<f64> = Vec::with_capacity(n_days * n_assets);
-    let mut low_flat: Vec<f64> = Vec::with_capacity(n_days * n_assets);
-    let mut volume_flat: Vec<f64> = Vec::with_capacity(n_days * n_assets);
-    let mut returns_flat: Vec<f64> = Vec::with_capacity(n_days * n_assets);
-
-    for day in 0..n_days {
-        for asset in 0..n_assets {
-            close_flat.push(loaded.close[day][asset]);
-            open_flat.push(loaded.open[day][asset]);
-            high_flat.push(loaded.high[day][asset]);
-            low_flat.push(loaded.low[day][asset]);
-            volume_flat.push(loaded.volume[day][asset]);
-            returns_flat.push(loaded.returns[day][asset]);
-        }
+    // Build source and lab from state
+    let db_config = state.db_config.read().await;
+    if !db_config.connected {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Database not connected.".to_string(),
+        ));
     }
+    let table_mapping = state.table_mapping.read().await;
+    let source = build_source_from_state(&db_config, &table_mapping);
 
-    data.insert("close".to_string(), close_flat);
-    data.insert("open".to_string(), open_flat);
-    data.insert("high".to_string(), high_flat);
-    data.insert("low".to_string(), low_flat);
-    data.insert("volume".to_string(), volume_flat);
-    data.insert("returns".to_string(), returns_flat);
+    let cache_id = uuid::Uuid::new_v4().to_string();
 
-    // Create FactorRegistry and compute factor
-    let mut registry = FactorRegistry::new();
-    registry.set_columns(vec![
-        "close".to_string(),
-        "open".to_string(),
-        "high".to_string(),
-        "low".to_string(),
-        "volume".to_string(),
-        "returns".to_string(),
-    ]);
-
-    // Register the factor expression
-    let factor_name = "factor";
-    if let Err(e) = registry.register(factor_name, &req.factor_id) {
-        eprintln!("[compute_factor] Failed to register factor: {}", e);
-        // Fall back to close price
-    } else {
-        // Convert data to Array1 format for vectorized computation
-        let mut data_array1: HashMap<String, Array1<f64>> = HashMap::new();
-        for (key, values) in data.iter() {
-            data_array1.insert(key.clone(), Array1::from_vec(values.clone()));
-        }
-
-        // Compute the factor using vectorized batch computation
-        match registry.compute(&[factor_name], &data_array1, true, false) {
-            Ok(results) => {
-                // Extract the result for our factor
-                let result = results.get(factor_name).ok_or_else(|| {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "Factor computation failed".to_string(),
-                    )
-                })?;
-                eprintln!("[compute_factor] Computed factor, n_rows={}", result.n_rows);
-                // Reshape result back to (n_days, n_assets)
-                // Data was flattened as [day0_asset0, day0_asset1, ..., day1_asset0, ...]
-                // So we use: idx = day * n_assets + asset
-                let values = result.values.clone();
-                let mut factor: Vec<Vec<f64>> = Vec::with_capacity(n_days);
-                for day in 0..n_days {
-                    let mut day_factor: Vec<f64> = Vec::with_capacity(n_assets);
-                    for asset in 0..n_assets {
-                        let idx = day * n_assets + asset;
-                        day_factor.push(values[idx]);
-                    }
-                    factor.push(day_factor);
-                }
-
-                // Generate a unique cache ID
-                let cache_id = uuid::Uuid::new_v4().to_string();
-
-                // Compute vwap: (high + low + close) / 3
-                let n_days = loaded.dates.len();
-                let n_assets = loaded.symbols.len();
-                let mut computed_vwap: Vec<Vec<f64>> = Vec::with_capacity(n_days);
-                for d in 0..n_days {
-                    let mut vwap_row = Vec::with_capacity(n_assets);
-                    for a in 0..n_assets {
-                        let h = loaded.high[d][a];
-                        let l = loaded.low[d][a];
-                        let c = loaded.close[d][a];
-                        let v = if h.is_finite() && l.is_finite() && c.is_finite() {
-                            (h + l + c) / 3.0
-                        } else {
-                            c
-                        };
-                        vwap_row.push(v);
-                    }
-                    computed_vwap.push(vwap_row);
-                }
-
-                // Store in cache
-                let cached = CachedFactor {
-                    factor_id: req.factor_id.clone(),
-                    factor: factor.clone(),
-                    returns: loaded.returns.clone(),
-                    dates: loaded.dates.clone(),
-                    close: loaded.close.clone(),
-                    vwap: computed_vwap,
-                    high: loaded.high.clone(),
-                    low: loaded.low.clone(),
+    // Try lab-based evaluation
+    let mut lab = build_lab_from_state(source, data_source, BacktestConfig::default())?;
+    if lab.register("factor", &req.factor_id).is_ok() {
+        match tokio::task::spawn_blocking(move || lab.evaluate()).await {
+            Ok(Ok((matrices, price_matrix))) => {
+                let cached = CachedLabResult {
+                    factor_matrices: matrices,
+                    price_matrix,
                 };
+                state
+                    .lab_cache
+                    .write()
+                    .await
+                    .insert(cache_id.clone(), cached);
                 eprintln!(
-                    "[compute_factor] Caching factor for {} with id {}",
+                    "[compute_factor] Cached lab result for {} with id {}",
                     req.factor_id, cache_id
                 );
-                {
-                    let mut cache = state.factor_cache.write().await;
-                    cache.insert(cache_id.clone(), cached);
-                }
-
-                // Return with cache ID - empty arrays to minimize response size
                 return Ok(Json(FactorComputeResponse {
                     factor_id: req.factor_id,
                     factor: vec![],
@@ -1402,20 +1313,23 @@ async fn compute_factor(
                     cache_id: Some(cache_id),
                 }));
             }
-            Err(e) => {
-                eprintln!("[compute_factor] Failed to compute factor: {}", e);
+            Ok(Err(e)) => {
+                eprintln!("[compute_factor] Lab evaluate error: {}", e);
+            }
+            Err(join_err) => {
+                eprintln!("[compute_factor] Spawn error: {}", join_err);
             }
         }
     }
 
-    // Fallback: use close prices as factor
-    let factor = loaded.close.clone();
-    let returns = loaded.returns;
-    let dates = loaded.dates;
+    // Fallback: load raw data and use close prices (old CachedFactor path)
+    drop(table_mapping);
+    drop(db_config);
+    let loaded = load_data_from_config(&state, data_source).await?;
+    let n_days = loaded.dates.len();
+    let n_assets = loaded.symbols.len();
 
     // Compute vwap: (high + low + close) / 3
-    let n_days = dates.len();
-    let n_assets = loaded.symbols.len();
     let mut computed_vwap: Vec<Vec<f64>> = Vec::with_capacity(n_days);
     for d in 0..n_days {
         let mut vwap_row = Vec::with_capacity(n_assets);
@@ -1433,35 +1347,31 @@ async fn compute_factor(
         computed_vwap.push(vwap_row);
     }
 
-    // Generate a unique cache ID
-    let cache_id = uuid::Uuid::new_v4().to_string();
-
-    // Store in cache
     let cached = CachedFactor {
         factor_id: req.factor_id.clone(),
-        factor: factor.clone(),
-        returns: returns.clone(),
-        dates: dates.clone(),
+        factor: loaded.close.clone(),
+        returns: loaded.returns.clone(),
+        dates: loaded.dates.clone(),
         close: loaded.close.clone(),
         vwap: computed_vwap,
         high: loaded.high.clone(),
         low: loaded.low.clone(),
     };
+    state
+        .factor_cache
+        .write()
+        .await
+        .insert(cache_id.clone(), cached);
     eprintln!(
-        "[compute_factor] Caching factor for {} with id {}",
+        "[compute_factor] Cached fallback for {} with id {}",
         req.factor_id, cache_id
     );
-    {
-        let mut cache = state.factor_cache.write().await;
-        cache.insert(cache_id.clone(), cached);
-    }
 
-    // Return with cache ID - empty arrays to minimize response size
     Ok(Json(FactorComputeResponse {
         factor_id: req.factor_id,
-        factor: vec![],  // Empty to minimize response
-        returns: vec![], // Empty to minimize response
-        dates: vec![],   // Empty to minimize response
+        factor: vec![],
+        returns: vec![],
+        dates: vec![],
         cache_id: Some(cache_id),
     }))
 }
@@ -1753,10 +1663,10 @@ async fn get_tables(
 
     let mut tables: Vec<String> = Vec::new();
     for line in body.lines() {
-        if let Ok(row) = serde_json::from_str::<serde_json::Value>(line) {
-            if let Some(table) = row.get("table").and_then(|v| v.as_str()) {
-                tables.push(table.to_string());
-            }
+        if let Ok(row) = serde_json::from_str::<serde_json::Value>(line)
+            && let Some(table) = row.get("table").and_then(|v| v.as_str())
+        {
+            tables.push(table.to_string());
         }
     }
 
@@ -1823,10 +1733,10 @@ async fn validate_tables(
 
     let mut available_tables: Vec<String> = Vec::new();
     for line in body.lines() {
-        if let Ok(row) = serde_json::from_str::<serde_json::Value>(line) {
-            if let Some(table) = row.get("table").and_then(|v| v.as_str()) {
-                available_tables.push(table.to_string());
-            }
+        if let Ok(row) = serde_json::from_str::<serde_json::Value>(line)
+            && let Some(table) = row.get("table").and_then(|v| v.as_str())
+        {
+            available_tables.push(table.to_string());
         }
     }
 
@@ -1923,10 +1833,10 @@ async fn validate_columns(
 
     let mut available_columns: Vec<String> = Vec::new();
     for line in body.lines() {
-        if let Ok(row) = serde_json::from_str::<serde_json::Value>(line) {
-            if let Some(name) = row.get("name").and_then(|v| v.as_str()) {
-                available_columns.push(name.to_string());
-            }
+        if let Ok(row) = serde_json::from_str::<serde_json::Value>(line)
+            && let Some(name) = row.get("name").and_then(|v| v.as_str())
+        {
+            available_columns.push(name.to_string());
         }
     }
 
@@ -2713,61 +2623,61 @@ async fn set_table_mapping(
     }
 
     // Optionally check if optional tables exist (warn only)
-    if let Some(ref table_5min) = req.stock_5min {
-        if !table_5min.is_empty() {
-            let query = format!(
-                "SELECT 1 FROM system.tables WHERE database = '{}' AND table = '{}' LIMIT 1",
-                config.database, table_5min
-            );
-            let response = client
-                .get(&url)
-                .query(&[("default_format", "JSONEachRow"), ("query", &query)])
-                .basic_auth(&config.username, Some(&config.password))
-                .send()
-                .await
-                .map_err(|e| {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("Request failed: {}", e),
-                    )
-                })?;
+    if let Some(ref table_5min) = req.stock_5min
+        && !table_5min.is_empty()
+    {
+        let query = format!(
+            "SELECT 1 FROM system.tables WHERE database = '{}' AND table = '{}' LIMIT 1",
+            config.database, table_5min
+        );
+        let response = client
+            .get(&url)
+            .query(&[("default_format", "JSONEachRow"), ("query", &query)])
+            .basic_auth(&config.username, Some(&config.password))
+            .send()
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Request failed: {}", e),
+                )
+            })?;
 
-            let body = response.text().await.unwrap_or_default();
-            if body.trim().is_empty() {
-                eprintln!(
-                    "Warning: Optional table '{}' does not exist in database '{}'",
-                    table_5min, config.database
-                );
-            }
+        let body = response.text().await.unwrap_or_default();
+        if body.trim().is_empty() {
+            eprintln!(
+                "Warning: Optional table '{}' does not exist in database '{}'",
+                table_5min, config.database
+            );
         }
     }
 
-    if let Some(ref table_1min) = req.stock_1min {
-        if !table_1min.is_empty() {
-            let query = format!(
-                "SELECT 1 FROM system.tables WHERE database = '{}' AND table = '{}' LIMIT 1",
-                config.database, table_1min
-            );
-            let response = client
-                .get(&url)
-                .query(&[("default_format", "JSONEachRow"), ("query", &query)])
-                .basic_auth(&config.username, Some(&config.password))
-                .send()
-                .await
-                .map_err(|e| {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("Request failed: {}", e),
-                    )
-                })?;
+    if let Some(ref table_1min) = req.stock_1min
+        && !table_1min.is_empty()
+    {
+        let query = format!(
+            "SELECT 1 FROM system.tables WHERE database = '{}' AND table = '{}' LIMIT 1",
+            config.database, table_1min
+        );
+        let response = client
+            .get(&url)
+            .query(&[("default_format", "JSONEachRow"), ("query", &query)])
+            .basic_auth(&config.username, Some(&config.password))
+            .send()
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Request failed: {}", e),
+                )
+            })?;
 
-            let body = response.text().await.unwrap_or_default();
-            if body.trim().is_empty() {
-                eprintln!(
-                    "Warning: Optional table '{}' does not exist in database '{}'",
-                    table_1min, config.database
-                );
-            }
+        let body = response.text().await.unwrap_or_default();
+        if body.trim().is_empty() {
+            eprintln!(
+                "Warning: Optional table '{}' does not exist in database '{}'",
+                table_1min, config.database
+            );
         }
     }
 
@@ -2809,28 +2719,14 @@ async fn mine_factors(
         ));
     }
 
-    // Build ClickHouseSource from server's DB config
-    let source = if db_config.username.is_empty() {
-        ClickHouseSource::new(&db_config.host, db_config.port, &db_config.database)
-    } else {
-        ClickHouseSource::with_username(
-            &db_config.host,
-            db_config.port,
-            &db_config.database,
-            &db_config.username,
-        )
-    };
+    // Build source from state
+    let table_mapping = state.table_mapping.read().await;
+    let source = build_source_from_state(&db_config, &table_mapping);
+    let max_symbols = req.n_assets.unwrap_or(0);
 
-    // Build filter string from DataSourceConfig
-    let filter = build_lab_filter(data_source);
-
-    let mut lab = AlfarsLab::new(source);
-    lab.set_filter(&filter);
-    lab.set_years(
-        data_source.start_date[..4].parse::<i32>().unwrap_or(2020),
-        data_source.end_date[..4].parse::<i32>().unwrap_or(2025),
-    );
-    lab.set_backtest_config(BacktestConfig::default());
+    // Build lab from source + config
+    let backtest_config = BacktestConfig::default();
+    let lab = build_lab_from_state(source, data_source, backtest_config)?;
 
     let pop_size = req.population_size.unwrap_or(50);
     let max_gens = req.max_generations.unwrap_or(10);
@@ -2850,7 +2746,7 @@ async fn mine_factors(
 
     let num_factors = 3;
     let results = lab
-        .mine_factors(gp_config, num_factors)
+        .mine_factors(gp_config, num_factors, max_symbols)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     let mut factors = Vec::new();
@@ -2908,6 +2804,49 @@ fn build_lab_filter(data_source: &DataSourceConfig) -> String {
     parts.join(" ")
 }
 
+/// Build a ClickHouseSource from the server's current config state.
+fn build_source_from_state(db_config: &DbConfig, table_mapping: &TableMapping) -> ClickHouseSource {
+    if db_config.username.is_empty() {
+        ClickHouseSource::new(&db_config.host, db_config.port, &db_config.database)
+    } else {
+        ClickHouseSource::with_username(
+            &db_config.host,
+            db_config.port,
+            &db_config.database,
+            &db_config.username,
+        )
+    }
+    .with_password(if db_config.password.is_empty() {
+        None
+    } else {
+        Some(db_config.password.clone())
+    })
+    .with_tables(
+        &table_mapping.stock_1day,
+        table_mapping.stock_5min.as_deref().unwrap_or("stock_5m"),
+    )
+}
+
+/// Build an AlfarsLab configured from state + DataSourceConfig.
+fn build_lab_from_state(
+    source: ClickHouseSource,
+    data_source: &DataSourceConfig,
+    backtest_config: BacktestConfig,
+) -> Result<AlfarsLab, (StatusCode, String)> {
+    let filter = build_lab_filter(data_source);
+    let start_year: i32 = data_source.start_date[..4]
+        .parse()
+        .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid start_date".to_string()))?;
+    let end_year: i32 = data_source.end_date[..4]
+        .parse()
+        .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid end_date".to_string()))?;
+
+    Ok(AlfarsLab::new(source)
+        .with_filter(&filter)
+        .with_years(start_year, end_year)
+        .with_backtest_config(backtest_config))
+}
+
 #[tokio::main]
 async fn main() {
     // Load saved database config if available
@@ -2926,6 +2865,7 @@ async fn main() {
             stock_1min: Some("stock_1min".to_string()),
         })),
         factor_cache: Arc::new(RwLock::new(HashMap::new())),
+        lab_cache: Arc::new(RwLock::new(HashMap::new())),
     };
 
     // Build the application
