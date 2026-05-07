@@ -205,9 +205,19 @@ impl AlfarsLab {
                 }
 
                 let mut year_dl = self.pool.borrow_year(year, &start, &end);
-                let year_results = batch_reg
+                let year_results = match batch_reg
                     .compute_cs_pipeline(&mut year_dl)
-                    .map_err(|e| format!("Year {}: {}", year, e))?;
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        eprintln!(
+                            "[warn] batch {}/{} year {} failed: {}, skipping",
+                            batch_no, n_batches, year, e
+                        );
+                        drop(year_dl); // don't cache potentially bad state
+                        continue;
+                    }
+                };
 
                 for (name, slice) in year_results {
                     if let Some(vec) = batch_slices.get_mut(&name) {

@@ -516,7 +516,15 @@ impl FactorRegistry {
                         return (start, cap, qc);
                     }
                     let vals = if let Some(p) = perm {
-                        Array1::from_vec((start..end).map(|j| values[p[j]]).collect())
+                        if p.len() == values.len() {
+                            Array1::from_vec((start..end).map(|j| values[p[j]]).collect())
+                        } else {
+                            eprintln!(
+                                "  [warn] perm mismatch: perm.len={} values.len={}, using unsorted data",
+                                p.len(), values.len()
+                            );
+                            Array1::from_vec(values[start..end].to_vec())
+                        }
                     } else {
                         Array1::from_vec(values[start..end].to_vec())
                     };
