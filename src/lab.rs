@@ -177,7 +177,13 @@ impl AlfarsLab {
         let mut batch_no = 0usize;
         for batch in factor_names.chunks(batch_size) {
             batch_no += 1;
-            eprintln!("[batch {}/{}] {} factors: {:?}", batch_no, n_batches, batch.len(), batch);
+            eprintln!(
+                "[batch {}/{}] {} factors: {:?}",
+                batch_no,
+                n_batches,
+                batch.len(),
+                batch
+            );
             // Accumulate per-factor slices across years
             let mut batch_slices: HashMap<String, Vec<FactorSlice>> = batch
                 .iter()
@@ -205,9 +211,7 @@ impl AlfarsLab {
                 }
 
                 let mut year_dl = self.pool.borrow_year(year, &start, &end);
-                let year_results = match batch_reg
-                    .compute_cs_pipeline(&mut year_dl)
-                {
+                let year_results = match batch_reg.compute_cs_pipeline(&mut year_dl) {
                     Ok(r) => r,
                     Err(e) => {
                         eprintln!(
