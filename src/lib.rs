@@ -679,6 +679,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Backtest functionality
     m.add_class::<PyBacktestEngine>()?;
+    m.add_class::<PyBacktestResult>()?;
     m.add_function(wrap_pyfunction!(quantile_backtest, m)?)?;
     m.add_function(wrap_pyfunction!(compute_ic, m)?)?;
 
@@ -759,7 +760,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
 }
 
 /// Volume-based slippage configuration
-#[pyclass]
+#[pyclass(name = "SlippageConfig")]
 struct PySlippageConfig {
     #[pyo3(get, set)]
     large_volume_threshold: f64,
@@ -796,7 +797,7 @@ impl From<PySlippageConfig> for SlippageConfig {
 }
 
 /// Fee configuration
-#[pyclass]
+#[pyclass(name = "FeeConfig")]
 struct PyFeeConfig {
     #[pyo3(get, set)]
     commission_rate: f64,
@@ -845,7 +846,7 @@ impl From<PyFeeConfig> for FeeConfig {
 }
 
 /// Position configuration
-#[pyclass]
+#[pyclass(name = "PositionConfig")]
 struct PyPositionConfig {
     #[pyo3(get, set)]
     long_ratio: f64,
@@ -878,7 +879,7 @@ impl From<PyPositionConfig> for PositionConfig {
 }
 
 /// Python-exposed backtest engine
-#[pyclass]
+#[pyclass(name = "BacktestEngine")]
 struct PyBacktestEngine {
     config: backtest::BacktestConfig,
 }
@@ -1034,7 +1035,7 @@ impl PyBacktestEngine {
 }
 
 /// Python-exposed backtest result
-#[pyclass]
+#[pyclass(name = "BacktestResult")]
 struct PyBacktestResult {
     #[pyo3(get)]
     dates: Vec<i64>,

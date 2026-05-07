@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 
 # Package metadata
-__version__ = "0.2.0"
+__version__ = "0.5.0"
 
 # Lab command
 from .lab import main as lab
@@ -31,44 +31,45 @@ __author__ = "EthanNOV56"
 try:
     from ._core import (
         AlfarsLab,
+        # Backtest
+        BacktestEngine,
+        BacktestResult,
         CachePolicy,
         ClickHouseSource,
-        DataPoolConfig,
-        FactorPanel,
-        FactorSlice,
         DataLayer,
+        DataPoolConfig,
         # Expression system
         Expr,
         FactorCombiner,
         FactorInfo,
         FactorMetadata,
+        FactorPanel,
+        # Genetic Programming
+        FactorPool,
         # Factor registry
         FactorRegistry,
         FactorResult,
-        # Genetic Programming
-        FactorPool,
+        FactorSlice,
+        FeeConfig,
         GpEngine,
         GPHistoryRecord,
         GPRecommendations,
-        # Expression similarity
-        expr_similarity,
         # Meta-learning system
         MetaLearningAnalyzer,
         # Persistence system
         PersistenceManager,
         PositionBuilder,
+        PositionConfig,
         PriceMatrix,
-        # Backtest configuration
-        PyBacktestEngine,
-        PyFeeConfig,
-        PyPositionConfig,
-        PySlippageConfig,
+        SlippageConfig,
         compute_ic,
         cumprod,
         cumsum,
         decay_linear,
         diff,
         evaluate_expression,
+        # Expression similarity
+        expr_similarity,
         # Expression functions
         lag,
         power,
@@ -111,7 +112,9 @@ except ImportError:
     FactorRegistry = FactorInfo = FactorResult = _Stub
     ClickHouseSource = DataLayer = PriceMatrix = FactorSlice = _Stub
     FactorCombiner = PositionBuilder = _Stub
-    PyBacktestEngine = PyFeeConfig = PyPositionConfig = PySlippageConfig = _Stub
+    BacktestEngine = FeeConfig = PositionConfig = SlippageConfig = BacktestResult = (
+        _Stub
+    )
 
     def _stub_fn(*args, **kwargs):
         return None
@@ -497,7 +500,7 @@ class BacktestEngine:
                 "pip install -e .[dev] or maturin develop"
             )
 
-        self._engine = PyBacktestEngine(
+        self._engine = BacktestEngine(
             factor,
             returns,
             quantiles,
@@ -641,12 +644,6 @@ Group Mean Returns:
         for i, mean in enumerate(group_means):
             lines.append(f"  Group {i + 1}: {mean:.6%}")
         return "\n".join(lines)
-
-
-# Alias for Python wrapper
-SlippageConfig = PySlippageConfig
-FeeConfig = PyFeeConfig
-PositionConfig = PyPositionConfig
 
 
 def factor_returns(
@@ -853,7 +850,7 @@ def quantile_backtest_multi(
     vwap = np.ones((n_days, n_assets))
     tradable = np.ones((n_days, n_assets))
 
-    engine = PyBacktestEngine(
+    engine = BacktestEngine(
         quantiles,
         weight_method,
         long_top_n,

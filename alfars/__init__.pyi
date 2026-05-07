@@ -540,10 +540,10 @@ class AlfarsLab:
     ) -> None: ...
     def register(self, name: str, expression: str) -> None: ...
     def calc(self, csv_path: str) -> FactorPanel: ...
-    def run(self, panel: FactorPanel) -> PyBacktestResult: ...
+    def run(self, panel: FactorPanel) -> BacktestResult: ...
     def evaluate(self) -> Tuple[Dict[str, Any], PriceMatrix]: ...
-    def backtest_each(self) -> List[Tuple[str, PyBacktestResult]]: ...
-    def run_multi(self, factor_mats: List[Any], prices: PriceMatrix) -> PyBacktestResult: ...
+    def backtest_each(self) -> List[Tuple[str, BacktestResult]]: ...
+    def run_multi(self, factor_mats: List[Any], prices: PriceMatrix) -> BacktestResult: ...
     def mine_factors(
         self,
         population_size: int = 100,
@@ -706,7 +706,7 @@ class PositionBuilder:
 # Rust-Backed Backtest Engine
 # =============================================================================
 
-class PyBacktestEngine:
+class BacktestEngine:
     """Rust backtest engine with configurable parameters."""
 
     def __init__(
@@ -726,7 +726,7 @@ class PyBacktestEngine:
         open: npt.NDArray[np.float64],
         vwap: npt.NDArray[np.float64],
         tradable: npt.NDArray[np.float64],
-    ) -> PyBacktestResult: ...
+    ) -> BacktestResult: ...
     def run_multi(
         self,
         factors: List[npt.NDArray[np.float64]],
@@ -736,25 +736,25 @@ class PyBacktestEngine:
         open: npt.NDArray[np.float64],
         vwap: npt.NDArray[np.float64],
         tradable: npt.NDArray[np.float64],
-    ) -> PyBacktestResult:
+    ) -> BacktestResult:
         """Multi-factor equal-weight backtest."""
         ...
     def run_with_prices(
         self,
         factor: npt.NDArray[np.float64],
         prices: PriceMatrix,
-    ) -> PyBacktestResult:
+    ) -> BacktestResult:
         """Single-factor backtest with PriceMatrix (auto-aligned)."""
         ...
     def run_multi_with_prices(
         self,
         factors: List[npt.NDArray[np.float64]],
         prices: PriceMatrix,
-    ) -> PyBacktestResult:
+    ) -> BacktestResult:
         """Multi-factor equal-weight backtest with PriceMatrix."""
         ...
 
-class PyBacktestResult:
+class BacktestResult:
     """Backtest result from Rust engine."""
 
     dates: List[int]
@@ -776,28 +776,24 @@ class PyBacktestResult:
     long_returns: npt.NDArray[np.float64]
     short_returns: npt.NDArray[np.float64]
 
-class PyFeeConfig:
+class FeeConfig:
     """Fee configuration for backtest."""
 
     commission_rate: float
 
-class PyPositionConfig:
+class PositionConfig:
     """Position sizing configuration."""
 
     long_ratio: float
     short_ratio: float
     market_neutral: bool
 
-class PySlippageConfig:
+class SlippageConfig:
     """Volume-based slippage configuration."""
 
     large_volume_threshold: float
     large_slippage_rate: float
 
-# Python-side aliases for backtest config
-FeeConfig = PyFeeConfig
-PositionConfig = PyPositionConfig
-SlippageConfig = PySlippageConfig
 
 # =============================================================================
 # Module-level attributes
