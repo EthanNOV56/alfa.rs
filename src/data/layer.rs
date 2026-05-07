@@ -406,6 +406,11 @@ impl DataLayer {
         self.cache.clear();
     }
 
+    /// Clear the symbol encoding so the next query rebuilds it from fresh data.
+    pub fn reset_symbols(&mut self) {
+        self.symbols_5m.clear();
+    }
+
     /// Get the unique symbols from the last 5m query (sorted)
     pub fn get_symbols_5m(&self) -> &[String] {
         &self.symbols_5m
@@ -438,9 +443,11 @@ impl DataLayer {
 
         let mut result = HashMap::new();
 
-        // Query 1d data if needed (cached per-column-set)
+        // Query 1d data if needed (cached per-column-set, order-independent)
         if !freq_1d_cols.is_empty() {
-            let key = format!("1d:{:?}", freq_1d_cols);
+            let mut sorted_cols = freq_1d_cols.clone();
+            sorted_cols.sort();
+            let key = format!("1d:{:?}", sorted_cols);
             if let Some(cached) = self.cache.get(&key) {
                 result.extend(cached.clone());
             } else {
@@ -576,7 +583,9 @@ impl DataLayer {
             );
         }
 
-        // Build symbol encoding
+        // Build symbol encoding: populate on first query, reuse for subsequent
+        // queries within the same DataLayer instance. Cleared by clear_cache()
+        // or clear_cache_keep_symbols() between batches.
         let symbol_to_idx: AHashMap<String, f64>;
         if !self.symbols_5m.is_empty() {
             symbol_to_idx = self

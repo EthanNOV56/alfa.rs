@@ -173,7 +173,11 @@ impl AlfarsLab {
 
         let mut results: Vec<(String, BacktestResult)> = Vec::with_capacity(factor_names.len());
 
+        let n_batches = factor_names.len().div_ceil(batch_size);
+        let mut batch_no = 0usize;
         for batch in factor_names.chunks(batch_size) {
+            batch_no += 1;
+            eprintln!("[batch {}/{}] {} factors: {:?}", batch_no, n_batches, batch.len(), batch);
             // Accumulate per-factor slices across years
             let mut batch_slices: HashMap<String, Vec<FactorSlice>> = batch
                 .iter()
@@ -186,6 +190,7 @@ impl AlfarsLab {
                 .collect();
 
             for year in start_year..=end_year {
+                eprintln!("[batch {}/{}] year {}", batch_no, n_batches, year);
                 let start = format!("{}-01-01", year);
                 let end = format!("{}-01-01", year + 1);
 
@@ -213,11 +218,15 @@ impl AlfarsLab {
             }
 
             // All years collected for this batch — backtest each factor
+            // Use run_with_qcut to match the calc()+run() path: reuses pre-computed
+            // qcut from FactorSlice (via build_qcut_matrix) instead of recomputing
+            // quantile groups (which uses a different tie-breaking algorithm).
             let engine = BacktestEngine::with_config(self.backtest_config.clone());
             for name in batch {
                 if let Some(slices) = batch_slices.remove(name) {
                     let mat = prices.build_factor_matrix(&slices);
-                    match engine.run_with_prices(mat, &prices) {
+                    let qcut_mat = prices.build_qcut_matrix(&slices);
+                    match engine.run_with_qcut(mat, &qcut_mat, &prices) {
                         Ok(result) => results.push((name.clone(), result)),
                         Err(e) => eprintln!("  [warn] backtest {}: {}", name, e),
                     }

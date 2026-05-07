@@ -277,6 +277,12 @@ impl FactorRegistry {
         &self,
         data_layer: &mut DataLayer,
     ) -> Result<HashMap<String, FactorSlice>, String> {
+        // Reset symbol encoding so the first query populates it from fresh
+        // data. With DataPool::KeepAll the cached DataLayer may carry stale
+        // symbols from a previous batch's 5m query, which would cause
+        // mismatched encoding when the current batch queries 1d data first.
+        data_layer.reset_symbols();
+
         // Collect columns by frequency
         let mut cols_1d: Vec<String> = Vec::new();
         let mut cols_5m: Vec<String> = Vec::new();
@@ -299,6 +305,8 @@ impl FactorRegistry {
         let has_5m = !cols_5m.is_empty();
         let has_1d = !cols_1d.is_empty();
 
+        eprintln!("  [pipeline] 5m={} cols={:?}  1d={} cols={:?}", has_5m, cols_5m, has_1d, cols_1d);
+
         // Query data for each frequency independently. When a batch mixes
         // 5m and 1d factors, we query both datasets and evaluate each group
         // with the appropriate mode (compact for 5m, flat for 1d).
@@ -313,6 +321,8 @@ impl FactorRegistry {
             data_5m = data_layer
                 .query(query_fields)
                 .map_err(|e| format!("DataLayer query error: {:?}", e))?;
+            let n_5m = data_5m.values().next().map(|a| a.len()).unwrap_or(0);
+            eprintln!("  [pipeline] 5m query done, {} rows, {} cols", n_5m, data_5m.len());
         }
         if has_1d {
             let mut query_fields = vec!["1d:trading_date".to_string(), "1d:symbol".to_string()];
@@ -322,6 +332,8 @@ impl FactorRegistry {
             data_1d = data_layer
                 .query(query_fields)
                 .map_err(|e| format!("DataLayer query error: {:?}", e))?;
+            let n_1d = data_1d.values().next().map(|a| a.len()).unwrap_or(0);
+            eprintln!("  [pipeline] 1d query done, {} rows, {} cols", n_1d, data_1d.len());
         }
 
         // Pre-compute 1d sort order and perm for the flat evaluation path.
@@ -410,6 +422,7 @@ impl FactorRegistry {
                     None,
                     None, // 5m path: no shared_groups, no perm
                 )?;
+                eprintln!("  [pipeline] batch_5m build_slices done, {} slices", batch_slices.len());
                 all_slices.extend(batch_slices);
             }
             if !batch_1d.is_empty() {
@@ -423,6 +436,7 @@ impl FactorRegistry {
                     shared_groups.as_ref(),
                     perm.as_deref(),
                 )?;
+                eprintln!("  [pipeline] batch_1d build_slices done, {} slices", batch_slices.len());
                 all_slices.extend(batch_slices);
             }
         }
@@ -444,9 +458,7 @@ impl FactorRegistry {
         let n_names = names.len();
 
         for (fi, &name) in names.iter().enumerate() {
-            if fi % 20 == 0 && fi > 0 {
-                eprintln!("    build_slices [{}/{}]", fi, n_names);
-            }
+            eprintln!("    build_slices [{}/{}] {}", fi + 1, n_names, name);
             let result = results
                 .get(name)
                 .ok_or_else(|| format!("Factor '{}' missing from results", name))?;
