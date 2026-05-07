@@ -485,6 +485,81 @@ class Dimension:
 # Data Pipeline Classes
 # =============================================================================
 
+# ── Data Pipeline Configuration ──────────────────────────────────────────
+
+class CachePolicy:
+    """Cache policy for year-level DataLayers."""
+
+    @staticmethod
+    def drop_all() -> CachePolicy: ...
+    @staticmethod
+    def keep_most_recent() -> CachePolicy: ...
+    @staticmethod
+    def keep_all() -> CachePolicy: ...
+    @staticmethod
+    def keep_n(n: int) -> CachePolicy: ...
+
+class DataPoolConfig:
+    """Configuration for the DataPool pipeline."""
+
+    def __init__(
+        self,
+        cache_policy: CachePolicy = ...,
+        calc_parallel_years: int = 5,
+        memory_budget_bytes: int = 0,
+        backtest_batch_size: int = 5,
+    ) -> None: ...
+
+# ── Unified Lab Entry Point ──────────────────────────────────────────────
+
+class FactorPanel:
+    """Opaque handle returned by AlfarsLab.calc(). Pass to AlfarsLab.run()."""
+    pass
+
+class AlfarsLab:
+    """Unified entry point for factor research workflows."""
+
+    def __init__(self) -> None: ...
+    @staticmethod
+    def from_env() -> AlfarsLab:
+        """Create from .env with default DataPoolConfig."""
+        ...
+    @staticmethod
+    def from_env_with_config(config: DataPoolConfig) -> AlfarsLab:
+        """Create from .env with custom DataPoolConfig."""
+        ...
+    def with_filter(self, filter: str) -> AlfarsLab: ...
+    def with_years(self, start: int, end: int) -> AlfarsLab: ...
+    def with_backtest_config(
+        self,
+        quantiles: int,
+        weight_method: str,
+        long_top_n: int,
+        short_top_n: int,
+        commission_rate: float,
+    ) -> None: ...
+    def register(self, name: str, expression: str) -> None: ...
+    def calc(self, csv_path: str) -> FactorPanel: ...
+    def run(self, panel: FactorPanel) -> PyBacktestResult: ...
+    def evaluate(self) -> Tuple[Dict[str, Any], PriceMatrix]: ...
+    def backtest_each(self) -> List[Tuple[str, PyBacktestResult]]: ...
+    def run_multi(self, factor_mats: List[Any], prices: PriceMatrix) -> PyBacktestResult: ...
+    def mine_factors(
+        self,
+        population_size: int = 100,
+        max_generations: int = 50,
+        tournament_size: int = 7,
+        crossover_prob: float = 0.8,
+        mutation_prob: float = 0.2,
+        max_depth: int = 6,
+        use_diverse_init: bool = True,
+        smart_mutation_ratio: float = 0.3,
+        num_factors: int = 3,
+        max_symbols: int = 0,
+    ) -> List[Tuple[str, float, float, float, float, int]]: ...
+
+# =============================================================================
+
 class ClickHouseSource:
     """ClickHouse data source configured from environment variables."""
 
