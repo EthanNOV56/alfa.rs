@@ -1,6 +1,11 @@
 .*/
 
+# Rust
+target/
 /target
+**/*.rs.bk
+Cargo.lock
+
 # Python
 __pycache__/
 *.py[cod]
@@ -13,11 +18,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
-
-# Rust
-target/
-**/*.rs.bk
-Cargo.lock
+uv.lock
 
 # IDE
 .vscode/
