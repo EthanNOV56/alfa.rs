@@ -1,10 +1,7 @@
-"""Full-scale stress test: all alphas (101+158+191), 2010-2025, streaming backtest.
+"""Stress-test-like: 10 factors from example files, batch_size=5, verify correctness.
 
-Dumps intermediate factor values (CSV) and NAV curves per factor.
-Monitors RSS and timing per batch.
-
-Usage:
-    uv run python tests/stress_test_all_alphas.py
+Matches the stress_test architecture exactly (same source files, naming, config)
+but with only 10 factors and 1 year for quick verification.
 """
 
 import csv
@@ -21,7 +18,7 @@ import alfars as al
 START_YEAR = 2010
 END_YEAR = 2025
 BACKTEST_BATCH_SIZE = (
-    20  # factors per batch (20*16y*20MB ≈ 6.4GB slices, KeepAll DL ~2.4GB)
+    5  # factors per batch (5*16y*20MB ≈ 1.6GB slices, KeepAll DL ~2.4GB)
 )
 
 OUTDIR = f"/tmp/stress_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -72,6 +69,7 @@ for prefix, path in [
         all_alphas.append((prefix, name, expr))
     print(f"  {path}: {len(alphas)} alphas")
 
+all_alphas = all_alphas[:10]
 print(f"Total: {len(all_alphas)} alphas, years={START_YEAR}-{END_YEAR}")
 
 # ── Build lab ───────────────────────────────────────────────────────────
