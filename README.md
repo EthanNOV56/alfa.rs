@@ -19,25 +19,26 @@ High-performance quant workflow with Rust core and Python bindings.
 ## Features
 
 ### Core Backtesting
-- **High Performance**: Rust core with parallel computation (8-10x speedup)
+- **High Performance**: Rust core with zero-clone streaming pipeline and per-factor parallelism
 - **Flexible API**: NumPy arrays and Pandas Series support
-- **Complete Features**: qcut(N) grouping, long-short portfolios, IC calculation, factor analysis
+- **Complete Metrics**: qcut(N) grouping, long-short portfolios, IC/group IC, weight turnover, win rate, Calmar ratio
+- **Rebalance Control**: Configurable rebalance frequency and passive benchmark
 - **Alphalens Compatibility**: Similar API design for easy migration
 - **Extensible**: Modular design with custom weights, grouping, and commission models
 
-### Intelligent Factor Mining (v0.4.0)
+### Intelligent Factor Mining
 - **Expression System**: AST-based expression builder for custom factor computation
 - **Lazy Evaluation**: Polars-style delayed computation with query optimization
-- **Genetic Programming**: Auto-discover high-performance factor expressions
+- **Genetic Programming**: Auto-discover high-performance factor expressions with frequency support (1d/5m/1m), diverse init, and smart mutation
 - **Dimension System**: Type-safe factor expressions to prevent invalid calculations
-- **Persistence**: Factor library management with search, caching, and versioning
-- **Meta-Learning**: Intelligent GP parameter recommendations based on historical data
+- **Redundancy Detection**: AST dedup and diversity selection to avoid duplicate factors
+- **Persistence & Meta-Learning**: Factor library management with FactorPool lifecycle, search, caching, and versioning
 
-### Interactive Lab (v0.4.0)
-- **One-Command Launch**: `alfars lab` starts all services automatically
-- **Visual Backtest**: Interactive charts for NAV, IC, and quantile returns
-- **Browser-based**: Access via http://localhost:5173
-- **ClickHouse Support**: Connect to ClickHouse for historical market data
+### Streaming Pipeline (v0.5.0)
+- **DataPool**: High-throughput data access with date-range filtering and mixed-frequency batch support
+- **Fault Tolerance**: Result-based error handling for production reliability
+- **Zero-Clone Backtest**: Broadcast-safe scalar handling with bounded cross-year parallelism
+- **Benchmark Parity**: Validated DAG vs sequential evaluation parity on 82-factor alpha101
 
 ## Installation
 
@@ -223,13 +224,20 @@ maturin build --release
 
 ## Version History
 
-### v0.4.0 (Current)
-- **Interactive Lab**: One-command `alfars lab` for visual factor research
-- **GP Parallelization**: Rayon-based parallel fitness evaluation
-- **Improved GP Engine**: Bug fixes for IC calculation, cumulative returns
-- **Dimension System**: Type-safe factor expressions
-- **ClickHouse Integration**: Direct database connectivity for historical data
-- **Rust HTTP Server**: Standalone server without Python dependency
+### v0.5.0 (Current)
+- **Streaming Pipeline**: DataPool with date-range filtering, mixed-frequency batch support
+- **Fault Tolerance**: Result-based error handling for production pipeline reliability
+- **Zero-Clone Backtest**: Broadcast-safe scalar handling, bounded cross-year parallelism
+- **Backtest Metrics**: rebalance_freq, passive benchmark, group IC, weight turnover, win rate, Calmar ratio
+- **GP Frequency Support**: Multi-frequency factor mining (1d/5m/1m) and AST redundancy detection
+- **Performance**: SIMD operators, Arc sharing, O(n²) routing fix, per-window allocation elimination
+- **Lab**: Server binary bundled in wheel, auto-detection for dev/prod
+- **Refactor**: Backtest engine (2610→6 modules), GP engine (2945→6 modules), clean Python class names
+
+### v0.4.0
+- Interactive Lab with one-command `alfars lab` for visual factor research
+- GP parallelization, dimension system, and ClickHouse integration
+- Rust HTTP server as standalone backend
 
 ### v0.2.0
 - Expression system with AST-based builder
