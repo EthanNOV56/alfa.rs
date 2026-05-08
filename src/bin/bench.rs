@@ -1310,7 +1310,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     eprintln!("reg:{}", ALPHAS.len());
     let t0 = Instant::now();
-    let p = lab.calc(".tests/b416.csv")?;
+    let p = lab.calc(Some(".tests/b416.csv"))?;
     let t = t0.elapsed();
     eprintln!(
         "done:{:.1}s rec:{}",

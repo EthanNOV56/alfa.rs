@@ -17,15 +17,16 @@
 //! ```
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::backtest::{BacktestConfig, BacktestEngine, BacktestResult};
 use crate::data::clickhouse::ClickHouseSource;
 use crate::data::layer::{DataLayer, PriceMatrix};
 use crate::data::pool::{DataPool, DataPoolConfig};
+use crate::expr;
 use crate::expr::registry::FactorRegistry;
 use crate::expr::registry::config::{FactorPanel, FactorSlice};
-use crate::gp::evolution::run_gp;
+use crate::gp::evolution::run_gp as gp_evolve;
 use crate::gp::fitness::RealBacktestFitnessEvaluator;
 use crate::gp::types::{Function, GPConfig, Terminal, to_parseable_string};
 use ndarray::Array2;
@@ -38,6 +39,8 @@ pub struct AlfarsLab {
     backtest_config: BacktestConfig,
     start_year: Option<i32>,
     end_year: Option<i32>,
+    last_panel: Mutex<Option<FactorPanel>>,
+    last_prices: Mutex<Option<Arc<PriceMatrix>>>,
 }
 
 impl AlfarsLab {
@@ -48,6 +51,8 @@ impl AlfarsLab {
             backtest_config: BacktestConfig::default(),
             start_year: None,
             end_year: None,
+            last_panel: Mutex::new(None),
+            last_prices: Mutex::new(None),
         }
     }
 
@@ -58,6 +63,8 @@ impl AlfarsLab {
             backtest_config: BacktestConfig::default(),
             start_year: None,
             end_year: None,
+            last_panel: Mutex::new(None),
+            last_prices: Mutex::new(None),
         }
     }
 
@@ -282,20 +289,19 @@ impl AlfarsLab {
         }
     }
 
-    /// Compute all registered factors across the configured year range,
-    /// writing results to `csv_path`. Returns the FactorPanel for subsequent
-    /// backtest calls.
+    /// Compute all registered factors across the configured year range.
+    ///
+    /// If `csv_path` is provided, writes factor values to CSV.
+    /// Returns the FactorPanel and caches it internally for subsequent `run_bt()`.
     ///
     /// Uses `DataPoolConfig.calc_parallel_years` for parallel year processing.
-    pub fn calc(&self, csv_path: &str) -> Result<FactorPanel, String> {
+    pub fn calc(&self, csv_path: Option<&str>) -> Result<FactorPanel, String> {
         let (start_year, end_year) = self.years()?;
         let pool_config = self.pool.config();
         let parallel_years = pool_config.calc_parallel_years;
 
         let years: Vec<i32> = (start_year..=end_year).collect();
 
-        // Bounded parallel: each year uses pool.borrow_year/return_year.
-        // Peak memory depends on DataPoolConfig.cache_policy and calc_parallel_years.
         let pool_ref = &self.pool;
         let registry_ref = &self.registry;
 
@@ -326,42 +332,76 @@ impl AlfarsLab {
         let mut year_results = year_results?;
         year_results.sort_by_key(|(year, _)| *year);
 
-        // Sequential CSV write
-        let mut wtr = csv::Writer::from_path(csv_path).map_err(|e| format!("CSV: {}", e))?;
-        FactorSlice::write_header(&mut wtr);
         let mut all_slices: Vec<FactorSlice> = Vec::new();
-        for (year, slices) in year_results {
-            for slice in &slices {
-                slice
-                    .write_to(&mut wtr)
-                    .map_err(|e| format!("Year {} CSV: {}", year, e))?;
+
+        // Write CSV if path provided
+        if let Some(path) = csv_path {
+            let mut wtr = csv::Writer::from_path(path).map_err(|e| format!("CSV: {}", e))?;
+            FactorSlice::write_header(&mut wtr);
+            for (year, slices) in &year_results {
+                for slice in slices {
+                    slice
+                        .write_to(&mut wtr)
+                        .map_err(|e| format!("Year {} CSV: {}", year, e))?;
+                }
             }
+            wtr.flush().map_err(|e| format!("CSV flush: {}", e))?;
+        }
+
+        for (_, slices) in year_results {
             all_slices.extend(slices);
         }
-        wtr.flush().map_err(|e| format!("CSV flush: {}", e))?;
 
         let panel = FactorPanel {
             factor_names: self.registry.list(),
             slices: all_slices,
         };
+
+        // Cache prices for subsequent run_bt
+        let start_full = format!("{}-01-01", start_year);
+        let end_full = format!("{}-01-01", end_year + 1);
+        let prices = self
+            .pool
+            .get_prices(&start_full, &end_full)
+            .map_err(|e| format!("Price query: {:?}", e))?;
+        *self.last_prices.lock().unwrap() = Some(prices);
+        *self.last_panel.lock().unwrap() = Some(panel.clone());
+
         Ok(panel)
     }
 
-    /// Run genetic programming to discover alpha factors.
+    /// Run backtest on the last computed FactorPanel (from `calc()`).
     ///
-    /// Queries price data for the configured year range (once, shared via Arc),
-    /// runs GP evolution with real backtest-based fitness evaluation, and
-    /// returns discovered expressions with their metrics.
-    pub fn mine_factors(
+    /// Uses cached panel and prices — no re-query to ClickHouse.
+    /// Returns an error if `calc()` hasn't been called yet.
+    pub fn run_bt(&self) -> Result<BacktestResult, String> {
+        let panel_guard = self.last_panel.lock().unwrap();
+        let prices_guard = self.last_prices.lock().unwrap();
+        let panel = panel_guard
+            .as_ref()
+            .ok_or_else(|| "No panel computed — call calc() first".to_string())?;
+        let prices = prices_guard
+            .as_ref()
+            .ok_or_else(|| "No prices cached — call calc() first".to_string())?;
+
+        let factor_mat = panel.build_factor_matrix(prices);
+        let qcut_mat = prices.build_qcut_matrix(&panel.slices);
+        BacktestEngine::with_config(self.backtest_config.clone())
+            .run_with_qcut(factor_mat, &qcut_mat, prices)
+    }
+
+    /// Run genetic programming and return discovered factors with backtest results.
+    ///
+    /// Each discovered factor's full `BacktestResult` is retrieved from the
+    /// fitness evaluator (cached during GP evaluation — no re-computation).
+    pub fn run_gp(
         &self,
         gp_config: GPConfig,
         num_factors: usize,
         max_symbols: usize,
-    ) -> Result<Vec<(String, f64, f64, f64, f64, usize)>, String> {
+    ) -> Result<Vec<(expr::Expr, BacktestResult)>, String> {
         let (start_year, end_year) = self.years()?;
-        let base_filter = self.pool.pre_filter().to_string();
 
-        // Use pool's shared PriceMatrix
         let start_full = format!("{}-01-01", start_year);
         let end_full = format!("{}-01-01", end_year + 1);
         let prices_arc = self
@@ -369,30 +409,23 @@ impl AlfarsLab {
             .get_prices(&start_full, &end_full)
             .map_err(|e| format!("Price query: {:?}", e))?;
 
-        // Slice to top N symbols if needed
         let prices_arc = if max_symbols > 0 && prices_arc.symbols.len() > max_symbols {
             Arc::new(Self::slice_price_matrix_top(&prices_arc, max_symbols))
         } else {
             prices_arc
         };
 
-        // Build data HashMap from Arc (one-time clone for evaluator construction)
         let mut data = HashMap::new();
-        if prices_arc.close.dim() == prices_arc.returns.dim() {
-            data.insert("close".to_string(), prices_arc.close.clone());
-        }
-        if prices_arc.open.dim() == prices_arc.returns.dim() {
-            data.insert("open".to_string(), prices_arc.open.clone());
-        }
-        if prices_arc.high.dim() == prices_arc.returns.dim() {
-            data.insert("high".to_string(), prices_arc.high.clone());
-        }
-        if prices_arc.low.dim() == prices_arc.returns.dim() {
-            data.insert("low".to_string(), prices_arc.low.clone());
-        }
-        if prices_arc.vwap.dim() == prices_arc.returns.dim() {
-            data.insert("vwap".to_string(), prices_arc.vwap.clone());
-        }
+        let insert_if_valid = |data: &mut HashMap<_, _>, name: &str, arr: &Array2<f64>| {
+            if arr.dim() == prices_arc.returns.dim() {
+                data.insert(name.to_string(), arr.clone());
+            }
+        };
+        insert_if_valid(&mut data, "close", &prices_arc.close);
+        insert_if_valid(&mut data, "open", &prices_arc.open);
+        insert_if_valid(&mut data, "high", &prices_arc.high);
+        insert_if_valid(&mut data, "low", &prices_arc.low);
+        insert_if_valid(&mut data, "vwap", &prices_arc.vwap);
 
         let evaluator = RealBacktestFitnessEvaluator::new(data, prices_arc);
 
@@ -438,7 +471,102 @@ impl AlfarsLab {
         let mut results = Vec::with_capacity(num_factors);
 
         for _ in 0..num_factors {
-            let (best_expr, best_fitness) = run_gp(
+            let (best_expr, _best_fitness) = gp_evolve(
+                &gp_config,
+                &evaluator,
+                terminals.clone(),
+                functions.clone(),
+                &mut rng,
+            );
+
+            if let Some(bt) = evaluator.get_last_backtest() {
+                results.push((best_expr, bt));
+            }
+        }
+
+        Ok(results)
+    }
+
+    /// Legacy: discover factors returning scalar metrics only.
+    /// Prefer `run_gp()` which also returns full backtest results.
+    pub fn mine_factors(
+        &self,
+        gp_config: GPConfig,
+        num_factors: usize,
+        max_symbols: usize,
+    ) -> Result<Vec<(String, f64, f64, f64, f64, usize)>, String> {
+        let (start_year, end_year) = self.years()?;
+
+        let start_full = format!("{}-01-01", start_year);
+        let end_full = format!("{}-01-01", end_year + 1);
+        let prices_arc = self
+            .pool
+            .get_prices(&start_full, &end_full)
+            .map_err(|e| format!("Price query: {:?}", e))?;
+
+        let prices_arc = if max_symbols > 0 && prices_arc.symbols.len() > max_symbols {
+            Arc::new(Self::slice_price_matrix_top(&prices_arc, max_symbols))
+        } else {
+            prices_arc
+        };
+
+        let mut data = HashMap::new();
+        let insert_if_valid = |data: &mut HashMap<_, _>, name: &str, arr: &Array2<f64>| {
+            if arr.dim() == prices_arc.returns.dim() {
+                data.insert(name.to_string(), arr.clone());
+            }
+        };
+        insert_if_valid(&mut data, "close", &prices_arc.close);
+        insert_if_valid(&mut data, "open", &prices_arc.open);
+        insert_if_valid(&mut data, "high", &prices_arc.high);
+        insert_if_valid(&mut data, "low", &prices_arc.low);
+        insert_if_valid(&mut data, "vwap", &prices_arc.vwap);
+
+        let evaluator = RealBacktestFitnessEvaluator::new(data, prices_arc);
+
+        let terminals = vec![
+            Terminal::Ephemeral,
+            Terminal::Constant(1.0),
+            Terminal::Constant(2.0),
+            Terminal::Variable("close".to_string()),
+            Terminal::Variable("open".to_string()),
+            Terminal::Variable("high".to_string()),
+            Terminal::Variable("low".to_string()),
+            Terminal::Variable("vwap".to_string()),
+        ];
+
+        let functions = vec![
+            Function::add(),
+            Function::sub(),
+            Function::mul(),
+            Function::div(),
+            Function::power(),
+            Function::sqrt(),
+            Function::abs(),
+            Function::neg(),
+            Function::log(),
+            Function::sign(),
+            Function::exp(),
+            Function::rank(),
+            Function::cs_scale(),
+            Function::ts_mean(),
+            Function::ts_std(),
+            Function::ts_max(),
+            Function::ts_min(),
+            Function::ts_sum(),
+            Function::delay(),
+            Function::ts_delta(),
+            Function::ts_rank(),
+            Function::decay_linear(),
+            Function::correlation(),
+            Function::ts_covariance(),
+        ];
+
+        let mut rng = StdRng::from_entropy();
+        let mut results = Vec::with_capacity(num_factors);
+
+        for _ in 0..num_factors {
+            let (best_expr, best_fitness) = gp_evolve(
                 &gp_config,
                 &evaluator,
                 terminals.clone(),

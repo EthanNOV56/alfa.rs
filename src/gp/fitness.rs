@@ -59,6 +59,8 @@ pub struct RealBacktestFitnessEvaluator {
     last_metrics: RwLock<(f64, f64, f64, usize)>, // (ic, ir, turnover, complexity)
     // Store last split evaluation result
     last_split_result: RwLock<Option<SplitEvaluationResult>>,
+    // Store last full backtest result for run_gp retrieval
+    last_backtest: RwLock<Option<BacktestResult>>,
 }
 
 impl RealBacktestFitnessEvaluator {
@@ -75,6 +77,7 @@ impl RealBacktestFitnessEvaluator {
             position_config: PositionConfig::default(),
             last_metrics: RwLock::new((0.0, 0.0, 0.0, 0)),
             last_split_result: RwLock::new(None),
+            last_backtest: RwLock::new(None),
         }
     }
 
@@ -98,6 +101,7 @@ impl RealBacktestFitnessEvaluator {
             position_config: PositionConfig::default(),
             last_metrics: RwLock::new((0.0, 0.0, 0.0, 0)),
             last_split_result: RwLock::new(None),
+            last_backtest: RwLock::new(None),
         }
     }
 
@@ -279,6 +283,7 @@ impl RealBacktestFitnessEvaluator {
                 if result.ic_mean.is_nan() || result.ic_ir.is_nan() {
                     None
                 } else {
+                    *self.last_backtest.write().unwrap() = Some(result.clone());
                     Some(result)
                 }
             }
@@ -329,6 +334,10 @@ impl RealBacktestFitnessEvaluator {
     }
 
     /// Get last split evaluation result
+    pub fn get_last_backtest(&self) -> Option<BacktestResult> {
+        self.last_backtest.read().unwrap().clone()
+    }
+
     pub fn get_last_split_result(&self) -> Option<SplitEvaluationResult> {
         self.last_split_result.read().unwrap().clone()
     }

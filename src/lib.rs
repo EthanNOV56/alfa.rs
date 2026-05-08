@@ -280,6 +280,18 @@ impl PyExpr {
     fn __str__(&self) -> String {
         self.__repr__()
     }
+
+    /// Convert this expression to an AlFactor with the given name.
+    fn to_af(&self, name: &str) -> PyAlFactor {
+        let expr_str = crate::gp::types::to_parseable_string(&self.inner);
+        PyAlFactor::new(
+            name.to_string(),
+            expr_str,
+            String::new(),
+            "dimensionless".to_string(),
+            vec![],
+        )
+    }
 }
 
 /// Parse expression string into Expr AST
@@ -1076,7 +1088,11 @@ impl PyBacktestResult {
     }
     #[getter]
     fn long_short_returns(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
-        self.inner.long_short_returns.clone().into_pyarray(py).into()
+        self.inner
+            .long_short_returns
+            .clone()
+            .into_pyarray(py)
+            .into()
     }
     #[getter]
     fn long_short_cum_return(&self) -> f64 {
@@ -1084,7 +1100,11 @@ impl PyBacktestResult {
     }
     #[getter]
     fn long_short_cum_returns(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
-        self.inner.long_short_cum_returns.clone().into_pyarray(py).into()
+        self.inner
+            .long_short_cum_returns
+            .clone()
+            .into_pyarray(py)
+            .into()
     }
     #[getter]
     fn long_cum_returns(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
@@ -1099,37 +1119,69 @@ impl PyBacktestResult {
         self.inner.ic_series.clone().into_pyarray(py).into()
     }
     #[getter]
-    fn ic_mean(&self) -> f64 { self.inner.ic_mean }
+    fn ic_mean(&self) -> f64 {
+        self.inner.ic_mean
+    }
     #[getter]
-    fn ic_ir(&self) -> f64 { self.inner.ic_ir }
+    fn ic_ir(&self) -> f64 {
+        self.inner.ic_ir
+    }
     #[getter]
-    fn long_ic_mean(&self) -> f64 { self.inner.long_ic_mean }
+    fn long_ic_mean(&self) -> f64 {
+        self.inner.long_ic_mean
+    }
     #[getter]
-    fn long_ic_ir(&self) -> f64 { self.inner.long_ic_ir }
+    fn long_ic_ir(&self) -> f64 {
+        self.inner.long_ic_ir
+    }
     #[getter]
-    fn short_ic_mean(&self) -> f64 { self.inner.short_ic_mean }
+    fn short_ic_mean(&self) -> f64 {
+        self.inner.short_ic_mean
+    }
     #[getter]
-    fn short_ic_ir(&self) -> f64 { self.inner.short_ic_ir }
+    fn short_ic_ir(&self) -> f64 {
+        self.inner.short_ic_ir
+    }
     #[getter]
-    fn long_short_ic_mean(&self) -> f64 { self.inner.long_short_ic_mean }
+    fn long_short_ic_mean(&self) -> f64 {
+        self.inner.long_short_ic_mean
+    }
     #[getter]
-    fn long_short_ic_ir(&self) -> f64 { self.inner.long_short_ic_ir }
+    fn long_short_ic_ir(&self) -> f64 {
+        self.inner.long_short_ic_ir
+    }
     #[getter]
-    fn total_return(&self) -> f64 { self.inner.total_return }
+    fn total_return(&self) -> f64 {
+        self.inner.total_return
+    }
     #[getter]
-    fn annualized_return(&self) -> f64 { self.inner.annualized_return }
+    fn annualized_return(&self) -> f64 {
+        self.inner.annualized_return
+    }
     #[getter]
-    fn sharpe_ratio(&self) -> f64 { self.inner.sharpe_ratio }
+    fn sharpe_ratio(&self) -> f64 {
+        self.inner.sharpe_ratio
+    }
     #[getter]
-    fn max_drawdown(&self) -> f64 { self.inner.max_drawdown }
+    fn max_drawdown(&self) -> f64 {
+        self.inner.max_drawdown
+    }
     #[getter]
-    fn turnover(&self) -> f64 { self.inner.turnover }
+    fn turnover(&self) -> f64 {
+        self.inner.turnover
+    }
     #[getter]
-    fn weight_turnover(&self) -> f64 { self.inner.weight_turnover }
+    fn weight_turnover(&self) -> f64 {
+        self.inner.weight_turnover
+    }
     #[getter]
-    fn win_rate(&self) -> f64 { self.inner.win_rate }
+    fn win_rate(&self) -> f64 {
+        self.inner.win_rate
+    }
     #[getter]
-    fn calmar_ratio(&self) -> f64 { self.inner.calmar_ratio }
+    fn calmar_ratio(&self) -> f64 {
+        self.inner.calmar_ratio
+    }
     #[getter]
     fn long_returns(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
         self.inner.long_returns.clone().into_pyarray(py).into()
@@ -1144,14 +1196,18 @@ impl PyBacktestResult {
     }
     #[getter]
     fn passive_cum_returns(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
-        self.inner.passive_cum_returns.clone().into_pyarray(py).into()
+        self.inner
+            .passive_cum_returns
+            .clone()
+            .into_pyarray(py)
+            .into()
     }
 
     /// Write group NAV curves to CSV (date,nv,group).
     fn to_csv(&self, path: &str) -> PyResult<()> {
-        self.inner.to_csv(path).map_err(|e| {
-            pyo3::exceptions::PyIOError::new_err(format!("CSV write: {}", e))
-        })
+        self.inner
+            .to_csv(path)
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("CSV write: {}", e)))
     }
 }
 
@@ -1966,6 +2022,12 @@ impl PyAlFactor {
                 e
             ))),
         }
+    }
+
+    /// Shorthand for save_to_al: save to ~/.alfars/user/<name>.al
+    #[pyo3(signature = (filename = None))]
+    fn dump(&self, filename: Option<String>) -> PyResult<String> {
+        self.save_to_al(filename)
     }
 }
 
@@ -3210,6 +3272,24 @@ struct PyFactorPanel {
     inner: FactorPanel,
 }
 
+#[pymethods]
+impl PyFactorPanel {
+    /// Write factor values to CSV.
+    fn to_csv(&self, path: &str) -> PyResult<()> {
+        let mut wtr = csv::Writer::from_path(path)
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("CSV: {}", e)))?;
+        FactorSlice::write_header(&mut wtr);
+        for slice in &self.inner.slices {
+            slice
+                .write_to(&mut wtr)
+                .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("CSV write: {}", e)))?;
+        }
+        wtr.flush()
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("CSV flush: {}", e)))?;
+        Ok(())
+    }
+}
+
 /// Unified factor research entry point.
 ///
 /// ```python
@@ -3322,7 +3402,8 @@ impl PyAlfarsLab {
         Ok(())
     }
 
-    fn calc(&self, csv_path: &str) -> PyResult<PyFactorPanel> {
+    #[pyo3(signature = (csv_path=None))]
+    fn calc(&self, csv_path: Option<&str>) -> PyResult<PyFactorPanel> {
         let panel = self
             .inner
             .lock()
@@ -3338,6 +3419,16 @@ impl PyAlfarsLab {
             .lock()
             .unwrap()
             .run(&panel.inner)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+        Ok(PyBacktestResult::from(result))
+    }
+
+    fn run_bt(&self) -> PyResult<PyBacktestResult> {
+        let result = self
+            .inner
+            .lock()
+            .unwrap()
+            .run_bt()
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
         Ok(PyBacktestResult::from(result))
     }
@@ -3427,6 +3518,49 @@ impl PyAlfarsLab {
         inner
             .mine_factors(config, num_factors, max_symbols)
             .map_err(|e| PyRuntimeError::new_err(e))
+    }
+
+    /// Run genetic programming and return discovered factors with backtest results.
+    ///
+    /// Returns a dict mapping `Expr` → `BacktestResult` for each winning factor.
+    #[pyo3(signature = (population_size=100, max_generations=50, tournament_size=7, crossover_prob=0.8, mutation_prob=0.2, max_depth=6, use_diverse_init=true, smart_mutation_ratio=0.3, num_factors=3, max_symbols=0))]
+    fn run_gp(
+        &self,
+        py: Python<'_>,
+        population_size: usize,
+        max_generations: usize,
+        tournament_size: usize,
+        crossover_prob: f64,
+        mutation_prob: f64,
+        max_depth: usize,
+        use_diverse_init: bool,
+        smart_mutation_ratio: f64,
+        num_factors: usize,
+        max_symbols: usize,
+    ) -> PyResult<Py<PyDict>> {
+        let config = GPConfig {
+            population_size,
+            max_generations,
+            tournament_size,
+            crossover_prob,
+            mutation_prob,
+            max_depth,
+            parent_diversity_penalty: 0.1,
+            use_diverse_init,
+            smart_mutation_ratio,
+            use_frequencies: false,
+        };
+        let results = self
+            .inner
+            .lock()
+            .unwrap()
+            .run_gp(config, num_factors, max_symbols)
+            .map_err(|e| PyRuntimeError::new_err(e))?;
+        let dict = PyDict::new(py);
+        for (expr, bt) in results {
+            dict.set_item(PyExpr { inner: expr }, PyBacktestResult::from(bt))?;
+        }
+        Ok(dict.into())
     }
 
     fn __repr__(&self) -> String {

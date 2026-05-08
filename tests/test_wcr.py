@@ -1,4 +1,4 @@
-import tempfile
+import os
 import numpy as np
 import polars as pl
 import pytest
@@ -22,9 +22,9 @@ def backtest_result():
     lab.with_years(2010, 2025)
     lab.with_backtest_config(10, "equal", 1, 1, 0.0005, 0.0015)
     lab.register("wcr", WCR_EXPR)
-    with tempfile.NamedTemporaryFile(suffix=".csv") as tf:
-        panel = lab.calc(tf.name)
-    result = lab.run(panel)
+    panel = lab.calc()
+    panel.to_csv("/tmp/wcr_panel.csv")
+    result = lab.run_bt()
     result.to_csv(DUMP_CSV)
     return result
 
@@ -71,3 +71,23 @@ def test_statistics_smoke(backtest_result):
     assert -1.0 <= backtest_result.ic_mean <= 1.0
     assert backtest_result.turnover >= 0.0
     assert not np.isnan(backtest_result.sharpe_ratio)
+
+
+def test_register_dict():
+    lab = al.AlfarsLab.from_env()
+    lab.with_filter("symbols not like '%BJ'")
+    lab.with_years(2010, 2010)  # single year, fast
+    lab.with_backtest_config(10, "equal", 1, 1, 0.0005, 0.0015)
+    lab.register({"test_factor": WCR_EXPR})
+    panel = lab.calc()
+    assert panel is not None
+
+
+def test_to_af_and_dump():
+    expr = al.parse_expression(WCR_EXPR)
+    factor = expr.to_af("test_wcr")
+    assert factor.name == "test_wcr"
+    assert "sum" in factor.expression
+    path = factor.dump()
+    assert os.path.exists(path)
+    os.remove(path)

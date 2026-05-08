@@ -125,6 +125,21 @@ except ImportError:
     _quantile_backtest = _compute_ic = _stub_fn
 
 
+# Monkey-patch register to support dict input
+if HAS_RUST_EXT:
+    _original_register = AlfarsLab.register
+
+    def _register(self, name, expression=None):
+        if expression is None and isinstance(name, dict):
+            for n, e in name.items():
+                _original_register(self, n, e)
+        elif expression is not None:
+            _original_register(self, name, expression)
+        else:
+            raise TypeError("register() requires either (name, expression) or a dict")
+
+    AlfarsLab.register = _register
+
 __all__ = [
     # Unified lab entry point
     "AlfarsLab",
