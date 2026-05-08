@@ -280,6 +280,18 @@ impl PyExpr {
     fn __str__(&self) -> String {
         self.__repr__()
     }
+
+    /// Convert this expression to an AlFactor with the given name.
+    fn to_af(&self, name: &str) -> PyAlFactor {
+        let expr_str = crate::gp::types::to_parseable_string(&self.inner);
+        PyAlFactor::new(
+            name.to_string(),
+            expr_str,
+            String::new(),
+            "dimensionless".to_string(),
+            vec![],
+        )
+    }
 }
 
 /// Parse expression string into Expr AST
@@ -759,29 +771,25 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
-/// Volume-based slippage configuration
+/// Slippage configuration
 #[pyclass(name = "SlippageConfig")]
 struct PySlippageConfig {
     #[pyo3(get, set)]
     large_volume_threshold: f64,
     #[pyo3(get, set)]
-    large_slippage_rate: f64,
+    buy_slippage: f64,
     #[pyo3(get, set)]
-    normal_slippage_rate: f64,
+    sell_slippage: f64,
 }
 
 #[pymethods]
 impl PySlippageConfig {
     #[new]
-    fn new(
-        large_volume_threshold: f64,
-        large_slippage_rate: f64,
-        normal_slippage_rate: f64,
-    ) -> Self {
+    fn new(large_volume_threshold: f64, buy_slippage: f64, sell_slippage: f64) -> Self {
         Self {
             large_volume_threshold,
-            large_slippage_rate,
-            normal_slippage_rate,
+            buy_slippage,
+            sell_slippage,
         }
     }
 }
@@ -790,8 +798,8 @@ impl From<PySlippageConfig> for SlippageConfig {
     fn from(py_config: PySlippageConfig) -> Self {
         SlippageConfig {
             large_volume_threshold: py_config.large_volume_threshold,
-            large_slippage_rate: py_config.large_slippage_rate,
-            normal_slippage_rate: py_config.normal_slippage_rate,
+            buy_slippage: py_config.buy_slippage,
+            sell_slippage: py_config.sell_slippage,
         }
     }
 }
@@ -800,13 +808,15 @@ impl From<PySlippageConfig> for SlippageConfig {
 #[pyclass(name = "FeeConfig")]
 struct PyFeeConfig {
     #[pyo3(get, set)]
-    commission_rate: f64,
+    buy_commission: f64,
+    #[pyo3(get, set)]
+    sell_commission: f64,
     #[pyo3(get, set)]
     large_volume_threshold: f64,
     #[pyo3(get, set)]
-    large_slippage_rate: f64,
+    buy_slippage: f64,
     #[pyo3(get, set)]
-    normal_slippage_rate: f64,
+    sell_slippage: f64,
     #[pyo3(get, set)]
     min_commission: f64,
 }
@@ -815,17 +825,19 @@ struct PyFeeConfig {
 impl PyFeeConfig {
     #[new]
     fn new(
-        commission_rate: f64,
+        buy_commission: f64,
+        sell_commission: f64,
         large_volume_threshold: f64,
-        large_slippage_rate: f64,
-        normal_slippage_rate: f64,
+        buy_slippage: f64,
+        sell_slippage: f64,
         min_commission: f64,
     ) -> Self {
         Self {
-            commission_rate,
+            buy_commission,
+            sell_commission,
             large_volume_threshold,
-            large_slippage_rate,
-            normal_slippage_rate,
+            buy_slippage,
+            sell_slippage,
             min_commission,
         }
     }
@@ -834,11 +846,12 @@ impl PyFeeConfig {
 impl From<PyFeeConfig> for FeeConfig {
     fn from(py_config: PyFeeConfig) -> Self {
         FeeConfig {
-            commission_rate: py_config.commission_rate,
+            buy_commission: py_config.buy_commission,
+            sell_commission: py_config.sell_commission,
             slippage: SlippageConfig {
                 large_volume_threshold: py_config.large_volume_threshold,
-                large_slippage_rate: py_config.large_slippage_rate,
-                normal_slippage_rate: py_config.normal_slippage_rate,
+                buy_slippage: py_config.buy_slippage,
+                sell_slippage: py_config.sell_slippage,
             },
             min_commission: py_config.min_commission,
         }
@@ -887,14 +900,15 @@ struct PyBacktestEngine {
 #[pymethods]
 impl PyBacktestEngine {
     #[new]
-    #[pyo3(signature = (quantiles, weight_method, long_top_n, short_top_n, commission_rate, rebalance_freq=1))]
+    #[pyo3(signature = (quantiles, weight_method, long_top_n, short_top_n, buy_commission, sell_commission, rebalance_freq=1))]
     fn new(
         _py: Python<'_>,
         quantiles: usize,
         weight_method: &str,
         long_top_n: usize,
         short_top_n: usize,
-        commission_rate: f64,
+        buy_commission: f64,
+        sell_commission: f64,
         rebalance_freq: usize,
     ) -> PyResult<Self> {
         let wmethod = match weight_method {
@@ -908,7 +922,8 @@ impl PyBacktestEngine {
         };
 
         let fee_config = backtest::FeeConfig {
-            commission_rate,
+            buy_commission,
+            sell_commission,
             ..Default::default()
         };
 
@@ -945,16 +960,21 @@ impl PyBacktestEngine {
         let tradable_array = tradable.readonly().as_array().to_owned();
 
         let engine = BacktestEngine::with_config(self.config.clone());
+        let (n_days, n_assets) = factor_array.dim();
+        let pm = PriceMatrix {
+            dates: vec![],
+            symbols: vec![],
+            close: close_array,
+            open: open_array,
+            high: Array2::from_elem((n_days, n_assets), 1.0),
+            low: Array2::from_elem((n_days, n_assets), 1.0),
+            vwap: vwap_array,
+            returns: returns_array,
+            tradable: tradable_array,
+            adj_factor: adj_factor_array,
+        };
 
-        match engine.run(
-            factor_array,
-            returns_array,
-            adj_factor_array,
-            close_array,
-            open_array,
-            vwap_array,
-            tradable_array,
-        ) {
+        match engine.run(factor_array, &pm) {
             Ok(result) => Ok(PyBacktestResult::from(result)),
             Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(e)),
         }
@@ -986,16 +1006,21 @@ impl PyBacktestEngine {
         let tradable_array = tradable.readonly().as_array().to_owned();
 
         let engine = BacktestEngine::with_config(self.config.clone());
+        let (n_days, n_assets) = factor_arrays[0].dim();
+        let pm = PriceMatrix {
+            dates: vec![],
+            symbols: vec![],
+            close: close_array,
+            open: open_array,
+            high: Array2::from_elem((n_days, n_assets), 1.0),
+            low: Array2::from_elem((n_days, n_assets), 1.0),
+            vwap: vwap_array,
+            returns: returns_array,
+            tradable: tradable_array,
+            adj_factor: adj_factor_array,
+        };
 
-        match engine.run_multi(
-            &factor_arrays,
-            returns_array,
-            adj_factor_array,
-            close_array,
-            open_array,
-            vwap_array,
-            tradable_array,
-        ) {
+        match engine.run_multi(&factor_arrays, &pm) {
             Ok(result) => Ok(PyBacktestResult::from(result)),
             Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(e)),
         }
@@ -1003,7 +1028,7 @@ impl PyBacktestEngine {
 
     /// Run backtest with a PriceMatrix (single-factor).
     ///
-    /// Prices in the PriceMatrix are already forward-adjusted, so adj_factor = 1.0.
+    /// adj_factor comes from the database via query_price_matrix().
     fn run_with_prices(
         &self,
         factor: Bound<'_, PyArray2<f64>>,
@@ -1011,15 +1036,13 @@ impl PyBacktestEngine {
     ) -> PyResult<PyBacktestResult> {
         let factor_array = factor.readonly().as_array().to_owned();
         let engine = BacktestEngine::with_config(self.config.clone());
-        match engine.run_with_prices(factor_array, &prices.inner) {
+        match engine.run(factor_array, &prices.inner) {
             Ok(result) => Ok(PyBacktestResult::from(result)),
             Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(e)),
         }
     }
 
     /// Run multi-factor equal-weight backtest with a PriceMatrix.
-    ///
-    /// Prices in the PriceMatrix are already forward-adjusted.
     fn run_multi_with_prices(
         &self,
         factors: Vec<Bound<'_, PyArray2<f64>>>,
@@ -1030,7 +1053,7 @@ impl PyBacktestEngine {
             .map(|f| f.readonly().as_array().to_owned())
             .collect();
         let engine = BacktestEngine::with_config(self.config.clone());
-        match engine.run_multi_with_prices(&factor_arrays, &prices.inner) {
+        match engine.run_multi(&factor_arrays, &prices.inner) {
             Ok(result) => Ok(PyBacktestResult::from(result)),
             Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(e)),
         }
@@ -1040,112 +1063,151 @@ impl PyBacktestEngine {
 /// Python-exposed backtest result
 #[pyclass(name = "BacktestResult")]
 struct PyBacktestResult {
-    #[pyo3(get)]
-    dates: Vec<i64>,
-    #[pyo3(get)]
-    group_returns: Py<PyArray2<f64>>,
-    #[pyo3(get)]
-    group_cum_returns: Py<PyArray2<f64>>,
-    #[pyo3(get)]
-    long_short_returns: Py<PyArray1<f64>>,
-    #[pyo3(get)]
-    long_short_cum_return: f64,
-    #[pyo3(get)]
-    long_short_cum_returns: Py<PyArray1<f64>>,
-    #[pyo3(get)]
-    long_cum_returns: Py<PyArray1<f64>>,
-    #[pyo3(get)]
-    short_cum_returns: Py<PyArray1<f64>>,
-    #[pyo3(get)]
-    ic_series: Py<PyArray1<f64>>,
-    #[pyo3(get)]
-    ic_mean: f64,
-    #[pyo3(get)]
-    ic_ir: f64,
-    #[pyo3(get)]
-    long_ic_mean: f64,
-    #[pyo3(get)]
-    long_ic_ir: f64,
-    #[pyo3(get)]
-    short_ic_mean: f64,
-    #[pyo3(get)]
-    short_ic_ir: f64,
-    #[pyo3(get)]
-    long_short_ic_mean: f64,
-    #[pyo3(get)]
-    long_short_ic_ir: f64,
-    /// Total return
-    #[pyo3(get)]
-    total_return: f64,
-    /// Annualized return
-    #[pyo3(get)]
-    annualized_return: f64,
-    /// Sharpe ratio (annualized)
-    #[pyo3(get)]
-    sharpe_ratio: f64,
-    /// Maximum drawdown
-    #[pyo3(get)]
-    max_drawdown: f64,
-    /// Turnover rate (group-label-based)
-    #[pyo3(get)]
-    turnover: f64,
-    /// Weight-based turnover rate
-    #[pyo3(get)]
-    weight_turnover: f64,
-    /// Win rate: fraction of days with positive long-short return
-    #[pyo3(get)]
-    win_rate: f64,
-    /// Calmar ratio: annualized_return / max_drawdown
-    #[pyo3(get)]
-    calmar_ratio: f64,
-    /// Long-only returns
-    #[pyo3(get)]
-    long_returns: Py<PyArray1<f64>>,
-    /// Short-only returns
-    #[pyo3(get)]
-    short_returns: Py<PyArray1<f64>>,
-    /// Passive benchmark daily returns (equal-weight all tradable stocks)
-    #[pyo3(get)]
-    passive_returns: Py<PyArray1<f64>>,
-    /// Passive benchmark cumulative NAV curve
-    #[pyo3(get)]
-    passive_cum_returns: Py<PyArray1<f64>>,
+    inner: BacktestResult,
 }
 
 impl From<BacktestResult> for PyBacktestResult {
-    fn from(result: BacktestResult) -> Self {
-        pyo3::Python::try_attach(|py| Self {
-            dates: result.dates,
-            group_returns: result.group_returns.into_pyarray(py).into(),
-            group_cum_returns: result.group_cum_returns.into_pyarray(py).into(),
-            long_short_returns: result.long_short_returns.into_pyarray(py).into(),
-            long_short_cum_return: result.long_short_cum_return,
-            long_short_cum_returns: result.long_short_cum_returns.into_pyarray(py).into(),
-            long_cum_returns: result.long_cum_returns.into_pyarray(py).into(),
-            short_cum_returns: result.short_cum_returns.into_pyarray(py).into(),
-            ic_series: result.ic_series.into_pyarray(py).into(),
-            ic_mean: result.ic_mean,
-            ic_ir: result.ic_ir,
-            long_ic_mean: result.long_ic_mean,
-            long_ic_ir: result.long_ic_ir,
-            short_ic_mean: result.short_ic_mean,
-            short_ic_ir: result.short_ic_ir,
-            long_short_ic_mean: result.long_short_ic_mean,
-            long_short_ic_ir: result.long_short_ic_ir,
-            total_return: result.total_return,
-            annualized_return: result.annualized_return,
-            sharpe_ratio: result.sharpe_ratio,
-            max_drawdown: result.max_drawdown,
-            turnover: result.turnover,
-            weight_turnover: result.weight_turnover,
-            win_rate: result.win_rate,
-            calmar_ratio: result.calmar_ratio,
-            long_returns: result.long_returns.into_pyarray(py).into(),
-            short_returns: result.short_returns.into_pyarray(py).into(),
-            passive_returns: result.passive_returns.into_pyarray(py).into(),
-            passive_cum_returns: result.passive_cum_returns.into_pyarray(py).into(),
-        })
-        .unwrap()
+    fn from(inner: BacktestResult) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyBacktestResult {
+    #[getter]
+    fn dates(&self) -> Vec<i64> {
+        self.inner.dates.clone()
+    }
+    #[getter]
+    fn group_returns(&self, py: Python<'_>) -> Py<PyArray2<f64>> {
+        self.inner.group_returns.clone().into_pyarray(py).into()
+    }
+    #[getter]
+    fn group_cum_returns(&self, py: Python<'_>) -> Py<PyArray2<f64>> {
+        self.inner.group_cum_returns.clone().into_pyarray(py).into()
+    }
+    #[getter]
+    fn long_short_returns(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        self.inner
+            .long_short_returns
+            .clone()
+            .into_pyarray(py)
+            .into()
+    }
+    #[getter]
+    fn long_short_cum_return(&self) -> f64 {
+        self.inner.long_short_cum_return
+    }
+    #[getter]
+    fn long_short_cum_returns(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        self.inner
+            .long_short_cum_returns
+            .clone()
+            .into_pyarray(py)
+            .into()
+    }
+    #[getter]
+    fn long_cum_returns(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        self.inner.long_cum_returns.clone().into_pyarray(py).into()
+    }
+    #[getter]
+    fn short_cum_returns(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        self.inner.short_cum_returns.clone().into_pyarray(py).into()
+    }
+    #[getter]
+    fn ic_series(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        self.inner.ic_series.clone().into_pyarray(py).into()
+    }
+    #[getter]
+    fn ic_mean(&self) -> f64 {
+        self.inner.ic_mean
+    }
+    #[getter]
+    fn ic_ir(&self) -> f64 {
+        self.inner.ic_ir
+    }
+    #[getter]
+    fn long_ic_mean(&self) -> f64 {
+        self.inner.long_ic_mean
+    }
+    #[getter]
+    fn long_ic_ir(&self) -> f64 {
+        self.inner.long_ic_ir
+    }
+    #[getter]
+    fn short_ic_mean(&self) -> f64 {
+        self.inner.short_ic_mean
+    }
+    #[getter]
+    fn short_ic_ir(&self) -> f64 {
+        self.inner.short_ic_ir
+    }
+    #[getter]
+    fn long_short_ic_mean(&self) -> f64 {
+        self.inner.long_short_ic_mean
+    }
+    #[getter]
+    fn long_short_ic_ir(&self) -> f64 {
+        self.inner.long_short_ic_ir
+    }
+    #[getter]
+    fn total_return(&self) -> f64 {
+        self.inner.total_return
+    }
+    #[getter]
+    fn annualized_return(&self) -> f64 {
+        self.inner.annualized_return
+    }
+    #[getter]
+    fn sharpe_ratio(&self) -> f64 {
+        self.inner.sharpe_ratio
+    }
+    #[getter]
+    fn max_drawdown(&self) -> f64 {
+        self.inner.max_drawdown
+    }
+    #[getter]
+    fn turnover(&self) -> f64 {
+        self.inner.turnover
+    }
+    #[getter]
+    fn weight_turnover(&self) -> f64 {
+        self.inner.weight_turnover
+    }
+    #[getter]
+    fn win_rate(&self) -> f64 {
+        self.inner.win_rate
+    }
+    #[getter]
+    fn calmar_ratio(&self) -> f64 {
+        self.inner.calmar_ratio
+    }
+    #[getter]
+    fn long_returns(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        self.inner.long_returns.clone().into_pyarray(py).into()
+    }
+    #[getter]
+    fn short_returns(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        self.inner.short_returns.clone().into_pyarray(py).into()
+    }
+    #[getter]
+    fn passive_returns(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        self.inner.passive_returns.clone().into_pyarray(py).into()
+    }
+    #[getter]
+    fn passive_cum_returns(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        self.inner
+            .passive_cum_returns
+            .clone()
+            .into_pyarray(py)
+            .into()
+    }
+
+    /// Write group NAV curves to CSV (date,nv,group).
+    fn to_csv(&self, path: &str) -> PyResult<()> {
+        self.inner
+            .to_csv(path)
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("CSV write: {}", e)))
     }
 }
 
@@ -1159,7 +1221,8 @@ fn quantile_backtest(
     weight_method: &str,
     long_top_n: usize,
     short_top_n: usize,
-    commission_rate: f64,
+    buy_commission: f64,
+    sell_commission: f64,
     adj_factor: Bound<'_, PyArray2<f64>>,
     close: Bound<'_, PyArray2<f64>>,
     open: Bound<'_, PyArray2<f64>>,
@@ -1177,7 +1240,8 @@ fn quantile_backtest(
     };
 
     let fee_config = backtest::FeeConfig {
-        commission_rate,
+        buy_commission,
+        sell_commission,
         ..Default::default()
     };
 
@@ -1202,15 +1266,21 @@ fn quantile_backtest(
     let vwap_array = vwap.readonly().as_array().to_owned();
     let tradable_array = tradable.readonly().as_array().to_owned();
 
-    match engine.run(
-        factor_array,
-        returns_array,
-        adj_factor_array,
-        close_array,
-        open_array,
-        vwap_array,
-        tradable_array,
-    ) {
+    let (n_days, n_assets) = factor_array.dim();
+    let pm = PriceMatrix {
+        dates: vec![],
+        symbols: vec![],
+        close: close_array,
+        open: open_array,
+        high: Array2::from_elem((n_days, n_assets), 1.0),
+        low: Array2::from_elem((n_days, n_assets), 1.0),
+        vwap: vwap_array,
+        returns: returns_array,
+        tradable: tradable_array,
+        adj_factor: adj_factor_array,
+    };
+
+    match engine.run(factor_array, &pm) {
         Ok(result) => Ok(PyBacktestResult::from(result)),
         Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(e)),
     }
@@ -1500,6 +1570,7 @@ impl PyGpEngine {
             vwap,
             returns: returns_array,
             tradable,
+            adj_factor: Array2::from_elem((n_days, n_assets), 1.0),
         };
 
         let split_config = DataSplitConfig {
@@ -1951,6 +2022,12 @@ impl PyAlFactor {
                 e
             ))),
         }
+    }
+
+    /// Shorthand for save_to_al: save to ~/.alfars/user/<name>.al
+    #[pyo3(signature = (filename = None))]
+    fn dump(&self, filename: Option<String>) -> PyResult<String> {
+        self.save_to_al(filename)
     }
 }
 
@@ -3195,6 +3272,24 @@ struct PyFactorPanel {
     inner: FactorPanel,
 }
 
+#[pymethods]
+impl PyFactorPanel {
+    /// Write factor values to CSV.
+    fn to_csv(&self, path: &str) -> PyResult<()> {
+        let mut wtr = csv::Writer::from_path(path)
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("CSV: {}", e)))?;
+        FactorSlice::write_header(&mut wtr);
+        for slice in &self.inner.slices {
+            slice
+                .write_to(&mut wtr)
+                .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("CSV write: {}", e)))?;
+        }
+        wtr.flush()
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("CSV flush: {}", e)))?;
+        Ok(())
+    }
+}
+
 /// Unified factor research entry point.
 ///
 /// ```python
@@ -3261,14 +3356,15 @@ impl PyAlfarsLab {
         self.inner.lock().unwrap().set_years(start, end);
     }
 
-    #[pyo3(signature = (quantiles, weight_method, long_top_n, short_top_n, commission_rate, rebalance_freq=1))]
+    #[pyo3(signature = (quantiles, weight_method, long_top_n, short_top_n, buy_commission, sell_commission, rebalance_freq=1))]
     fn with_backtest_config(
         &self,
         quantiles: usize,
         weight_method: &str,
         long_top_n: usize,
         short_top_n: usize,
-        commission_rate: f64,
+        buy_commission: f64,
+        sell_commission: f64,
         rebalance_freq: usize,
     ) -> PyResult<()> {
         let wm = match weight_method {
@@ -3287,7 +3383,8 @@ impl PyAlfarsLab {
             short_top_n,
             rebalance_freq,
             fee_config: backtest::FeeConfig {
-                commission_rate,
+                buy_commission,
+                sell_commission,
                 ..Default::default()
             },
             ..Default::default()
@@ -3305,7 +3402,8 @@ impl PyAlfarsLab {
         Ok(())
     }
 
-    fn calc(&self, csv_path: &str) -> PyResult<PyFactorPanel> {
+    #[pyo3(signature = (csv_path=None))]
+    fn calc(&self, csv_path: Option<&str>) -> PyResult<PyFactorPanel> {
         let panel = self
             .inner
             .lock()
@@ -3321,6 +3419,16 @@ impl PyAlfarsLab {
             .lock()
             .unwrap()
             .run(&panel.inner)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+        Ok(PyBacktestResult::from(result))
+    }
+
+    fn run_bt(&self) -> PyResult<PyBacktestResult> {
+        let result = self
+            .inner
+            .lock()
+            .unwrap()
+            .run_bt()
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
         Ok(PyBacktestResult::from(result))
     }
@@ -3410,6 +3518,49 @@ impl PyAlfarsLab {
         inner
             .mine_factors(config, num_factors, max_symbols)
             .map_err(|e| PyRuntimeError::new_err(e))
+    }
+
+    /// Run genetic programming and return discovered factors with backtest results.
+    ///
+    /// Returns a dict mapping `Expr` → `BacktestResult` for each winning factor.
+    #[pyo3(signature = (population_size=100, max_generations=50, tournament_size=7, crossover_prob=0.8, mutation_prob=0.2, max_depth=6, use_diverse_init=true, smart_mutation_ratio=0.3, num_factors=3, max_symbols=0))]
+    fn run_gp(
+        &self,
+        py: Python<'_>,
+        population_size: usize,
+        max_generations: usize,
+        tournament_size: usize,
+        crossover_prob: f64,
+        mutation_prob: f64,
+        max_depth: usize,
+        use_diverse_init: bool,
+        smart_mutation_ratio: f64,
+        num_factors: usize,
+        max_symbols: usize,
+    ) -> PyResult<Py<PyDict>> {
+        let config = GPConfig {
+            population_size,
+            max_generations,
+            tournament_size,
+            crossover_prob,
+            mutation_prob,
+            max_depth,
+            parent_diversity_penalty: 0.1,
+            use_diverse_init,
+            smart_mutation_ratio,
+            use_frequencies: false,
+        };
+        let results = self
+            .inner
+            .lock()
+            .unwrap()
+            .run_gp(config, num_factors, max_symbols)
+            .map_err(|e| PyRuntimeError::new_err(e))?;
+        let dict = PyDict::new(py);
+        for (expr, bt) in results {
+            dict.set_item(PyExpr { inner: expr }, PyBacktestResult::from(bt))?;
+        }
+        Ok(dict.into())
     }
 
     fn __repr__(&self) -> String {

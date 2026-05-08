@@ -136,7 +136,8 @@ struct BacktestRequest {
     weight_method: Option<String>,
     long_top_n: Option<usize>,
     short_top_n: Option<usize>,
-    commission_rate: Option<f64>,
+    buy_commission: Option<f64>,
+    sell_commission: Option<f64>,
     /// Data source config for on-demand loading from database
     data_source: Option<DataSourceConfig>,
     /// Factor ID to compute (when using data_source)
@@ -1006,7 +1007,8 @@ async fn run_backtest(
     let quantiles = req.quantiles.unwrap_or(10);
     let long_top_n = req.long_top_n.unwrap_or(1);
     let short_top_n = req.short_top_n.unwrap_or(1);
-    let commission_rate = req.commission_rate.unwrap_or(0.0);
+    let buy_commission = req.buy_commission.unwrap_or(0.0005);
+    let sell_commission = req.sell_commission.unwrap_or(0.0015);
 
     let weight_method = match req.weight_method.as_deref() {
         Some("weighted") => WeightMethod::Weighted,
@@ -1020,7 +1022,8 @@ async fn run_backtest(
     );
 
     let fee_config = FeeConfig {
-        commission_rate,
+        buy_commission,
+        sell_commission,
         ..Default::default()
     };
 
@@ -1036,9 +1039,6 @@ async fn run_backtest(
     };
 
     let engine = BacktestEngine::with_config(config);
-
-    // Create adj_factor as ones (no adjustment)
-    let adj_factor = Array2::from_elem(factor_array.dim(), 1.0);
 
     eprintln!("[run_backtest] Running backtest engine...");
     eprintln!(
@@ -1094,16 +1094,21 @@ async fn run_backtest(
         factor_nan, factor_inf, returns_nan, returns_inf, close_nan, close_inf, close_zero
     );
 
+    let (n_days, n_assets) = factor_array.dim();
+    let pm = PriceMatrix {
+        dates: vec![], // server sets dates on result separately
+        symbols: vec![],
+        close: close_array,
+        open: open_array,
+        high: Array2::from_elem((n_days, n_assets), 1.0),
+        low: Array2::from_elem((n_days, n_assets), 1.0),
+        vwap: vwap_array,
+        returns: returns_array,
+        tradable: tradable_array,
+        adj_factor: Array2::from_elem((n_days, n_assets), 1.0), // FIXME: query from DB
+    };
     let result = engine
-        .run(
-            factor_array,
-            returns_array,
-            adj_factor,
-            close_array,
-            open_array,
-            vwap_array,
-            tradable_array,
-        )
+        .run(factor_array, &pm)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     eprintln!("[run_backtest] Backtest engine completed");
 

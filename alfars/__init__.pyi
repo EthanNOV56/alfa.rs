@@ -40,7 +40,8 @@ def quantile_backtest(
     weight_method: Literal["equal", "weighted"] = "equal",
     long_top_n: int = 1,
     short_top_n: int = 1,
-    commission_rate: float = 0.0,
+    buy_commission: float = 0.0005,
+    sell_commission: float = 0.0015,
     weights: Optional[npt.NDArray] = None,
 ) -> BacktestResult: ...
 def compute_information_coefficient(
@@ -59,6 +60,19 @@ def evaluate_expression(
 ) -> npt.NDArray: ...
 def parse_expression(expression: str) -> Expr: ...
 def optimize_expression(expr: Expr) -> Expr: ...
+def quantile_backtest_multi(
+    factors: List[npt.NDArray[np.float64]],
+    returns: npt.NDArray[np.float64],
+    quantiles: int = 10,
+    weight_method: Literal["equal", "weighted"] = "equal",
+    long_top_n: int = 1,
+    short_top_n: int = 1,
+    buy_commission: float = 0.0005,
+    sell_commission: float = 0.0015,
+) -> BacktestResult:
+    """Multi-factor equal-weight combination backtest."""
+    ...
+
 def create_factor_tear_sheet(
     factor: pd.Series,
     forward_returns: pd.Series,
@@ -166,7 +180,9 @@ class BacktestEngine:
         weight_method: Literal["equal", "weighted"] = "equal",
         long_top_n: int = 1,
         short_top_n: int = 1,
-        commission_rate: float = 0.0,
+        buy_commission: float = 0.0005,
+        sell_commission: float = 0.0015,
+        rebalance_freq: int = 1,
         weights: Optional[npt.NDArray] = None,
     ) -> None: ...
     def run(self) -> BacktestResult:
@@ -176,6 +192,7 @@ class BacktestEngine:
 class BacktestResult:
     """Container for backtest results."""
 
+    dates: List[int]
     group_returns: npt.NDArray
     group_cum_returns: npt.NDArray
     long_short_returns: npt.NDArray
@@ -211,6 +228,10 @@ class BacktestResult:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert results to a dictionary."""
+        ...
+
+    def to_csv(self, path: str) -> None:
+        """Write group NAV curves to CSV (date,nv,group)."""
         ...
 
     @staticmethod
@@ -557,7 +578,8 @@ class AlfarsLab:
         weight_method: str,
         long_top_n: int,
         short_top_n: int,
-        commission_rate: float,
+        buy_commission: float,
+        sell_commission: float,
     ) -> None: ...
     def register(self, name: str, expression: str) -> None: ...
     def calc(self, csv_path: str) -> FactorPanel: ...
@@ -646,6 +668,8 @@ class PriceMatrix:
     def returns(self) -> npt.NDArray[np.float64]: ...
     @property
     def tradable(self) -> npt.NDArray[np.float64]: ...
+    @property
+    def adj_factor(self) -> npt.NDArray[np.float64]: ...
 
     def build_factor_matrix(
         self, slices: List[FactorSlice]
@@ -736,7 +760,9 @@ class BacktestEngine:
         weight_method: Literal["equal", "weighted"] = "equal",
         long_top_n: int = 1,
         short_top_n: int = 1,
-        commission_rate: float = 0.0,
+        buy_commission: float = 0.0005,
+        sell_commission: float = 0.0015,
+        rebalance_freq: int = 1,
     ) -> None: ...
     def run(
         self,
@@ -808,10 +834,19 @@ class BacktestResult:
     long_returns: npt.NDArray[np.float64]
     short_returns: npt.NDArray[np.float64]
 
+    def to_csv(self, path: str) -> None:
+        """Write group NAV curves to CSV (date,nv,group)."""
+        ...
+
 class FeeConfig:
     """Fee configuration for backtest."""
 
-    commission_rate: float
+    buy_commission: float
+    sell_commission: float
+    large_volume_threshold: float
+    buy_slippage: float
+    sell_slippage: float
+    min_commission: float
 
 class PositionConfig:
     """Position sizing configuration."""
@@ -824,7 +859,8 @@ class SlippageConfig:
     """Volume-based slippage configuration."""
 
     large_volume_threshold: float
-    large_slippage_rate: float
+    buy_slippage: float
+    sell_slippage: float
 
 
 # =============================================================================

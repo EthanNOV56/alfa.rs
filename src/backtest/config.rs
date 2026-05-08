@@ -2,32 +2,34 @@
 
 use crate::WeightMethod;
 
-/// Volume-based slippage configuration
+/// Slippage configuration with separate buy/sell rates.
 #[derive(Debug, Clone)]
 pub struct SlippageConfig {
     /// Threshold for large volume trades
     pub large_volume_threshold: f64,
-    /// Slippage rate for large volume trades
-    pub large_slippage_rate: f64,
-    /// Normal slippage rate
-    pub normal_slippage_rate: f64,
+    /// Buy-side slippage rate
+    pub buy_slippage: f64,
+    /// Sell-side slippage rate
+    pub sell_slippage: f64,
 }
 
 impl Default for SlippageConfig {
     fn default() -> Self {
         Self {
             large_volume_threshold: 1_000_000.0,
-            large_slippage_rate: 0.001,
-            normal_slippage_rate: 0.0005,
+            buy_slippage: 0.001,
+            sell_slippage: 0.001,
         }
     }
 }
 
-/// Fee configuration
+/// Fee configuration with separate buy/sell commission.
 #[derive(Debug, Clone)]
 pub struct FeeConfig {
-    /// Commission rate (e.g., 0.0003 for 0.03%)
-    pub commission_rate: f64,
+    /// Buy-side commission rate
+    pub buy_commission: f64,
+    /// Sell-side commission rate
+    pub sell_commission: f64,
     /// Slippage configuration
     pub slippage: SlippageConfig,
     /// Minimum commission per trade
@@ -37,7 +39,8 @@ pub struct FeeConfig {
 impl Default for FeeConfig {
     fn default() -> Self {
         Self {
-            commission_rate: 0.0003,
+            buy_commission: 0.0005,
+            sell_commission: 0.0015,
             slippage: SlippageConfig::default(),
             min_commission: 5.0,
         }
@@ -123,14 +126,15 @@ mod tests {
     fn test_slippage_config_default() {
         let config = SlippageConfig::default();
         assert_eq!(config.large_volume_threshold, 1_000_000.0);
-        assert_eq!(config.large_slippage_rate, 0.001);
-        assert_eq!(config.normal_slippage_rate, 0.0005);
+        assert_eq!(config.buy_slippage, 0.001);
+        assert_eq!(config.sell_slippage, 0.001);
     }
 
     #[test]
     fn test_fee_config_default() {
         let config = FeeConfig::default();
-        assert_eq!(config.commission_rate, 0.0003);
+        assert_eq!(config.buy_commission, 0.0005);
+        assert_eq!(config.sell_commission, 0.0015);
         assert_eq!(config.min_commission, 5.0);
     }
 
@@ -146,23 +150,25 @@ mod tests {
     fn test_slippage_config_custom() {
         let config = SlippageConfig {
             large_volume_threshold: 5_000_000.0,
-            large_slippage_rate: 0.002,
-            normal_slippage_rate: 0.001,
+            buy_slippage: 0.002,
+            sell_slippage: 0.003,
         };
         assert_eq!(config.large_volume_threshold, 5_000_000.0);
-        assert_eq!(config.large_slippage_rate, 0.002);
-        assert_eq!(config.normal_slippage_rate, 0.001);
+        assert_eq!(config.buy_slippage, 0.002);
+        assert_eq!(config.sell_slippage, 0.003);
     }
 
     #[test]
     fn test_fee_config_custom() {
         let slippage = SlippageConfig::default();
         let config = FeeConfig {
-            commission_rate: 0.001,
+            buy_commission: 0.001,
+            sell_commission: 0.002,
             slippage,
             min_commission: 10.0,
         };
-        assert_eq!(config.commission_rate, 0.001);
+        assert_eq!(config.buy_commission, 0.001);
+        assert_eq!(config.sell_commission, 0.002);
         assert_eq!(config.min_commission, 10.0);
     }
 

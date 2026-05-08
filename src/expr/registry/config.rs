@@ -187,6 +187,7 @@ impl FactorSlice {
 /// Multi-factor × multi-year panel data, ready for backtest or CSV output.
 ///
 /// Returned by `FactorRegistry::calc()`.
+#[derive(Debug, Clone)]
 pub struct FactorPanel {
     pub slices: Vec<FactorSlice>,
     pub factor_names: Vec<String>,

@@ -172,7 +172,7 @@ def main():
     filter = "symbols not like '%BJ'"
     lab.with_filter(filter)
     lab.with_years(this_year - years, this_year)
-    lab.with_backtest_config(10, "equal", 1, 1, 0.0003)
+    lab.with_backtest_config(10, "equal", 1, 1, 0.0005, 0.0015)
 
     print(f"  Filter: {this_year - years}–{this_year}, {filter}, max_symbols={max_symbols or 'all'}")
 
