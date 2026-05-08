@@ -41,6 +41,9 @@ pub struct AlfarsLab {
     end_year: Option<i32>,
     last_panel: Mutex<Option<FactorPanel>>,
     last_prices: Mutex<Option<Arc<PriceMatrix>>>,
+    gp_fields: Mutex<Option<Vec<String>>>,
+    gp_ops: Mutex<Option<Vec<String>>>,
+    gp_seeds: Mutex<Option<Vec<expr::Expr>>>,
 }
 
 impl AlfarsLab {
@@ -53,6 +56,9 @@ impl AlfarsLab {
             end_year: None,
             last_panel: Mutex::new(None),
             last_prices: Mutex::new(None),
+            gp_fields: Mutex::new(None),
+            gp_ops: Mutex::new(None),
+            gp_seeds: Mutex::new(None),
         }
     }
 
@@ -65,6 +71,9 @@ impl AlfarsLab {
             end_year: None,
             last_panel: Mutex::new(None),
             last_prices: Mutex::new(None),
+            gp_fields: Mutex::new(None),
+            gp_ops: Mutex::new(None),
+            gp_seeds: Mutex::new(None),
         }
     }
 
@@ -87,6 +96,62 @@ impl AlfarsLab {
     pub fn register(&mut self, name: &str, expression: &str) -> Result<&mut Self, String> {
         self.registry.register(name, expression)?;
         Ok(self)
+    }
+
+    /// All canonical field names available at daily frequency.
+    pub fn avail_fields() -> Vec<String> {
+        crate::data::frequency::avail_fields_1d()
+    }
+
+    /// All GP operator names (24 total).
+    pub fn avail_ops() -> Vec<String> {
+        vec![
+            "add".into(),
+            "sub".into(),
+            "mul".into(),
+            "div".into(),
+            "power".into(),
+            "sqrt".into(),
+            "abs".into(),
+            "neg".into(),
+            "log".into(),
+            "sign".into(),
+            "exp".into(),
+            "rank".into(),
+            "cs_scale".into(),
+            "ts_mean".into(),
+            "ts_std".into(),
+            "ts_max".into(),
+            "ts_min".into(),
+            "ts_sum".into(),
+            "delay".into(),
+            "ts_delta".into(),
+            "ts_rank".into(),
+            "decay_linear".into(),
+            "correlation".into(),
+            "ts_covariance".into(),
+        ]
+    }
+
+    /// Set GP terminal fields. If not called, defaults to close/open/high/low/vwap.
+    pub fn set_gp_fields(&self, fields: Vec<String>) {
+        *self.gp_fields.lock().unwrap() = Some(fields);
+    }
+
+    /// Set GP operators. If not called, defaults to all 24 operators.
+    pub fn set_gp_ops(&self, ops: Vec<String>) {
+        *self.gp_ops.lock().unwrap() = Some(ops);
+    }
+
+    /// Set seed expressions for initial GP population.
+    /// Expressions are parsed via `crate::expr::parse_expression`.
+    pub fn set_gp_seed(&self, seeds: Vec<String>) -> Result<(), String> {
+        let parsed: Result<Vec<_>, _> = seeds
+            .iter()
+            .map(|s| crate::expr::parse_expression(s))
+            .collect();
+        *self.gp_seeds.lock().unwrap() = Some(parsed?);
+        Ok(())
     }
 
     /// Evaluate all registered factors (raw values + CS pipeline), returning
@@ -429,43 +494,9 @@ impl AlfarsLab {
 
         let evaluator = RealBacktestFitnessEvaluator::new(data, prices_arc);
 
-        let terminals = vec![
-            Terminal::Ephemeral,
-            Terminal::Constant(1.0),
-            Terminal::Constant(2.0),
-            Terminal::Variable("close".to_string()),
-            Terminal::Variable("open".to_string()),
-            Terminal::Variable("high".to_string()),
-            Terminal::Variable("low".to_string()),
-            Terminal::Variable("vwap".to_string()),
-        ];
-
-        let functions = vec![
-            Function::add(),
-            Function::sub(),
-            Function::mul(),
-            Function::div(),
-            Function::power(),
-            Function::sqrt(),
-            Function::abs(),
-            Function::neg(),
-            Function::log(),
-            Function::sign(),
-            Function::exp(),
-            Function::rank(),
-            Function::cs_scale(),
-            Function::ts_mean(),
-            Function::ts_std(),
-            Function::ts_max(),
-            Function::ts_min(),
-            Function::ts_sum(),
-            Function::delay(),
-            Function::ts_delta(),
-            Function::ts_rank(),
-            Function::decay_linear(),
-            Function::correlation(),
-            Function::ts_covariance(),
-        ];
+        let terminals = build_gp_terminals(&self.gp_fields.lock().unwrap());
+        let functions = build_gp_functions(&self.gp_ops.lock().unwrap());
+        let seed_exprs = self.gp_seeds.lock().unwrap().clone();
 
         let mut rng = StdRng::from_entropy();
         let mut results = Vec::with_capacity(num_factors);
@@ -477,6 +508,7 @@ impl AlfarsLab {
                 terminals.clone(),
                 functions.clone(),
                 &mut rng,
+                seed_exprs.as_deref(),
             );
 
             if let Some(bt) = evaluator.get_last_backtest() {
@@ -572,6 +604,7 @@ impl AlfarsLab {
                 terminals.clone(),
                 functions.clone(),
                 &mut rng,
+                None,
             );
 
             let expr_str = to_parseable_string(&best_expr);
@@ -622,6 +655,66 @@ impl AlfarsLab {
         let qcut_mat = prices.build_qcut_matrix(&panel.slices);
         BacktestEngine::with_config(self.backtest_config.clone())
             .run_with_qcut(factor_mat, &qcut_mat, &prices)
+    }
+}
+
+fn build_gp_terminals(fields: &Option<Vec<String>>) -> Vec<Terminal> {
+    let mut t = vec![
+        Terminal::Ephemeral,
+        Terminal::Constant(1.0),
+        Terminal::Constant(2.0),
+    ];
+    match fields {
+        Some(fields) => {
+            for f in fields {
+                t.push(Terminal::Variable(f.clone()));
+            }
+        }
+        None => {
+            for f in &["close", "open", "high", "low", "vwap"] {
+                t.push(Terminal::Variable(f.to_string()));
+            }
+        }
+    }
+    t
+}
+
+fn build_gp_functions(ops: &Option<Vec<String>>) -> Vec<Function> {
+    let all: Vec<Function> = vec![
+        Function::add(),
+        Function::sub(),
+        Function::mul(),
+        Function::div(),
+        Function::power(),
+        Function::sqrt(),
+        Function::abs(),
+        Function::neg(),
+        Function::log(),
+        Function::sign(),
+        Function::exp(),
+        Function::rank(),
+        Function::cs_scale(),
+        Function::ts_mean(),
+        Function::ts_std(),
+        Function::ts_max(),
+        Function::ts_min(),
+        Function::ts_sum(),
+        Function::delay(),
+        Function::ts_delta(),
+        Function::ts_rank(),
+        Function::decay_linear(),
+        Function::correlation(),
+        Function::ts_covariance(),
+    ];
+    match ops {
+        Some(names) => {
+            let name_set: std::collections::HashSet<&str> =
+                names.iter().map(|s| s.as_str()).collect();
+            all.into_iter()
+                .filter(|f| name_set.contains(f.name.as_str()))
+                .collect()
+        }
+        None => all,
     }
 }
 

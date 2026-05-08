@@ -20,6 +20,7 @@ pub fn run_gp<R: Rng + ?Sized>(
     terminals: Vec<Terminal>,
     functions: Vec<Function>,
     rng: &mut R,
+    seed_exprs: Option<&[Expr]>,
 ) -> (Expr, f64) {
     // Generate initial population
     let generator = ExpressionGenerator::new(config, terminals, functions);
@@ -29,6 +30,15 @@ pub fn run_gp<R: Rng + ?Sized>(
     } else {
         generator.generate_initial_population(config.population_size, rng)
     };
+
+    // Inject seed expressions if provided (replace first N individuals)
+    if let Some(seeds) = seed_exprs {
+        let n = seeds.len().min(population.len());
+        for i in 0..n {
+            population[i] = seeds[i].clone();
+        }
+    }
+
     let pop_size = population.len();
 
     // Evaluate initial population (using batch if supported)

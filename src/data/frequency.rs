@@ -369,3 +369,12 @@ pub fn valid_agg_freqs(data_freq: &Frequency) -> Vec<Frequency> {
         .cloned()
         .collect()
 }
+
+/// All field names available at daily frequency (GP terminals).
+pub fn avail_fields_1d() -> Vec<String> {
+    FIELDS
+        .iter()
+        .filter(|f| f.freq_1d)
+        .map(|f| f.canonical.to_string())
+        .collect()
+}
