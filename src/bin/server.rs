@@ -6,7 +6,6 @@ use alfars::WeightMethod;
 use alfars::backtest::{BacktestConfig, BacktestEngine, BacktestResult, FeeConfig};
 use alfars::data::clickhouse::ClickHouseSource;
 use alfars::data::layer::PriceMatrix;
-use alfars::expr::registry::FactorRegistry;
 use alfars::gp::GPConfig;
 use alfars::lab::AlfarsLab;
 use axum::{
@@ -16,8 +15,7 @@ use axum::{
     response::Json,
     routing::{get, post},
 };
-use ndarray::{Array1, Array2};
-use rand::Rng;
+use ndarray::Array2;
 use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -218,19 +216,26 @@ struct FactorComputeResponse {
     cache_id: Option<String>,
 }
 
-/// GP mine request
+/// GP run request
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
-struct GpMineRequest {
+struct GpRunRequest {
     population_size: Option<usize>,
     max_generations: Option<usize>,
-    terminal_set: Option<Vec<String>>,
-    function_set: Option<Vec<String>>,
-    target_ic: Option<f64>,
-    n_days: Option<usize>,
-    n_assets: Option<usize>,
-    /// Seed expression for mutation-based GP mining
+    tournament_size: Option<usize>,
+    crossover_prob: Option<f64>,
+    mutation_prob: Option<f64>,
+    max_depth: Option<usize>,
+    use_diverse_init: Option<bool>,
+    smart_mutation_ratio: Option<f64>,
+    num_factors: Option<usize>,
+    max_symbols: Option<usize>,
+    /// GP terminal fields (e.g., ["close", "vol"])
+    fields: Option<Vec<String>>,
+    /// GP operators (e.g., ["ts_mean", "rank"])
+    ops: Option<Vec<String>>,
+    /// Seed expression for initial GP population
     seed_expression: Option<String>,
     /// Data source config for on-demand loading from database
     data_source: Option<DataSourceConfig>,
@@ -245,16 +250,21 @@ struct GpFactor {
     ic_mean: f64,
     ic_ir: f64,
     fitness: f64,
+    sharpe_ratio: f64,
+    total_return: f64,
+    annualized_return: f64,
+    max_drawdown: f64,
+    turnover: f64,
+    calmar_ratio: f64,
+    win_rate: f64,
 }
 
-/// GP mine response
+/// GP run response
 #[derive(Debug, Serialize)]
-struct GpMineResponse {
+struct GpRunResponse {
     factors: Vec<GpFactor>,
-    #[serde(rename = "best_factor")]
     best_factor: GpFactor,
     generations: usize,
-    #[serde(rename = "elapsed_time")]
     elapsed_time: f64,
 }
 
@@ -503,6 +513,8 @@ pub struct ColumnMapping {
     pub roe: Option<String>,
     /// Market cap column for filtering (optional)
     pub market_cap: Option<String>,
+    /// Adjustment factor column for 复权 (optional)
+    pub adj_factor: Option<String>,
 }
 
 /// Per-table column mappings storage
@@ -591,29 +603,21 @@ struct LoadDataResponse {
     low: Vec<Vec<f64>>,
     volume: Vec<Vec<f64>>,
     returns: Vec<Vec<f64>>,
+    adj_factor: Vec<Vec<f64>>,
 }
 
 /// Cached factor computation result
 #[derive(Clone)]
 struct CachedFactor {
-    factor_id: String,
     factor: Vec<Vec<f64>>,
     returns: Vec<Vec<f64>>,
     dates: Vec<String>,
     close: Vec<Vec<f64>>,
-    vwap: Vec<Vec<f64>>,
+    open: Vec<Vec<f64>>,
     high: Vec<Vec<f64>>,
     low: Vec<Vec<f64>>,
-}
-
-/// Cached AlfarsLab evaluation result (new path)
-#[derive(Clone)]
-#[allow(dead_code)]
-struct CachedLabResult {
-    /// Factor matrices keyed by name (from lab.evaluate())
-    factor_matrices: HashMap<String, Array2<f64>>,
-    /// Full price matrix
-    price_matrix: PriceMatrix,
+    vwap: Vec<Vec<f64>>,
+    adj_factor: Vec<Vec<f64>>,
 }
 
 #[derive(Clone)]
@@ -622,7 +626,75 @@ struct AppState {
     column_mappings: Arc<RwLock<TableColumnMappings>>,
     table_mapping: Arc<RwLock<TableMapping>>,
     factor_cache: Arc<RwLock<HashMap<String, CachedFactor>>>,
-    lab_cache: Arc<RwLock<HashMap<String, CachedLabResult>>>,
+}
+
+fn build_backtest_config_from_request(req: &BacktestRequest) -> BacktestConfig {
+    let weight_method = match req.weight_method.as_deref() {
+        Some("weighted") => WeightMethod::Weighted,
+        _ => WeightMethod::Equal,
+    };
+    BacktestConfig {
+        quantiles: req.quantiles.unwrap_or(10),
+        weight_method,
+        long_top_n: req.long_top_n.unwrap_or(1),
+        short_top_n: req.short_top_n.unwrap_or(1),
+        rebalance_freq: 1,
+        fee_config: FeeConfig {
+            buy_commission: req.buy_commission.unwrap_or(0.0005),
+            sell_commission: req.sell_commission.unwrap_or(0.0015),
+            ..Default::default()
+        },
+        position_config: Default::default(),
+        limit_up_down_config: Default::default(),
+    }
+}
+
+/// Run backtest from pre-computed factor/price data (non-lab paths).
+fn run_backtest_direct(
+    factor: Vec<Vec<f64>>,
+    returns: Vec<Vec<f64>>,
+    close: Vec<Vec<f64>>,
+    open: Vec<Vec<f64>>,
+    high: Vec<Vec<f64>>,
+    low: Vec<Vec<f64>>,
+    vwap: Vec<Vec<f64>>,
+    adj_factor: Vec<Vec<f64>>,
+    config: &BacktestConfig,
+) -> Result<BacktestResult, String> {
+    let n_days = factor.len();
+    let n_assets = factor[0].len();
+
+    let to_array2 = |data: Vec<Vec<f64>>| -> Result<Array2<f64>, String> {
+        Array2::from_shape_vec((n_days, n_assets), data.into_iter().flatten().collect())
+            .map_err(|e| format!("Invalid shape: {}", e))
+    };
+
+    let tradable_flat: Vec<f64> = high
+        .iter()
+        .zip(low.iter())
+        .flat_map(|(h, l)| {
+            h.iter()
+                .zip(l.iter())
+                .map(|(&a, &b)| if a > b { 1.0 } else { 0.0 })
+        })
+        .collect();
+    let tradable_array = Array2::from_shape_vec((n_days, n_assets), tradable_flat)
+        .map_err(|e| format!("Invalid tradable: {}", e))?;
+
+    let pm = PriceMatrix {
+        dates: vec![],
+        symbols: vec![],
+        close: to_array2(close)?,
+        open: to_array2(open)?,
+        high: to_array2(high)?,
+        low: to_array2(low)?,
+        vwap: to_array2(vwap)?,
+        returns: to_array2(returns)?,
+        tradable: tradable_array,
+        adj_factor: to_array2(adj_factor)?,
+    };
+
+    BacktestEngine::with_config(config.clone()).run(to_array2(factor)?, &pm)
 }
 
 /// Run backtest and return NAV data
@@ -630,569 +702,134 @@ async fn run_backtest(
     State(state): State<AppState>,
     Json(req): Json<BacktestRequest>,
 ) -> Result<Json<NavData>, (StatusCode, String)> {
-    eprintln!("[run_backtest] Received request");
+    let config = build_backtest_config_from_request(&req);
 
-    // Extract close and vwap data - track whether we have real data
-    let mut close_data: Option<Vec<Vec<f64>>> = None;
-    let mut vwap_data: Option<Vec<Vec<f64>>> = None;
-    let mut high_data: Option<Vec<Vec<f64>>> = None;
-    let mut low_data: Option<Vec<Vec<f64>>> = None;
-    let mut open_data: Option<Vec<Vec<f64>>> = None;
-
-    // Check if cache_id is provided
-    let (factor, returns, dates) = if let Some(cache_id) = &req.cache_id {
-        eprintln!(
-            "[run_backtest] Retrieving from cache: {} (factor_id: {:?})",
-            cache_id, cache_id
-        );
-        let cache = state.factor_cache.read().await;
-        if let Some(cached) = cache.get(cache_id) {
-            eprintln!(
-                "[run_backtest] Cache hit: {}x{}, factor_id={}",
-                cached.factor.len(),
-                cached.factor.first().map(|r| r.len()).unwrap_or(0),
-                cached.factor_id
-            );
-            // Set close, vwap, high, low, and open from cache
-            close_data = Some(cached.close.clone());
-            vwap_data = Some(cached.vwap.clone());
-            high_data = Some(cached.high.clone());
-            low_data = Some(cached.low.clone());
-            open_data = Some(cached.close.clone()); // Use close as open proxy for cached data
-
-            // Debug: check cached factor and returns values
-            let flat_factor: Vec<f64> = cached.factor.iter().flatten().cloned().collect();
-            let flat_returns: Vec<f64> = cached.returns.iter().flatten().cloned().collect();
-            let factor_valid = flat_factor.iter().filter(|v| v.is_finite()).count();
-            let factor_nan = flat_factor.iter().filter(|v| v.is_nan()).count();
-            let returns_valid = flat_returns.iter().filter(|v| v.is_finite()).count();
-            let returns_nan = flat_returns.iter().filter(|v| v.is_nan()).count();
-            let returns_zero = flat_returns
-                .iter()
-                .filter(|v| (*v - 0.0).abs() < 1e-10)
-                .count();
-            eprintln!(
-                "[run_backtest] Factor: valid={}, nan={}, shape={}x{}",
-                factor_valid,
-                factor_nan,
-                cached.factor.len(),
-                cached.factor.first().map(|r| r.len()).unwrap_or(0)
-            );
-            eprintln!(
-                "[run_backtest] Returns: valid={}, nan={}, zero={}",
-                returns_valid, returns_nan, returns_zero
-            );
-            eprintln!(
-                "[run_backtest] Factor day0 first 5: {:?}",
-                &cached.factor[0][..5]
-            );
-            eprintln!(
-                "[run_backtest] Returns day0 first 5: {:?}",
-                &cached.returns[0][..5]
-            );
-
-            (
-                cached.factor.clone(),
-                cached.returns.clone(),
-                Some(cached.dates.clone()),
-            )
-        } else {
-            return Err((
-                StatusCode::NOT_FOUND,
-                format!(
-                    "Cache not found for id: {}. Please recompute the factor.",
-                    cache_id
-                ),
-            ));
-        }
-    } else if let (Some(factor), Some(returns), Some(dates)) =
-        (&req.factor, &req.returns, &req.dates)
-    {
-        eprintln!(
-            "[run_backtest] Using pre-computed factor: {}x{}",
-            factor.len(),
-            factor.first().map(|r| r.len()).unwrap_or(0)
-        );
-        // Use pre-computed factor and returns
-        (factor.clone(), returns.clone(), Some(dates.clone()))
-    } else if let Some(data_source) = &req.data_source {
-        // Load data from database
-        let loaded = load_data_from_config(&state, data_source).await?;
-
-        let n_days = loaded.dates.len();
-        let n_assets = loaded.symbols.len();
-
-        let factor = if let Some(ref factor_id) = req.factor_id {
-            // Use FactorRegistry to compute factor from expression
-            eprintln!(
-                "[run_backtest] Computing factor '{}' with {} days x {} assets",
-                factor_id, n_days, n_assets
-            );
-
-            // Prepare data for FactorRegistry: transpose and flatten
-            // FactorRegistry expects: [asset0_day0, asset0_day1, ..., asset1_day0, ...]
-            let mut data: HashMap<String, Vec<f64>> = HashMap::new();
-
-            let mut close_flat: Vec<f64> = Vec::with_capacity(n_days * n_assets);
-            let mut open_flat: Vec<f64> = Vec::with_capacity(n_days * n_assets);
-            let mut high_flat: Vec<f64> = Vec::with_capacity(n_days * n_assets);
-            let mut low_flat: Vec<f64> = Vec::with_capacity(n_days * n_assets);
-            let mut volume_flat: Vec<f64> = Vec::with_capacity(n_days * n_assets);
-            let mut returns_flat: Vec<f64> = Vec::with_capacity(n_days * n_assets);
-
-            for day in 0..n_days {
-                for asset in 0..n_assets {
-                    close_flat.push(loaded.close[day][asset]);
-                    open_flat.push(loaded.open[day][asset]);
-                    high_flat.push(loaded.high[day][asset]);
-                    low_flat.push(loaded.low[day][asset]);
-                    volume_flat.push(loaded.volume[day][asset]);
-                    returns_flat.push(loaded.returns[day][asset]);
-                }
-            }
-
-            data.insert("close".to_string(), close_flat);
-            data.insert("open".to_string(), open_flat);
-            data.insert("high".to_string(), high_flat);
-            data.insert("low".to_string(), low_flat);
-            data.insert("volume".to_string(), volume_flat);
-            data.insert("returns".to_string(), returns_flat);
-
-            // Create FactorRegistry and register factor
-            let mut registry = FactorRegistry::new();
-            registry.register("factor", factor_id).map_err(|e| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    format!("Failed to register factor: {}", e),
-                )
-            })?;
-
-            // Get required columns (for logging)
-            let required_cols = registry.required_columns();
-            eprintln!("[run_backtest] Required columns: {:?}", required_cols);
-
-            // Convert to Array1 format for vectorized computation
-            let mut data_array1: HashMap<String, Array1<f64>> = HashMap::new();
-            for (key, values) in data.iter() {
-                data_array1.insert(key.clone(), Array1::from_vec(values.clone()));
-            }
-
-            // Compute factor using vectorized batch computation
-            let results = registry
-                .compute(&["factor"], &data_array1, true, false)
-                .map_err(|e| {
-                    (
-                        StatusCode::BAD_REQUEST,
-                        format!("Failed to compute factor: {}", e),
-                    )
-                })?;
-
-            let result = results.get("factor").ok_or_else(|| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Factor computation failed".to_string(),
-                )
-            })?;
-
-            eprintln!("[run_backtest] Computed factor, n_rows={}", result.n_rows);
-
-            // Debug: check factor values from compute
-            let valid_count = result.values.iter().filter(|v| v.is_finite()).count();
-            let nan_count = result.values.iter().filter(|v| v.is_nan()).count();
-            let inf_count = result.values.iter().filter(|v| v.is_infinite()).count();
-            eprintln!(
-                "[run_backtest] Computed factor stats: valid={}, nan={}, inf={}",
-                valid_count, nan_count, inf_count
-            );
-            eprintln!(
-                "[run_backtest] Computed factor first 10: {:?}",
-                &result.values[..10]
-            );
-            let valid_count = result.values.iter().filter(|v| v.is_finite()).count();
-            let nan_count = result.values.iter().filter(|v| v.is_nan()).count();
-            let inf_count = result.values.iter().filter(|v| v.is_infinite()).count();
-            eprintln!(
-                "[run_backtest] Factor stats: valid={}, nan={}, inf={}",
-                valid_count, nan_count, inf_count
-            );
-            if let Some(_first) = result.values.first() {
-                eprintln!("[run_backtest] First 5 values: {:?}", &result.values[..5]);
-            }
-
-            // Reshape result back to (n_days, n_assets)
-            // Data was flattened as [day0_asset0, day0_asset1, ..., day1_asset0, ...]
-            // So we use: idx = day * n_assets + asset
-            let values = result.values.clone();
-            let mut factor: Vec<Vec<f64>> = Vec::with_capacity(n_days);
-            for day in 0..n_days {
-                let mut day_factor: Vec<f64> = Vec::with_capacity(n_assets);
-                for asset in 0..n_assets {
-                    let idx = day * n_assets + asset;
-                    day_factor.push(values[idx]);
-                }
-                factor.push(day_factor);
-            }
-
-            factor
-        } else {
-            // Fallback: use close prices as factor (rank them)
-            eprintln!("[run_backtest] No factor_id provided, using ranked close prices");
-            let mut factor: Vec<Vec<f64>> = Vec::with_capacity(n_days);
-            for d in 0..n_days {
-                let mut pairs: Vec<(usize, f64)> = loaded.close[d]
-                    .iter()
-                    .enumerate()
-                    .map(|(i, &v)| (i, v))
-                    .collect();
-                pairs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-                let mut ranked = vec![0.0; n_assets];
-                for (rank, (idx, _)) in pairs.iter().enumerate() {
-                    ranked[*idx] = rank as f64 / n_assets as f64;
-                }
-                factor.push(ranked);
-            }
-            factor
-        };
-
-        // Extract close, open, high, low and compute vwap (high + low + close) / 3
-        close_data = Some(loaded.close.clone());
-        open_data = Some(loaded.open.clone());
-        high_data = Some(loaded.high.clone());
-        low_data = Some(loaded.low.clone());
-        let mut computed_vwap: Vec<Vec<f64>> = Vec::with_capacity(n_days);
-        for d in 0..n_days {
-            let mut vwap_row = Vec::with_capacity(n_assets);
-            for a in 0..n_assets {
-                let h = loaded.high[d][a];
-                let l = loaded.low[d][a];
-                let c = loaded.close[d][a];
-                let v = if h.is_finite() && l.is_finite() && c.is_finite() {
-                    (h + l + c) / 3.0
-                } else {
-                    c
-                };
-                vwap_row.push(v);
-            }
-            computed_vwap.push(vwap_row);
-        }
-        vwap_data = Some(computed_vwap);
-
-        (factor, loaded.returns, Some(loaded.dates))
-    } else {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "Either provide factor/returns/dates or configure data_source".to_string(),
-        ));
-    };
-
-    let n_days = factor.len();
-    if n_days == 0 {
-        return Err((StatusCode::BAD_REQUEST, "Factor data is empty".to_string()));
-    }
-    let n_assets = factor[0].len();
-
-    if factor.iter().any(|row| row.len() != n_assets) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "Factor rows must have consistent length".to_string(),
-        ));
-    }
-
-    // Convert to ndarray
-    let factor_array =
-        Array2::from_shape_vec((n_days, n_assets), factor.into_iter().flatten().collect())
-            .map_err(|e| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    format!("Invalid factor shape: {}", e),
-                )
-            })?;
-
-    let returns_array =
-        Array2::from_shape_vec((n_days, n_assets), returns.into_iter().flatten().collect())
-            .map_err(|e| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    format!("Invalid returns shape: {}", e),
-                )
-            })?;
-
-    // Convert close to ndarray (required)
-    let close_array = close_data.ok_or_else(|| {
-        (
-            StatusCode::BAD_REQUEST,
-            "Close data is required".to_string(),
+    // Path 1: Pre-computed factor + returns + dates (no DB needed)
+    if let (Some(factor), Some(returns), Some(dates)) = (&req.factor, &req.returns, &req.dates) {
+        let n_days = factor.len();
+        let n_assets = factor.first().map(|r| r.len()).unwrap_or(0);
+        let ones = vec![vec![1.0; n_assets]; n_days];
+        let result = run_backtest_direct(
+            factor.clone(),
+            returns.clone(),
+            ones.clone(),
+            ones.clone(),
+            ones.clone(),
+            ones.clone(),
+            ones.clone(),
+            ones,
+            &config,
         )
-    })?;
-    let close_array = Array2::from_shape_vec(
-        (n_days, n_assets),
-        close_array.into_iter().flatten().collect(),
-    )
-    .map_err(|e| {
-        (
-            StatusCode::BAD_REQUEST,
-            format!("Invalid close shape: {}", e),
-        )
-    })?;
-
-    // Convert vwap to ndarray (required)
-    let vwap_array =
-        vwap_data.ok_or_else(|| (StatusCode::BAD_REQUEST, "VWAP data is required".to_string()))?;
-    let vwap_array = Array2::from_shape_vec(
-        (n_days, n_assets),
-        vwap_array.into_iter().flatten().collect(),
-    )
-    .map_err(|e| {
-        (
-            StatusCode::BAD_REQUEST,
-            format!("Invalid vwap shape: {}", e),
-        )
-    })?;
-
-    // Open data is required for position sizing
-    let open_array = open_data.ok_or_else(|| {
-        (
-            StatusCode::BAD_REQUEST,
-            "Open data is required for backtest (needed for position sizing)".to_string(),
-        )
-    })?;
-    let open_array = Array2::from_shape_vec(
-        (n_days, n_assets),
-        open_array.into_iter().flatten().collect(),
-    )
-    .map_err(|e| {
-        (
-            StatusCode::BAD_REQUEST,
-            format!("Invalid open shape: {}", e),
-        )
-    })?;
-
-    // High and low data are required for tradable calculation
-    let (high_data, low_data) = match (high_data, low_data) {
-        (Some(h), Some(l)) => (h, l),
-        (None, _) => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "High price data is required for tradable calculation (high > low)".to_string(),
-            ));
-        }
-        (_, None) => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "Low price data is required for tradable calculation (high > low)".to_string(),
-            ));
-        }
-    };
-
-    // Compute tradable: high > low means the stock can be traded
-    let tradable_flat: Vec<f64> = high_data
-        .iter()
-        .zip(low_data.iter())
-        .flat_map(|(h_row, l_row)| {
-            h_row
-                .iter()
-                .zip(l_row.iter())
-                .map(|(&h, &l)| if h > l { 1.0 } else { 0.0 })
-        })
-        .collect();
-    let tradable_array =
-        Array2::from_shape_vec((n_days, n_assets), tradable_flat).map_err(|e| {
-            (
-                StatusCode::BAD_REQUEST,
-                format!("Invalid tradable shape: {}", e),
-            )
-        })?;
-
-    // Default parameters
-    let quantiles = req.quantiles.unwrap_or(10);
-    let long_top_n = req.long_top_n.unwrap_or(1);
-    let short_top_n = req.short_top_n.unwrap_or(1);
-    let buy_commission = req.buy_commission.unwrap_or(0.0005);
-    let sell_commission = req.sell_commission.unwrap_or(0.0015);
-
-    let weight_method = match req.weight_method.as_deref() {
-        Some("weighted") => WeightMethod::Weighted,
-        _ => WeightMethod::Equal,
-    };
-
-    // Create and run backtest
-    eprintln!(
-        "[run_backtest] Creating backtest engine with {} days, {} assets",
-        n_days, n_assets
-    );
-
-    let fee_config = FeeConfig {
-        buy_commission,
-        sell_commission,
-        ..Default::default()
-    };
-
-    let config = BacktestConfig {
-        quantiles,
-        weight_method,
-        long_top_n,
-        short_top_n,
-        rebalance_freq: 1,
-        fee_config,
-        position_config: Default::default(),
-        limit_up_down_config: Default::default(),
-    };
-
-    let engine = BacktestEngine::with_config(config);
-
-    eprintln!("[run_backtest] Running backtest engine...");
-    eprintln!(
-        "[run_backtest] factor_array: {}x{}",
-        factor_array.dim().0,
-        factor_array.dim().1
-    );
-    eprintln!(
-        "[run_backtest] returns_array: {}x{}",
-        returns_array.dim().0,
-        returns_array.dim().1
-    );
-    eprintln!(
-        "[run_backtest] close_array: {}x{}",
-        close_array.dim().0,
-        close_array.dim().1
-    );
-    eprintln!(
-        "[run_backtest] vwap_array: {}x{}",
-        vwap_array.dim().0,
-        vwap_array.dim().1
-    );
-    eprintln!(
-        "[run_backtest] factor_array sample [0,:5]: {:?}",
-        factor_array.row(0).slice(ndarray::s![..5])
-    );
-    eprintln!(
-        "[run_backtest] returns_array sample [0,:5]: {:?}",
-        returns_array.row(0).slice(ndarray::s![..5])
-    );
-    eprintln!(
-        "[run_backtest] returns_array sample [1,:5]: {:?}",
-        returns_array.row(1).slice(ndarray::s![..5])
-    );
-    eprintln!(
-        "[run_backtest] close_array sample [0,:5]: {:?}",
-        close_array.row(0).slice(ndarray::s![..5])
-    );
-
-    // Check for NaN/Inf in arrays
-    let factor_nan = factor_array.iter().filter(|v| v.is_nan()).count();
-    let factor_inf = factor_array.iter().filter(|v| v.is_infinite()).count();
-    let returns_nan = returns_array.iter().filter(|v| v.is_nan()).count();
-    let returns_inf = returns_array.iter().filter(|v| v.is_infinite()).count();
-    let close_nan = close_array.iter().filter(|v| v.is_nan()).count();
-    let close_inf = close_array.iter().filter(|v| v.is_infinite()).count();
-    let close_zero = close_array
-        .iter()
-        .filter(|v| (*v - 0.0).abs() < 1e-10)
-        .count();
-    eprintln!(
-        "[run_backtest] NaN/Inf: factor={}/{}, returns={}/{}, close={}/{}, close_zero={}",
-        factor_nan, factor_inf, returns_nan, returns_inf, close_nan, close_inf, close_zero
-    );
-
-    let (n_days, n_assets) = factor_array.dim();
-    let pm = PriceMatrix {
-        dates: vec![], // server sets dates on result separately
-        symbols: vec![],
-        close: close_array,
-        open: open_array,
-        high: Array2::from_elem((n_days, n_assets), 1.0),
-        low: Array2::from_elem((n_days, n_assets), 1.0),
-        vwap: vwap_array,
-        returns: returns_array,
-        tradable: tradable_array,
-        adj_factor: Array2::from_elem((n_days, n_assets), 1.0), // FIXME: query from DB
-    };
-    let result = engine
-        .run(factor_array, &pm)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    eprintln!("[run_backtest] Backtest engine completed");
-
-    // Clear the cache after backtest to free memory
-    if let Some(cache_id) = &req.cache_id {
-        let mut cache = state.factor_cache.write().await;
-        cache.remove(cache_id);
-        eprintln!("[run_backtest] Cleared cache for {}", cache_id);
+        return Ok(Json(convert_to_nav_data(result, Some(dates.clone()))));
     }
 
-    // Convert to NAV data
-    let nav_data = convert_to_nav_data(result, n_days, dates);
-    eprintln!(
-        "[run_backtest] Returning nav data with {} dates",
-        nav_data.dates.len()
-    );
+    // Path 2: Cached factor from compute_factor endpoint
+    if let Some(cache_id) = &req.cache_id {
+        let cache = state.factor_cache.read().await;
+        let cached = cache
+            .get(cache_id)
+            .ok_or_else(|| {
+                (
+                    StatusCode::NOT_FOUND,
+                    format!("Cache not found: {}", cache_id),
+                )
+            })?
+            .clone();
+        drop(cache);
 
-    Ok(Json(nav_data))
+        let dates = Some(cached.dates.clone());
+        let result = run_backtest_direct(
+            cached.factor,
+            cached.returns,
+            cached.close,
+            cached.open,
+            cached.high,
+            cached.low,
+            cached.vwap,
+            cached.adj_factor,
+            &config,
+        )
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+        // Clear cache after successful backtest
+        state.factor_cache.write().await.remove(cache_id);
+
+        return Ok(Json(convert_to_nav_data(result, dates)));
+    }
+
+    // Path 3: Data source — delegate to AlfarsLab
+    let data_source = req.data_source.as_ref().ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            "Either provide factor/returns/dates, cache_id, or configure data_source".to_string(),
+        )
+    })?;
+
+    let db_config = state.db_config.read().await;
+    if !db_config.connected {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Database not connected.".to_string(),
+        ));
+    }
+
+    let table_mapping = state.table_mapping.read().await;
+    let source = build_source_from_state(&db_config, &table_mapping);
+
+    let mut lab = build_lab_from_state(source, data_source, config)?;
+
+    let factor_expr = req.factor_id.as_deref().unwrap_or("cs_rank(close)");
+    lab.register("factor", factor_expr).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("Failed to register factor: {}", e),
+        )
+    })?;
+
+    let bt_result = tokio::task::spawn_blocking(move || {
+        lab.calc(None)?;
+        lab.run_bt()
+    })
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Task panicked: {}", e),
+        )
+    })?
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    Ok(Json(convert_to_nav_data(bt_result, None)))
 }
 
-fn convert_to_nav_data(
-    result: BacktestResult,
-    n_days: usize,
-    dates: Option<Vec<String>>,
-) -> NavData {
-    // Generate dates if not provided
-    let dates = dates.unwrap_or_else(|| {
-        (0..n_days)
-            .map(|i| {
-                let day = i as u32 % 30 + 1;
-                let month = (i / 30) as u32 % 12 + 1;
-                let year = 2024 + i / 360;
-                format!("{:04}-{:02}-{:02}", year, month, day)
-            })
-            .collect()
-    });
+/// i64 YYYYMMDD → "YYYY-MM-DD"
+fn fmt_date_ymd(d: i64) -> String {
+    format!("{:04}-{:02}-{:02}", d / 10000, (d % 10000) / 100, d % 100)
+}
 
-    // Convert cumulative returns to NAV (starting at 1.0)
+fn array2_to_vec2d(arr: &Array2<f64>) -> Vec<Vec<f64>> {
+    arr.rows().into_iter().map(|row| row.to_vec()).collect()
+}
+
+fn convert_to_nav_data(result: BacktestResult, dates_override: Option<Vec<String>>) -> NavData {
+    let dates: Vec<String> =
+        dates_override.unwrap_or_else(|| result.dates.iter().map(|&d| fmt_date_ymd(d)).collect());
+
     let group_cum_returns = result.group_cum_returns;
     let n_quantile_days = group_cum_returns.nrows();
     let n_quantiles = group_cum_returns.ncols();
-    eprintln!(
-        "[convert_to_nav_data] n_quantile_days={}, n_quantiles={}",
-        n_quantile_days, n_quantiles
-    );
 
-    // Debug: check group_cum_returns values
-    let first_col = group_cum_returns.column(0);
-    let sample: Vec<f64> = first_col.iter().take(10).cloned().collect();
-    eprintln!("[convert_to_nav_data] First column sample: {:?}", sample);
-
-    // Each quantile group's NAV curve
-    let mut quantiles_nav = Vec::with_capacity(n_quantiles);
-    for i in 0..n_quantiles {
-        let col = group_cum_returns.column(i);
-        let nav: Vec<f64> = col.iter().map(|&v| 1.0 * (1.0 + v)).collect();
-        quantiles_nav.push(nav);
-    }
-
-    // Long-short NAV (pre-computed curve)
-    let long_short_nav: Vec<f64> = result.long_short_cum_returns.to_vec();
-
-    // Benchmark NAV (equal-weighted market)
-    // This is a simplification - in real use would need the original returns
-    let benchmark_nav: Vec<f64> = (0..n_quantile_days)
-        .map(|i| 1.0 + (i as f64 * 0.001))
+    let quantiles_nav: Vec<Vec<f64>> = (0..n_quantiles)
+        .map(|i| {
+            group_cum_returns
+                .column(i)
+                .iter()
+                .map(|&v| 1.0 + v)
+                .collect()
+        })
         .collect();
 
-    // IC series
-    let ic_series: Vec<f64> = result.ic_series.to_vec();
-
-    // Metrics
-    let metrics = Metrics {
-        long_short_cum_return: result.long_short_cum_return,
-        total_return: result.total_return,
-        annualized_return: result.annualized_return,
-        sharpe_ratio: result.sharpe_ratio,
-        max_drawdown: result.max_drawdown,
-        turnover: result.turnover,
-        ic_mean: result.ic_mean,
-        ic_ir: result.ic_ir,
-    };
-
-    // Use dates aligned with the output (n_days - 1 for forward returns)
     let nav_dates = if dates.len() > n_quantile_days {
         dates[1..n_quantile_days + 1].to_vec()
     } else {
@@ -1202,10 +839,19 @@ fn convert_to_nav_data(
     NavData {
         dates: nav_dates,
         quantiles: quantiles_nav,
-        long_short: long_short_nav,
-        benchmark: benchmark_nav,
-        ic_series,
-        metrics,
+        long_short: result.long_short_cum_returns.to_vec(),
+        benchmark: result.passive_cum_returns.to_vec(),
+        ic_series: result.ic_series.to_vec(),
+        metrics: Metrics {
+            long_short_cum_return: result.long_short_cum_return,
+            total_return: result.total_return,
+            annualized_return: result.annualized_return,
+            sharpe_ratio: result.sharpe_ratio,
+            max_drawdown: result.max_drawdown,
+            turnover: result.turnover,
+            ic_mean: result.ic_mean,
+            ic_ir: result.ic_ir,
+        },
     }
 }
 
@@ -1243,29 +889,6 @@ async fn compute_factor(
     State(state): State<AppState>,
     Json(req): Json<FactorComputeRequest>,
 ) -> Result<Json<FactorComputeResponse>, (StatusCode, String)> {
-    // Check for unsupported features
-    let unsupported_patterns = [
-        ("industry_neutral", "Industry neutralization"),
-        ("sector_neutral", "Sector neutralization"),
-        ("market_neutral", "Market neutralization"),
-        ("group_neutral", "Group neutralization"),
-    ];
-
-    for (pattern, feature_name) in unsupported_patterns.iter() {
-        if req.factor_id.to_lowercase().contains(pattern) {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                serde_json::json!({
-                    "error": "Feature not supported",
-                    "message": format!("{} is not yet implemented. The factor will be computed without neutralization.", feature_name),
-                    "unsupported_feature": feature_name,
-                })
-                .to_string(),
-            ));
-        }
-    }
-
-    // Data source must be provided
     let data_source = req.data_source.as_ref().ok_or_else(|| {
         (
             StatusCode::BAD_REQUEST,
@@ -1274,12 +897,6 @@ async fn compute_factor(
         )
     })?;
 
-    eprintln!(
-        "[compute_factor] Computing factor '{}' via AlfarsLab",
-        req.factor_id
-    );
-
-    // Build source and lab from state
     let db_config = state.db_config.read().await;
     if !db_config.connected {
         return Err((
@@ -1287,88 +904,64 @@ async fn compute_factor(
             "Database not connected.".to_string(),
         ));
     }
+
     let table_mapping = state.table_mapping.read().await;
     let source = build_source_from_state(&db_config, &table_mapping);
 
-    let cache_id = uuid::Uuid::new_v4().to_string();
-
-    // Try lab-based evaluation
     let mut lab = build_lab_from_state(source, data_source, BacktestConfig::default())?;
-    if lab.register("factor", &req.factor_id).is_ok() {
-        match tokio::task::spawn_blocking(move || lab.evaluate()).await {
-            Ok(Ok((matrices, price_matrix))) => {
-                let cached = CachedLabResult {
-                    factor_matrices: matrices,
-                    price_matrix,
-                };
-                state
-                    .lab_cache
-                    .write()
-                    .await
-                    .insert(cache_id.clone(), cached);
-                eprintln!(
-                    "[compute_factor] Cached lab result for {} with id {}",
-                    req.factor_id, cache_id
-                );
-                return Ok(Json(FactorComputeResponse {
-                    factor_id: req.factor_id,
-                    factor: vec![],
-                    returns: vec![],
-                    dates: vec![],
-                    cache_id: Some(cache_id),
-                }));
-            }
-            Ok(Err(e)) => {
-                eprintln!("[compute_factor] Lab evaluate error: {}", e);
-            }
-            Err(join_err) => {
-                eprintln!("[compute_factor] Spawn error: {}", join_err);
-            }
-        }
-    }
+    lab.register("factor", &req.factor_id).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("Failed to register factor '{}': {}", req.factor_id, e),
+        )
+    })?;
 
-    // Fallback: load raw data and use close prices (old CachedFactor path)
-    drop(table_mapping);
-    drop(db_config);
-    let loaded = load_data_from_config(&state, data_source).await?;
-    let n_days = loaded.dates.len();
-    let n_assets = loaded.symbols.len();
+    eprintln!(
+        "[compute_factor] Computing factor '{}' via lab.evaluate()",
+        req.factor_id
+    );
 
-    // Compute vwap: (high + low + close) / 3
-    let mut computed_vwap: Vec<Vec<f64>> = Vec::with_capacity(n_days);
-    for d in 0..n_days {
-        let mut vwap_row = Vec::with_capacity(n_assets);
-        for a in 0..n_assets {
-            let h = loaded.high[d][a];
-            let l = loaded.low[d][a];
-            let c = loaded.close[d][a];
-            let v = if h.is_finite() && l.is_finite() && c.is_finite() {
-                (h + l + c) / 3.0
-            } else {
-                c
-            };
-            vwap_row.push(v);
-        }
-        computed_vwap.push(vwap_row);
-    }
+    let (matrices, price_matrix) = tokio::task::spawn_blocking(move || lab.evaluate())
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Task panicked: {}", e),
+            )
+        })?
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
+    let factor_matrix = matrices.get("factor").ok_or_else(|| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Factor not found in evaluation results".to_string(),
+        )
+    })?;
+
+    let cache_id = uuid::Uuid::new_v4().to_string();
     let cached = CachedFactor {
-        factor_id: req.factor_id.clone(),
-        factor: loaded.close.clone(),
-        returns: loaded.returns.clone(),
-        dates: loaded.dates.clone(),
-        close: loaded.close.clone(),
-        vwap: computed_vwap,
-        high: loaded.high.clone(),
-        low: loaded.low.clone(),
+        factor: array2_to_vec2d(factor_matrix),
+        returns: array2_to_vec2d(&price_matrix.returns),
+        dates: price_matrix
+            .dates
+            .iter()
+            .map(|&d| fmt_date_ymd(d))
+            .collect(),
+        close: array2_to_vec2d(&price_matrix.close),
+        open: array2_to_vec2d(&price_matrix.open),
+        high: array2_to_vec2d(&price_matrix.high),
+        low: array2_to_vec2d(&price_matrix.low),
+        vwap: array2_to_vec2d(&price_matrix.vwap),
+        adj_factor: array2_to_vec2d(&price_matrix.adj_factor),
     };
     state
         .factor_cache
         .write()
         .await
         .insert(cache_id.clone(), cached);
+
     eprintln!(
-        "[compute_factor] Cached fallback for {} with id {}",
+        "[compute_factor] Cached factor '{}' with id {}",
         req.factor_id, cache_id
     );
 
@@ -1441,107 +1034,6 @@ async fn save_alpha(
         path: path.display().to_string(),
         message: format!("Alpha '{}' saved successfully", req.name),
     }))
-}
-
-/// Generate mutated expressions from a seed expression using common GP mutation strategies
-#[allow(dead_code)]
-fn generate_mutated_expressions(seed: &str, count: usize) -> Vec<String> {
-    let mut results = Vec::with_capacity(count);
-
-    // Terminal set for mutations
-    let terminals = ["close", "open", "high", "low", "volume", "returns"];
-    let functions = [
-        "rank", "ts_mean", "ts_std", "ts_max", "ts_min", "delay", "log", "sign",
-    ];
-    let windows = [5, 10, 20, 30];
-
-    let mut rng = rand::thread_rng();
-
-    // Strategy 1: Replace terminal (point mutation)
-    for term in terminals.iter() {
-        if seed.contains(term) {
-            for new_term in terminals.iter() {
-                if term != new_term {
-                    let mutated = seed.replace(term, new_term);
-                    results.push(mutated);
-                    if results.len() >= count {
-                        return results;
-                    }
-                }
-            }
-        }
-    }
-
-    // Strategy 2: Change time window
-    let window_patterns = [5, 10, 20, 30, 60];
-    for old_window in window_patterns.iter() {
-        for new_window in window_patterns.iter() {
-            if old_window != new_window {
-                let pattern = old_window.to_string();
-                if seed.contains(&pattern) {
-                    let mutated = seed.replace(&pattern, &new_window.to_string());
-                    if !results.contains(&mutated) {
-                        results.push(mutated);
-                        if results.len() >= count {
-                            return results;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Strategy 3: Wrap with rank
-    if !seed.starts_with("rank(") {
-        results.push(format!("rank({})", seed));
-        if results.len() >= count {
-            return results;
-        }
-    }
-
-    // Strategy 4: Add delay wrapper
-    if !seed.contains("delay(") {
-        let delay_days = [1, 2, 3, 5];
-        for d in delay_days.iter() {
-            results.push(format!("delay({}, {})", seed, d));
-            if results.len() >= count {
-                return results;
-            }
-        }
-    }
-
-    // Strategy 5: Replace function
-    let function_map = [
-        ("ts_mean", "ts_std"),
-        ("ts_std", "ts_mean"),
-        ("ts_max", "ts_min"),
-        ("ts_min", "ts_max"),
-    ];
-    for (old_fn, new_fn) in function_map.iter() {
-        if seed.contains(old_fn) {
-            let mutated = seed.replace(old_fn, new_fn);
-            if !results.contains(&mutated) {
-                results.push(mutated);
-                if results.len() >= count {
-                    return results;
-                }
-            }
-        }
-    }
-
-    // If we still need more, generate random variations
-    while results.len() < count {
-        let fn_idx = rng.gen_range(0..functions.len());
-        let term_idx = rng.gen_range(0..terminals.len());
-        let win_idx = rng.gen_range(0..windows.len());
-        results.push(format!(
-            "{}({}, {})",
-            functions[fn_idx], terminals[term_idx], windows[win_idx]
-        ));
-    }
-
-    results.truncate(count);
-    results
 }
 
 /// Get database configuration
@@ -2026,209 +1518,6 @@ async fn get_date_range(
 }
 
 /// Load data from database using DataSourceConfig
-async fn load_data_from_config(
-    state: &AppState,
-    data_source: &DataSourceConfig,
-) -> Result<LoadDataResponse, (StatusCode, String)> {
-    let config = state.db_config.read().await;
-    let saved_mappings = state.column_mappings.read().await;
-
-    if !config.connected {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "Database not connected. Please configure database connection first.".to_string(),
-        ));
-    }
-
-    // Use provided column_mapping or fall back to saved mapping for this table
-    let mapping = if let Some(ref ds_mapping) = data_source.column_mapping {
-        ds_mapping.clone()
-    } else {
-        saved_mappings.get(&data_source.table)
-    };
-
-    let client = HttpClient::new();
-    let table = &data_source.table;
-
-    // Use column mapping for column names
-    let date_column = mapping.trading_date.as_deref().unwrap_or("trading_date");
-    let symbol_column = mapping.symbol.as_deref().unwrap_or("symbol");
-    let close_col = mapping.close.as_deref().unwrap_or("close");
-    let open_col = mapping.open.as_deref().unwrap_or("open");
-    let high_col = mapping.high.as_deref().unwrap_or("high");
-    let low_col = mapping.low.as_deref().unwrap_or("low");
-    let volume_col = mapping.volume.as_deref().unwrap_or("volume");
-
-    // Build WHERE clauses - start with date range
-    let mut where_clauses = vec![
-        format!("{} >= '{}'", date_column, data_source.start_date),
-        format!("{} <= '{}'", date_column, data_source.end_date),
-    ];
-
-    // Add filter conditions
-    if let Some(ref filters) = data_source.filters {
-        for filter in filters {
-            let clause = match filter.operator.to_uppercase().as_str() {
-                "LIKE" => format!("{} LIKE '{}'", filter.column, filter.value),
-                "NOT LIKE" => format!("{} NOT LIKE '{}'", filter.column, filter.value),
-                "=" => format!("{} = '{}'", filter.column, filter.value),
-                "!=" => format!("{} != '{}'", filter.column, filter.value),
-                ">" | ">=" | "<" | "<=" => {
-                    format!("{} {} {}", filter.column, filter.operator, filter.value)
-                }
-                _ => {
-                    return Err((
-                        StatusCode::BAD_REQUEST,
-                        format!("Unsupported operator: {}", filter.operator),
-                    ));
-                }
-            };
-            where_clauses.push(clause);
-        }
-    }
-
-    let where_str = where_clauses.join(" AND ");
-
-    let query = format!(
-        r#"SELECT
-            {} as trading_date,
-            {} as symbol,
-            anyLast({}) as close,
-            any({}) as open,
-            max({}) as high,
-            min({}) as low,
-            sum({}) as volume
-        FROM {}
-        WHERE {}
-        GROUP BY {}, {}
-        HAVING {} > 0 AND {} > 0
-        ORDER BY {}, {}"#,
-        date_column,
-        symbol_column,
-        close_col,
-        open_col,
-        high_col,
-        low_col,
-        volume_col,
-        table,
-        where_str,
-        date_column,
-        symbol_column,
-        close_col,
-        volume_col,
-        date_column,
-        symbol_column
-    );
-
-    let url = format!(
-        "http://{}:{}/?database={}",
-        config.host, config.port, config.database
-    );
-
-    let response = client
-        .get(&url)
-        .query(&[("default_format", "JSONEachRow"), ("query", &query)])
-        .basic_auth(&config.username, Some(&config.password))
-        .send()
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Request failed: {}", e),
-            )
-        })?;
-
-    let body = response.text().await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to read response: {}", e),
-        )
-    })?;
-
-    // Get all unique dates and symbols
-    let mut date_symbol_data: std::collections::HashMap<
-        (String, String),
-        (f64, f64, f64, f64, f64),
-    > = std::collections::HashMap::new();
-    let mut dates_set: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut symbols_set: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-    for line in body.lines() {
-        if let Ok(row) = serde_json::from_str::<serde_json::Value>(line) {
-            let trading_date = row
-                .get("trading_date")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let symbol = row
-                .get("symbol")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let close = row.get("close").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let open = row.get("open").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let high = row.get("high").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let low = row.get("low").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let volume = row.get("volume").and_then(|v| v.as_f64()).unwrap_or(0.0);
-
-            dates_set.insert(trading_date.clone());
-            symbols_set.insert(symbol.clone());
-            date_symbol_data.insert((trading_date, symbol), (close, open, high, low, volume));
-        }
-    }
-
-    // Sort dates and symbols
-    let mut dates: Vec<String> = dates_set.into_iter().collect();
-    dates.sort();
-    let symbols: Vec<String> = symbols_set.into_iter().collect();
-
-    // Build matrices
-    let n_dates = dates.len();
-    let n_symbols = symbols.len();
-
-    let mut close_matrix: Vec<Vec<f64>> = vec![vec![0.0; n_symbols]; n_dates];
-    let mut open_matrix: Vec<Vec<f64>> = vec![vec![0.0; n_symbols]; n_dates];
-    let mut high_matrix: Vec<Vec<f64>> = vec![vec![0.0; n_symbols]; n_dates];
-    let mut low_matrix: Vec<Vec<f64>> = vec![vec![0.0; n_symbols]; n_dates];
-    let mut volume_matrix: Vec<Vec<f64>> = vec![vec![0.0; n_symbols]; n_dates];
-
-    for (d_idx, date) in dates.iter().enumerate() {
-        for (s_idx, symbol) in symbols.iter().enumerate() {
-            if let Some((close, open, high, low, volume)) =
-                date_symbol_data.get(&(date.clone(), symbol.clone()))
-            {
-                close_matrix[d_idx][s_idx] = *close;
-                open_matrix[d_idx][s_idx] = *open;
-                high_matrix[d_idx][s_idx] = *high;
-                low_matrix[d_idx][s_idx] = *low;
-                volume_matrix[d_idx][s_idx] = *volume;
-            }
-        }
-    }
-
-    // Calculate returns: (close_t / close_t-1) - 1
-    let mut returns_matrix: Vec<Vec<f64>> = vec![vec![0.0; n_symbols]; n_dates];
-    for s_idx in 0..n_symbols {
-        for d_idx in 1..n_dates {
-            let curr_close = close_matrix[d_idx][s_idx];
-            let prev_close = close_matrix[d_idx - 1][s_idx];
-            if prev_close != 0.0 && curr_close != 0.0 {
-                returns_matrix[d_idx][s_idx] = curr_close / prev_close - 1.0;
-            }
-        }
-    }
-
-    Ok(LoadDataResponse {
-        dates,
-        symbols,
-        close: close_matrix,
-        open: open_matrix,
-        high: high_matrix,
-        low: low_matrix,
-        volume: volume_matrix,
-        returns: returns_matrix,
-    })
-}
 async fn load_data(
     State(state): State<AppState>,
     Json(req): Json<LoadDataRequest>,
@@ -2300,6 +1589,16 @@ async fn load_data(
         }
     }
 
+    let adj_factor_col = mapping
+        .adj_factor
+        .as_deref()
+        .unwrap_or("_adj_factor_default");
+    let adj_factor_select = if mapping.adj_factor.is_some() {
+        format!("anyLast({})", adj_factor_col)
+    } else {
+        "1.0".to_string()
+    };
+
     let where_str = where_clauses.join(" AND ");
 
     let query = format!(
@@ -2310,7 +1609,8 @@ async fn load_data(
             any({}) as open,
             max({}) as high,
             min({}) as low,
-            sum({}) as volume
+            sum({}) as volume,
+            {} as adj_factor
         FROM {}
         WHERE {}
         GROUP BY {}, {}
@@ -2322,6 +1622,7 @@ async fn load_data(
         mapping.high.as_deref().unwrap_or("high"),
         mapping.low.as_deref().unwrap_or("low"),
         mapping.volume.as_deref().unwrap_or("volume"),
+        adj_factor_select,
         table,
         where_str,
         date_column,
@@ -2358,7 +1659,7 @@ async fn load_data(
     // Get all unique dates and symbols
     let mut date_symbol_data: std::collections::HashMap<
         (String, String),
-        (f64, f64, f64, f64, f64),
+        (f64, f64, f64, f64, f64, f64),
     > = std::collections::HashMap::new();
     let mut dates_set: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut symbols_set: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -2380,10 +1681,17 @@ async fn load_data(
             let high = row.get("high").and_then(|v| v.as_f64()).unwrap_or(0.0);
             let low = row.get("low").and_then(|v| v.as_f64()).unwrap_or(0.0);
             let volume = row.get("volume").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let adj_factor = row
+                .get("adj_factor")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(1.0);
 
             dates_set.insert(trading_date.clone());
             symbols_set.insert(symbol.clone());
-            date_symbol_data.insert((trading_date, symbol), (close, open, high, low, volume));
+            date_symbol_data.insert(
+                (trading_date, symbol),
+                (close, open, high, low, volume, adj_factor),
+            );
         }
     }
 
@@ -2401,10 +1709,11 @@ async fn load_data(
     let mut high_matrix: Vec<Vec<f64>> = vec![vec![0.0; n_symbols]; n_dates];
     let mut low_matrix: Vec<Vec<f64>> = vec![vec![0.0; n_symbols]; n_dates];
     let mut volume_matrix: Vec<Vec<f64>> = vec![vec![0.0; n_symbols]; n_dates];
+    let mut adj_factor_matrix: Vec<Vec<f64>> = vec![vec![1.0; n_symbols]; n_dates];
 
     for (d_idx, date) in dates.iter().enumerate() {
         for (s_idx, symbol) in symbols.iter().enumerate() {
-            if let Some((close, open, high, low, volume)) =
+            if let Some((close, open, high, low, volume, adj_factor)) =
                 date_symbol_data.get(&(date.clone(), symbol.clone()))
             {
                 close_matrix[d_idx][s_idx] = *close;
@@ -2412,6 +1721,7 @@ async fn load_data(
                 high_matrix[d_idx][s_idx] = *high;
                 low_matrix[d_idx][s_idx] = *low;
                 volume_matrix[d_idx][s_idx] = *volume;
+                adj_factor_matrix[d_idx][s_idx] = *adj_factor;
             }
         }
     }
@@ -2437,6 +1747,7 @@ async fn load_data(
         low: low_matrix,
         volume: volume_matrix,
         returns: returns_matrix,
+        adj_factor: adj_factor_matrix,
     }))
 }
 
@@ -2702,11 +2013,11 @@ async fn get_filter_options(
     get_columns(State(state), axum::extract::Query(params)).await
 }
 
-/// Run GP factor mining via AlfarsLab
-async fn mine_factors(
+/// Run GP factor mining via AlfarsLab (uses lab.run_gp)
+async fn run_gp_factors(
     State(state): State<AppState>,
-    Json(req): Json<GpMineRequest>,
-) -> Result<Json<GpMineResponse>, (StatusCode, String)> {
+    Json(req): Json<GpRunRequest>,
+) -> Result<Json<GpRunResponse>, (StatusCode, String)> {
     let start = std::time::Instant::now();
 
     let data_source = req.data_source.as_ref().ok_or_else(|| {
@@ -2727,47 +2038,66 @@ async fn mine_factors(
     // Build source from state
     let table_mapping = state.table_mapping.read().await;
     let source = build_source_from_state(&db_config, &table_mapping);
-    let max_symbols = req.n_assets.unwrap_or(0);
+    let max_symbols = req.max_symbols.unwrap_or(0);
 
     // Build lab from source + config
     let backtest_config = BacktestConfig::default();
     let lab = build_lab_from_state(source, data_source, backtest_config)?;
 
-    let pop_size = req.population_size.unwrap_or(50);
-    let max_gens = req.max_generations.unwrap_or(10);
+    // Apply GP field/operator/seed configuration before run
+    if let Some(ref fields) = req.fields {
+        lab.set_gp_fields(fields.clone());
+    }
+    if let Some(ref ops) = req.ops {
+        lab.set_gp_ops(ops.clone());
+    }
+    if let Some(ref seed) = req.seed_expression {
+        lab.set_gp_seed(vec![seed.clone()])
+            .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    }
 
     let gp_config = GPConfig {
-        population_size: pop_size,
-        max_generations: max_gens,
-        tournament_size: 5,
-        crossover_prob: 0.8,
-        mutation_prob: 0.15,
-        max_depth: 5,
+        population_size: req.population_size.unwrap_or(50),
+        max_generations: req.max_generations.unwrap_or(10),
+        tournament_size: req.tournament_size.unwrap_or(5),
+        crossover_prob: req.crossover_prob.unwrap_or(0.8),
+        mutation_prob: req.mutation_prob.unwrap_or(0.15),
+        max_depth: req.max_depth.unwrap_or(5),
         parent_diversity_penalty: 0.1,
-        use_diverse_init: true,
-        smart_mutation_ratio: 0.3,
+        use_diverse_init: req.use_diverse_init.unwrap_or(true),
+        smart_mutation_ratio: req.smart_mutation_ratio.unwrap_or(0.3),
         use_frequencies: false,
     };
 
-    let num_factors = 3;
+    let max_gens = gp_config.max_generations;
+    let num_factors = req.num_factors.unwrap_or(3);
     let results = lab
-        .mine_factors(gp_config, num_factors, max_symbols)
+        .run_gp(gp_config, num_factors, max_symbols)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     let mut factors = Vec::new();
     let mut best_idx = 0;
     let mut best_fitness = f64::NEG_INFINITY;
-    for (i, (expr_str, fitness, ic, ir, _turnover, _complexity)) in results.iter().enumerate() {
+    for (i, (expr, bt)) in results.iter().enumerate() {
+        let expr_str = alfars::gp::types::to_parseable_string(expr);
+        let fitness = bt.ic_mean.max(0.0) + bt.ic_ir * 0.3;
         factors.push(GpFactor {
             id: format!("gp-factor-{}", i + 1),
             name: format!("GP Factor {}", i + 1),
-            expression: expr_str.clone(),
-            ic_mean: *ic,
-            ic_ir: *ir,
-            fitness: *fitness,
+            expression: expr_str,
+            ic_mean: bt.ic_mean,
+            ic_ir: bt.ic_ir,
+            fitness,
+            sharpe_ratio: bt.sharpe_ratio,
+            total_return: bt.total_return,
+            annualized_return: bt.annualized_return,
+            max_drawdown: bt.max_drawdown,
+            turnover: bt.turnover,
+            calmar_ratio: bt.calmar_ratio,
+            win_rate: bt.win_rate,
         });
-        if *fitness > best_fitness {
-            best_fitness = *fitness;
+        if fitness > best_fitness {
+            best_fitness = fitness;
             best_idx = i;
         }
     }
@@ -2782,12 +2112,22 @@ async fn mine_factors(
     let best_factor = factors[best_idx].clone();
     let elapsed = start.elapsed().as_secs_f64();
 
-    Ok(Json(GpMineResponse {
+    Ok(Json(GpRunResponse {
         factors,
         best_factor,
         generations: max_gens,
         elapsed_time: elapsed,
     }))
+}
+
+/// Get available GP terminal fields
+async fn get_gp_fields() -> Json<Vec<String>> {
+    Json(alfars::lab::AlfarsLab::avail_fields())
+}
+
+/// Get available GP operators
+async fn get_gp_ops() -> Json<Vec<String>> {
+    Json(alfars::lab::AlfarsLab::avail_ops())
 }
 
 /// Build a pre_filter string from DataSourceConfig.
@@ -2870,7 +2210,6 @@ async fn main() {
             stock_1min: Some("stock_1min".to_string()),
         })),
         factor_cache: Arc::new(RwLock::new(HashMap::new())),
-        lab_cache: Arc::new(RwLock::new(HashMap::new())),
     };
 
     // Build the application
@@ -2901,7 +2240,9 @@ async fn main() {
         .route("/api/factors/compute", post(compute_factor))
         .route("/api/alphas", get(list_alphas))
         .route("/api/alphas", post(save_alpha))
-        .route("/api/gp/mine", post(mine_factors))
+        .route("/api/gp/run", post(run_gp_factors))
+        .route("/api/gp/fields", get(get_gp_fields))
+        .route("/api/gp/ops", get(get_gp_ops))
         .layer(cors)
         .with_state(state);
 
