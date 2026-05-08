@@ -1598,6 +1598,7 @@ impl PyGpEngine {
                 self.terminals.clone(),
                 self.functions.clone(),
                 &mut self.rng,
+                None,
             );
 
             let expr_str = to_parseable_string(&best_expr);
@@ -1671,6 +1672,7 @@ impl PyGpEngine {
             test_terminals,
             self.functions.clone(),
             &mut self.rng,
+            None,
         );
 
         Ok(format!(
@@ -3561,6 +3563,49 @@ impl PyAlfarsLab {
             dict.set_item(PyExpr { inner: expr }, PyBacktestResult::from(bt))?;
         }
         Ok(dict.into())
+    }
+
+    /// All canonical field names available as GP terminals.
+    #[staticmethod]
+    fn avail_fields() -> Vec<String> {
+        AlfarsLab::avail_fields()
+    }
+
+    /// All GP operator names.
+    #[staticmethod]
+    fn avail_ops() -> Vec<String> {
+        AlfarsLab::avail_ops()
+    }
+
+    /// Set GP terminal fields (e.g., ["close", "open", "vol"]).
+    /// If not called, defaults to close/open/high/low/vwap.
+    #[pyo3(name = "set_fields")]
+    fn set_gp_fields(&self, fields: Vec<String>) {
+        self.inner.lock().unwrap().set_gp_fields(fields);
+    }
+
+    /// Set GP operators (e.g., ["ts_mean", "add", "sub"]).
+    /// If not called, defaults to all 24 operators.
+    #[pyo3(name = "set_ops")]
+    fn set_gp_ops(&self, ops: Vec<String>) {
+        self.inner.lock().unwrap().set_gp_ops(ops);
+    }
+
+    /// Set seed expressions for initial GP population.
+    #[pyo3(name = "set_gp_seed")]
+    fn set_gp_seed(&self, seeds: &Bound<'_, PyAny>) -> PyResult<()> {
+        let parsed: Vec<String> = if let Ok(s) = seeds.extract::<String>() {
+            vec![s]
+        } else if let Ok(list) = seeds.extract::<Vec<String>>() {
+            list
+        } else {
+            return Err(PyValueError::new_err("expected str or list[str]"));
+        };
+        self.inner
+            .lock()
+            .unwrap()
+            .set_gp_seed(parsed)
+            .map_err(|e| PyRuntimeError::new_err(e))
     }
 
     fn __repr__(&self) -> String {
