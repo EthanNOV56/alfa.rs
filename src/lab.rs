@@ -259,8 +259,7 @@ impl AlfarsLab {
         factor_mats: &[ndarray::Array2<f64>],
         prices: &crate::data::layer::PriceMatrix,
     ) -> Result<BacktestResult, String> {
-        BacktestEngine::with_config(self.backtest_config.clone())
-            .run_multi_with_prices(factor_mats, prices)
+        BacktestEngine::with_config(self.backtest_config.clone()).run_multi(factor_mats, prices)
     }
 
     pub fn set_filter(&mut self, filter: &str) {
@@ -474,6 +473,7 @@ impl AlfarsLab {
             vwap: slice_columns(&prices.vwap, &col_indices),
             returns: slice_columns(&prices.returns, &col_indices),
             tradable: slice_columns(&prices.tradable, &col_indices),
+            adj_factor: slice_columns(&prices.adj_factor, &col_indices),
         }
     }
 

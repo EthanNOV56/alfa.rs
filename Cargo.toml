@@ -16,7 +16,7 @@ crate-type = ["cdylib", "rlib"]  # For Python extension and binary
 
 [dependencies]
 pyo3 = { version = "0.28", features = ["extension-module"] }
-ndarray = "0.15"
+ndarray = "0.17"
 rayon = "1.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

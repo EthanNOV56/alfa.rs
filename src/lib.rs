@@ -759,29 +759,25 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
-/// Volume-based slippage configuration
+/// Slippage configuration
 #[pyclass(name = "SlippageConfig")]
 struct PySlippageConfig {
     #[pyo3(get, set)]
     large_volume_threshold: f64,
     #[pyo3(get, set)]
-    large_slippage_rate: f64,
+    buy_slippage: f64,
     #[pyo3(get, set)]
-    normal_slippage_rate: f64,
+    sell_slippage: f64,
 }
 
 #[pymethods]
 impl PySlippageConfig {
     #[new]
-    fn new(
-        large_volume_threshold: f64,
-        large_slippage_rate: f64,
-        normal_slippage_rate: f64,
-    ) -> Self {
+    fn new(large_volume_threshold: f64, buy_slippage: f64, sell_slippage: f64) -> Self {
         Self {
             large_volume_threshold,
-            large_slippage_rate,
-            normal_slippage_rate,
+            buy_slippage,
+            sell_slippage,
         }
     }
 }
@@ -790,8 +786,8 @@ impl From<PySlippageConfig> for SlippageConfig {
     fn from(py_config: PySlippageConfig) -> Self {
         SlippageConfig {
             large_volume_threshold: py_config.large_volume_threshold,
-            large_slippage_rate: py_config.large_slippage_rate,
-            normal_slippage_rate: py_config.normal_slippage_rate,
+            buy_slippage: py_config.buy_slippage,
+            sell_slippage: py_config.sell_slippage,
         }
     }
 }
@@ -800,13 +796,15 @@ impl From<PySlippageConfig> for SlippageConfig {
 #[pyclass(name = "FeeConfig")]
 struct PyFeeConfig {
     #[pyo3(get, set)]
-    commission_rate: f64,
+    buy_commission: f64,
+    #[pyo3(get, set)]
+    sell_commission: f64,
     #[pyo3(get, set)]
     large_volume_threshold: f64,
     #[pyo3(get, set)]
-    large_slippage_rate: f64,
+    buy_slippage: f64,
     #[pyo3(get, set)]
-    normal_slippage_rate: f64,
+    sell_slippage: f64,
     #[pyo3(get, set)]
     min_commission: f64,
 }
@@ -815,17 +813,19 @@ struct PyFeeConfig {
 impl PyFeeConfig {
     #[new]
     fn new(
-        commission_rate: f64,
+        buy_commission: f64,
+        sell_commission: f64,
         large_volume_threshold: f64,
-        large_slippage_rate: f64,
-        normal_slippage_rate: f64,
+        buy_slippage: f64,
+        sell_slippage: f64,
         min_commission: f64,
     ) -> Self {
         Self {
-            commission_rate,
+            buy_commission,
+            sell_commission,
             large_volume_threshold,
-            large_slippage_rate,
-            normal_slippage_rate,
+            buy_slippage,
+            sell_slippage,
             min_commission,
         }
     }
@@ -834,11 +834,12 @@ impl PyFeeConfig {
 impl From<PyFeeConfig> for FeeConfig {
     fn from(py_config: PyFeeConfig) -> Self {
         FeeConfig {
-            commission_rate: py_config.commission_rate,
+            buy_commission: py_config.buy_commission,
+            sell_commission: py_config.sell_commission,
             slippage: SlippageConfig {
                 large_volume_threshold: py_config.large_volume_threshold,
-                large_slippage_rate: py_config.large_slippage_rate,
-                normal_slippage_rate: py_config.normal_slippage_rate,
+                buy_slippage: py_config.buy_slippage,
+                sell_slippage: py_config.sell_slippage,
             },
             min_commission: py_config.min_commission,
         }
@@ -887,14 +888,15 @@ struct PyBacktestEngine {
 #[pymethods]
 impl PyBacktestEngine {
     #[new]
-    #[pyo3(signature = (quantiles, weight_method, long_top_n, short_top_n, commission_rate, rebalance_freq=1))]
+    #[pyo3(signature = (quantiles, weight_method, long_top_n, short_top_n, buy_commission, sell_commission, rebalance_freq=1))]
     fn new(
         _py: Python<'_>,
         quantiles: usize,
         weight_method: &str,
         long_top_n: usize,
         short_top_n: usize,
-        commission_rate: f64,
+        buy_commission: f64,
+        sell_commission: f64,
         rebalance_freq: usize,
     ) -> PyResult<Self> {
         let wmethod = match weight_method {
@@ -908,7 +910,8 @@ impl PyBacktestEngine {
         };
 
         let fee_config = backtest::FeeConfig {
-            commission_rate,
+            buy_commission,
+            sell_commission,
             ..Default::default()
         };
 
@@ -945,16 +948,21 @@ impl PyBacktestEngine {
         let tradable_array = tradable.readonly().as_array().to_owned();
 
         let engine = BacktestEngine::with_config(self.config.clone());
+        let (n_days, n_assets) = factor_array.dim();
+        let pm = PriceMatrix {
+            dates: vec![],
+            symbols: vec![],
+            close: close_array,
+            open: open_array,
+            high: Array2::from_elem((n_days, n_assets), 1.0),
+            low: Array2::from_elem((n_days, n_assets), 1.0),
+            vwap: vwap_array,
+            returns: returns_array,
+            tradable: tradable_array,
+            adj_factor: adj_factor_array,
+        };
 
-        match engine.run(
-            factor_array,
-            returns_array,
-            adj_factor_array,
-            close_array,
-            open_array,
-            vwap_array,
-            tradable_array,
-        ) {
+        match engine.run(factor_array, &pm) {
             Ok(result) => Ok(PyBacktestResult::from(result)),
             Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(e)),
         }
@@ -986,16 +994,21 @@ impl PyBacktestEngine {
         let tradable_array = tradable.readonly().as_array().to_owned();
 
         let engine = BacktestEngine::with_config(self.config.clone());
+        let (n_days, n_assets) = factor_arrays[0].dim();
+        let pm = PriceMatrix {
+            dates: vec![],
+            symbols: vec![],
+            close: close_array,
+            open: open_array,
+            high: Array2::from_elem((n_days, n_assets), 1.0),
+            low: Array2::from_elem((n_days, n_assets), 1.0),
+            vwap: vwap_array,
+            returns: returns_array,
+            tradable: tradable_array,
+            adj_factor: adj_factor_array,
+        };
 
-        match engine.run_multi(
-            &factor_arrays,
-            returns_array,
-            adj_factor_array,
-            close_array,
-            open_array,
-            vwap_array,
-            tradable_array,
-        ) {
+        match engine.run_multi(&factor_arrays, &pm) {
             Ok(result) => Ok(PyBacktestResult::from(result)),
             Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(e)),
         }
@@ -1003,7 +1016,7 @@ impl PyBacktestEngine {
 
     /// Run backtest with a PriceMatrix (single-factor).
     ///
-    /// Prices in the PriceMatrix are already forward-adjusted, so adj_factor = 1.0.
+    /// adj_factor comes from the database via query_price_matrix().
     fn run_with_prices(
         &self,
         factor: Bound<'_, PyArray2<f64>>,
@@ -1011,15 +1024,13 @@ impl PyBacktestEngine {
     ) -> PyResult<PyBacktestResult> {
         let factor_array = factor.readonly().as_array().to_owned();
         let engine = BacktestEngine::with_config(self.config.clone());
-        match engine.run_with_prices(factor_array, &prices.inner) {
+        match engine.run(factor_array, &prices.inner) {
             Ok(result) => Ok(PyBacktestResult::from(result)),
             Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(e)),
         }
     }
 
     /// Run multi-factor equal-weight backtest with a PriceMatrix.
-    ///
-    /// Prices in the PriceMatrix are already forward-adjusted.
     fn run_multi_with_prices(
         &self,
         factors: Vec<Bound<'_, PyArray2<f64>>>,
@@ -1030,7 +1041,7 @@ impl PyBacktestEngine {
             .map(|f| f.readonly().as_array().to_owned())
             .collect();
         let engine = BacktestEngine::with_config(self.config.clone());
-        match engine.run_multi_with_prices(&factor_arrays, &prices.inner) {
+        match engine.run_multi(&factor_arrays, &prices.inner) {
             Ok(result) => Ok(PyBacktestResult::from(result)),
             Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(e)),
         }
@@ -1159,7 +1170,8 @@ fn quantile_backtest(
     weight_method: &str,
     long_top_n: usize,
     short_top_n: usize,
-    commission_rate: f64,
+    buy_commission: f64,
+    sell_commission: f64,
     adj_factor: Bound<'_, PyArray2<f64>>,
     close: Bound<'_, PyArray2<f64>>,
     open: Bound<'_, PyArray2<f64>>,
@@ -1177,7 +1189,8 @@ fn quantile_backtest(
     };
 
     let fee_config = backtest::FeeConfig {
-        commission_rate,
+        buy_commission,
+        sell_commission,
         ..Default::default()
     };
 
@@ -1202,15 +1215,21 @@ fn quantile_backtest(
     let vwap_array = vwap.readonly().as_array().to_owned();
     let tradable_array = tradable.readonly().as_array().to_owned();
 
-    match engine.run(
-        factor_array,
-        returns_array,
-        adj_factor_array,
-        close_array,
-        open_array,
-        vwap_array,
-        tradable_array,
-    ) {
+    let (n_days, n_assets) = factor_array.dim();
+    let pm = PriceMatrix {
+        dates: vec![],
+        symbols: vec![],
+        close: close_array,
+        open: open_array,
+        high: Array2::from_elem((n_days, n_assets), 1.0),
+        low: Array2::from_elem((n_days, n_assets), 1.0),
+        vwap: vwap_array,
+        returns: returns_array,
+        tradable: tradable_array,
+        adj_factor: adj_factor_array,
+    };
+
+    match engine.run(factor_array, &pm) {
         Ok(result) => Ok(PyBacktestResult::from(result)),
         Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(e)),
     }
@@ -1500,6 +1519,7 @@ impl PyGpEngine {
             vwap,
             returns: returns_array,
             tradable,
+            adj_factor: Array2::from_elem((n_days, n_assets), 1.0),
         };
 
         let split_config = DataSplitConfig {
@@ -3261,14 +3281,15 @@ impl PyAlfarsLab {
         self.inner.lock().unwrap().set_years(start, end);
     }
 
-    #[pyo3(signature = (quantiles, weight_method, long_top_n, short_top_n, commission_rate, rebalance_freq=1))]
+    #[pyo3(signature = (quantiles, weight_method, long_top_n, short_top_n, buy_commission, sell_commission, rebalance_freq=1))]
     fn with_backtest_config(
         &self,
         quantiles: usize,
         weight_method: &str,
         long_top_n: usize,
         short_top_n: usize,
-        commission_rate: f64,
+        buy_commission: f64,
+        sell_commission: f64,
         rebalance_freq: usize,
     ) -> PyResult<()> {
         let wm = match weight_method {
@@ -3287,7 +3308,8 @@ impl PyAlfarsLab {
             short_top_n,
             rebalance_freq,
             fee_config: backtest::FeeConfig {
-                commission_rate,
+                buy_commission,
+                sell_commission,
                 ..Default::default()
             },
             ..Default::default()

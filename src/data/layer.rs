@@ -271,6 +271,10 @@ pub struct PriceMatrix {
     pub vwap: Array2<f64>,
     pub returns: Array2<f64>,
     pub tradable: Array2<f64>,
+    /// Forward-adjustment factors (前复权因子), queried from DB.
+    /// Already normalized: each symbol's factor is divided by its last value,
+    /// so prices are pre-adjusted and adj_factor = adj_raw / last_adj.
+    pub adj_factor: Array2<f64>,
 }
 
 impl PriceMatrix {
@@ -925,6 +929,7 @@ impl DataLayer {
             vwap: vwap_mat,
             returns,
             tradable,
+            adj_factor: adj_mat,
         })
     }
 

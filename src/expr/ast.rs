@@ -422,7 +422,7 @@ impl Expr {
     /// # Examples
     ///
     /// ```
-    /// use exprs::Expr;
+    /// use alfars::expr::Expr;
     ///
     /// // Create literals from different types
     /// let expr_bool = Expr::lit(true);

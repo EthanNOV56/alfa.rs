@@ -2198,23 +2198,22 @@ impl RealBacktestFitnessEvaluator {
 
         let engine = BacktestEngine::with_config(config);
 
-        // Create close, open, vwap, and tradable as placeholder (using returns as proxy)
-        let close = Array2::from_elem(returns.dim(), 1.0);
-        let open = Array2::from_elem(returns.dim(), 1.0);
-        let vwap = Array2::from_elem(returns.dim(), 1.0);
-        let tradable = Array2::from_elem(returns.dim(), 1.0);
-        // adj_factor is now required - use ones as default
-        let adj_factor = Array2::from_elem(returns.dim(), 1.0);
+        // Build a minimal PriceMatrix for backtest
+        let (n_days, n_assets) = returns.dim();
+        let pm = PriceMatrix {
+            dates: vec![],
+            symbols: vec![],
+            close: Array2::from_elem((n_days, n_assets), 1.0),
+            open: Array2::from_elem((n_days, n_assets), 1.0),
+            high: Array2::from_elem((n_days, n_assets), 1.0),
+            low: Array2::from_elem((n_days, n_assets), 1.0),
+            vwap: Array2::from_elem((n_days, n_assets), 1.0),
+            returns: returns.clone(),
+            tradable: Array2::from_elem((n_days, n_assets), 1.0),
+            adj_factor: Array2::from_elem((n_days, n_assets), 1.0),
+        };
 
-        match engine.run(
-            factor.clone(),
-            returns.clone(),
-            adj_factor,
-            close,
-            open,
-            vwap,
-            tradable,
-        ) {
+        match engine.run(factor.clone(), &pm) {
             Ok(result) => {
                 // Check for valid results
                 if result.ic_mean.is_nan() || result.ic_ir.is_nan() {

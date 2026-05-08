@@ -139,7 +139,8 @@ pub(crate) fn simulate_groups(
     open: &Array2<f64>,
     close: &Array2<f64>,
     vwap: &Array2<f64>,
-    fee_rate: f64,
+    buy_fee_rate: f64,
+    sell_fee_rate: f64,
     rebalance_freq: usize,
 ) -> Result<Array2<f64>, String> {
     let mut group_returns = Array2::<f64>::zeros((n_days - 1, quantiles));
@@ -236,7 +237,12 @@ pub(crate) fn simulate_groups(
                     let delta = new_shares[a] - prev_shares[a];
                     let vp = vwap[[day, a]];
                     if delta.abs() > 1e-15 && vp.is_finite() && vp > 0.0 {
-                        fee_dollars += delta.abs() * fee_rate * vp;
+                        let trade_fee = if delta > 0.0 {
+                            buy_fee_rate
+                        } else {
+                            sell_fee_rate
+                        };
+                        fee_dollars += delta.abs() * trade_fee * vp;
                     }
                 }
 
