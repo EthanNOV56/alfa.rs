@@ -6,6 +6,7 @@ import alfars as al
 
 WCR_EXPR = "1d:sum(5m:vol * 5m:close) / 1d:sum(5m:vol) / 1d:mean(5m:close)"
 REF_CSV = ".tests/backtest_nav_py.csv"
+DUMP_CSV = ".tests/backtest_nav_rs.csv"
 TOLERANCE = 1e-9
 
 
@@ -23,7 +24,9 @@ def backtest_result():
     lab.register("wcr", WCR_EXPR)
     with tempfile.NamedTemporaryFile(suffix=".csv") as tf:
         panel = lab.calc(tf.name)
-    return lab.run(panel)
+    result = lab.run(panel)
+    result.to_csv(DUMP_CSV)
+    return result
 
 
 @pytest.fixture(scope="module")

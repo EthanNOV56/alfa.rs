@@ -1051,112 +1051,107 @@ impl PyBacktestEngine {
 /// Python-exposed backtest result
 #[pyclass(name = "BacktestResult")]
 struct PyBacktestResult {
-    #[pyo3(get)]
-    dates: Vec<i64>,
-    #[pyo3(get)]
-    group_returns: Py<PyArray2<f64>>,
-    #[pyo3(get)]
-    group_cum_returns: Py<PyArray2<f64>>,
-    #[pyo3(get)]
-    long_short_returns: Py<PyArray1<f64>>,
-    #[pyo3(get)]
-    long_short_cum_return: f64,
-    #[pyo3(get)]
-    long_short_cum_returns: Py<PyArray1<f64>>,
-    #[pyo3(get)]
-    long_cum_returns: Py<PyArray1<f64>>,
-    #[pyo3(get)]
-    short_cum_returns: Py<PyArray1<f64>>,
-    #[pyo3(get)]
-    ic_series: Py<PyArray1<f64>>,
-    #[pyo3(get)]
-    ic_mean: f64,
-    #[pyo3(get)]
-    ic_ir: f64,
-    #[pyo3(get)]
-    long_ic_mean: f64,
-    #[pyo3(get)]
-    long_ic_ir: f64,
-    #[pyo3(get)]
-    short_ic_mean: f64,
-    #[pyo3(get)]
-    short_ic_ir: f64,
-    #[pyo3(get)]
-    long_short_ic_mean: f64,
-    #[pyo3(get)]
-    long_short_ic_ir: f64,
-    /// Total return
-    #[pyo3(get)]
-    total_return: f64,
-    /// Annualized return
-    #[pyo3(get)]
-    annualized_return: f64,
-    /// Sharpe ratio (annualized)
-    #[pyo3(get)]
-    sharpe_ratio: f64,
-    /// Maximum drawdown
-    #[pyo3(get)]
-    max_drawdown: f64,
-    /// Turnover rate (group-label-based)
-    #[pyo3(get)]
-    turnover: f64,
-    /// Weight-based turnover rate
-    #[pyo3(get)]
-    weight_turnover: f64,
-    /// Win rate: fraction of days with positive long-short return
-    #[pyo3(get)]
-    win_rate: f64,
-    /// Calmar ratio: annualized_return / max_drawdown
-    #[pyo3(get)]
-    calmar_ratio: f64,
-    /// Long-only returns
-    #[pyo3(get)]
-    long_returns: Py<PyArray1<f64>>,
-    /// Short-only returns
-    #[pyo3(get)]
-    short_returns: Py<PyArray1<f64>>,
-    /// Passive benchmark daily returns (equal-weight all tradable stocks)
-    #[pyo3(get)]
-    passive_returns: Py<PyArray1<f64>>,
-    /// Passive benchmark cumulative NAV curve
-    #[pyo3(get)]
-    passive_cum_returns: Py<PyArray1<f64>>,
+    inner: BacktestResult,
 }
 
 impl From<BacktestResult> for PyBacktestResult {
-    fn from(result: BacktestResult) -> Self {
-        pyo3::Python::try_attach(|py| Self {
-            dates: result.dates,
-            group_returns: result.group_returns.into_pyarray(py).into(),
-            group_cum_returns: result.group_cum_returns.into_pyarray(py).into(),
-            long_short_returns: result.long_short_returns.into_pyarray(py).into(),
-            long_short_cum_return: result.long_short_cum_return,
-            long_short_cum_returns: result.long_short_cum_returns.into_pyarray(py).into(),
-            long_cum_returns: result.long_cum_returns.into_pyarray(py).into(),
-            short_cum_returns: result.short_cum_returns.into_pyarray(py).into(),
-            ic_series: result.ic_series.into_pyarray(py).into(),
-            ic_mean: result.ic_mean,
-            ic_ir: result.ic_ir,
-            long_ic_mean: result.long_ic_mean,
-            long_ic_ir: result.long_ic_ir,
-            short_ic_mean: result.short_ic_mean,
-            short_ic_ir: result.short_ic_ir,
-            long_short_ic_mean: result.long_short_ic_mean,
-            long_short_ic_ir: result.long_short_ic_ir,
-            total_return: result.total_return,
-            annualized_return: result.annualized_return,
-            sharpe_ratio: result.sharpe_ratio,
-            max_drawdown: result.max_drawdown,
-            turnover: result.turnover,
-            weight_turnover: result.weight_turnover,
-            win_rate: result.win_rate,
-            calmar_ratio: result.calmar_ratio,
-            long_returns: result.long_returns.into_pyarray(py).into(),
-            short_returns: result.short_returns.into_pyarray(py).into(),
-            passive_returns: result.passive_returns.into_pyarray(py).into(),
-            passive_cum_returns: result.passive_cum_returns.into_pyarray(py).into(),
+    fn from(inner: BacktestResult) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyBacktestResult {
+    #[getter]
+    fn dates(&self) -> Vec<i64> {
+        self.inner.dates.clone()
+    }
+    #[getter]
+    fn group_returns(&self, py: Python<'_>) -> Py<PyArray2<f64>> {
+        self.inner.group_returns.clone().into_pyarray(py).into()
+    }
+    #[getter]
+    fn group_cum_returns(&self, py: Python<'_>) -> Py<PyArray2<f64>> {
+        self.inner.group_cum_returns.clone().into_pyarray(py).into()
+    }
+    #[getter]
+    fn long_short_returns(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        self.inner.long_short_returns.clone().into_pyarray(py).into()
+    }
+    #[getter]
+    fn long_short_cum_return(&self) -> f64 {
+        self.inner.long_short_cum_return
+    }
+    #[getter]
+    fn long_short_cum_returns(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        self.inner.long_short_cum_returns.clone().into_pyarray(py).into()
+    }
+    #[getter]
+    fn long_cum_returns(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        self.inner.long_cum_returns.clone().into_pyarray(py).into()
+    }
+    #[getter]
+    fn short_cum_returns(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        self.inner.short_cum_returns.clone().into_pyarray(py).into()
+    }
+    #[getter]
+    fn ic_series(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        self.inner.ic_series.clone().into_pyarray(py).into()
+    }
+    #[getter]
+    fn ic_mean(&self) -> f64 { self.inner.ic_mean }
+    #[getter]
+    fn ic_ir(&self) -> f64 { self.inner.ic_ir }
+    #[getter]
+    fn long_ic_mean(&self) -> f64 { self.inner.long_ic_mean }
+    #[getter]
+    fn long_ic_ir(&self) -> f64 { self.inner.long_ic_ir }
+    #[getter]
+    fn short_ic_mean(&self) -> f64 { self.inner.short_ic_mean }
+    #[getter]
+    fn short_ic_ir(&self) -> f64 { self.inner.short_ic_ir }
+    #[getter]
+    fn long_short_ic_mean(&self) -> f64 { self.inner.long_short_ic_mean }
+    #[getter]
+    fn long_short_ic_ir(&self) -> f64 { self.inner.long_short_ic_ir }
+    #[getter]
+    fn total_return(&self) -> f64 { self.inner.total_return }
+    #[getter]
+    fn annualized_return(&self) -> f64 { self.inner.annualized_return }
+    #[getter]
+    fn sharpe_ratio(&self) -> f64 { self.inner.sharpe_ratio }
+    #[getter]
+    fn max_drawdown(&self) -> f64 { self.inner.max_drawdown }
+    #[getter]
+    fn turnover(&self) -> f64 { self.inner.turnover }
+    #[getter]
+    fn weight_turnover(&self) -> f64 { self.inner.weight_turnover }
+    #[getter]
+    fn win_rate(&self) -> f64 { self.inner.win_rate }
+    #[getter]
+    fn calmar_ratio(&self) -> f64 { self.inner.calmar_ratio }
+    #[getter]
+    fn long_returns(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        self.inner.long_returns.clone().into_pyarray(py).into()
+    }
+    #[getter]
+    fn short_returns(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        self.inner.short_returns.clone().into_pyarray(py).into()
+    }
+    #[getter]
+    fn passive_returns(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        self.inner.passive_returns.clone().into_pyarray(py).into()
+    }
+    #[getter]
+    fn passive_cum_returns(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        self.inner.passive_cum_returns.clone().into_pyarray(py).into()
+    }
+
+    /// Write group NAV curves to CSV (date,nv,group).
+    fn to_csv(&self, path: &str) -> PyResult<()> {
+        self.inner.to_csv(path).map_err(|e| {
+            pyo3::exceptions::PyIOError::new_err(format!("CSV write: {}", e))
         })
-        .unwrap()
     }
 }
 
