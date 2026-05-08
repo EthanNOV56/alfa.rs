@@ -86,7 +86,7 @@ config = al.DataPoolConfig(
 lab = al.AlfarsLab.from_env_with_config(config)
 lab.with_filter("symbols not like '%BJ'")
 lab.with_years(START_YEAR, END_YEAR)
-lab.with_backtest_config(10, "equal", 1, 1, 0.0003)
+lab.with_backtest_config(10, "equal", 1, 1, 0.0005, 0.0015)
 
 log_phase("lab_setup", t0)
 

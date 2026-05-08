@@ -19,7 +19,7 @@ def backtest_result():
     lab = al.AlfarsLab.from_env()
     lab.with_filter("symbols not like '%BJ'")
     lab.with_years(2010, 2025)
-    lab.with_backtest_config(10, "equal", 1, 1, 0.0003)
+    lab.with_backtest_config(10, "equal", 1, 1, 0.0005, 0.0015)
     lab.register("wcr", WCR_EXPR)
     with tempfile.NamedTemporaryFile(suffix=".csv") as tf:
         panel = lab.calc(tf.name)

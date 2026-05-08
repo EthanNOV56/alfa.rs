@@ -40,7 +40,8 @@ def quantile_backtest(
     weight_method: Literal["equal", "weighted"] = "equal",
     long_top_n: int = 1,
     short_top_n: int = 1,
-    commission_rate: float = 0.0,
+    buy_commission: float = 0.0005,
+    sell_commission: float = 0.0015,
     weights: Optional[npt.NDArray] = None,
 ) -> BacktestResult: ...
 def compute_information_coefficient(
@@ -166,7 +167,8 @@ class BacktestEngine:
         weight_method: Literal["equal", "weighted"] = "equal",
         long_top_n: int = 1,
         short_top_n: int = 1,
-        commission_rate: float = 0.0,
+        buy_commission: float = 0.0005,
+    sell_commission: float = 0.0015,
         weights: Optional[npt.NDArray] = None,
     ) -> None: ...
     def run(self) -> BacktestResult:
@@ -557,7 +559,8 @@ class AlfarsLab:
         weight_method: str,
         long_top_n: int,
         short_top_n: int,
-        commission_rate: float,
+        buy_commission: float,
+        sell_commission: float,
     ) -> None: ...
     def register(self, name: str, expression: str) -> None: ...
     def calc(self, csv_path: str) -> FactorPanel: ...
@@ -736,7 +739,8 @@ class BacktestEngine:
         weight_method: Literal["equal", "weighted"] = "equal",
         long_top_n: int = 1,
         short_top_n: int = 1,
-        commission_rate: float = 0.0,
+        buy_commission: float = 0.0005,
+    sell_commission: float = 0.0015,
     ) -> None: ...
     def run(
         self,
@@ -811,7 +815,12 @@ class BacktestResult:
 class FeeConfig:
     """Fee configuration for backtest."""
 
-    commission_rate: float
+    buy_commission: float
+    sell_commission: float
+    large_volume_threshold: float
+    buy_slippage: float
+    sell_slippage: float
+    min_commission: float
 
 class PositionConfig:
     """Position sizing configuration."""
@@ -824,7 +833,8 @@ class SlippageConfig:
     """Volume-based slippage configuration."""
 
     large_volume_threshold: float
-    large_slippage_rate: float
+    buy_slippage: float
+    sell_slippage: float
 
 
 # =============================================================================

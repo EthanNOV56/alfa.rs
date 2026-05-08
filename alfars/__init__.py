@@ -469,7 +469,8 @@ class BacktestEngine:
         weight_method: str = "equal",
         long_top_n: int = 1,
         short_top_n: int = 1,
-        commission_rate: float = 0.0,
+        buy_commission: float = 0.0005,
+        sell_commission: float = 0.0015,
         weights: Optional[np.ndarray] = None,
     ):
         """
@@ -489,8 +490,10 @@ class BacktestEngine:
             Number of top groups to long
         short_top_n : int, default 1
             Number of bottom groups to short
-        commission_rate : float, default 0.0
-            One-way commission rate
+        buy_commission : float, default 0.0005
+            Buy-side commission rate
+        sell_commission : float, default 0.0015
+            Sell-side commission rate
         weights : np.ndarray, optional
             External weights for weighted method, shape (n_days, n_assets)
         """
@@ -507,7 +510,8 @@ class BacktestEngine:
             weight_method,
             long_top_n,
             short_top_n,
-            commission_rate,
+            buy_commission,
+            sell_commission,
             weights,
         )
         self.factor_shape = factor.shape
@@ -702,7 +706,8 @@ def factor_returns(
         weight_method="equal",  # Default for this interface
         long_top_n=1,
         short_top_n=1,
-        commission_rate=0.0,
+        buy_commission=0.0,
+        sell_commission=0.0,
         weights=None,
     )
 
@@ -733,7 +738,8 @@ def quantile_backtest(
     weight_method: str = "equal",
     long_top_n: int = 1,
     short_top_n: int = 1,
-    commission_rate: float = 0.0,
+    buy_commission: float = 0.0005,
+    sell_commission: float = 0.0015,
     weights: Optional[np.ndarray] = None,
 ) -> BacktestResult:
     """
@@ -753,8 +759,10 @@ def quantile_backtest(
         Number of top groups to long
     short_top_n : int, default 1
         Number of bottom groups to short
-    commission_rate : float, default 0.0
-        One-way commission rate
+    buy_commission : float, default 0.0005
+        Buy-side commission rate
+    sell_commission : float, default 0.0015
+        Sell-side commission rate
     weights : np.ndarray, optional
         External weights for weighted method
 
@@ -774,7 +782,7 @@ def quantile_backtest(
             weight_method,
             long_top_n,
             short_top_n,
-            commission_rate,
+            buy_commission,
             weights,
         )
 
@@ -793,7 +801,8 @@ def quantile_backtest(
         weight_method,
         long_top_n,
         short_top_n,
-        commission_rate,
+        buy_commission,
+        sell_commission,
         adj_factor,
         close,
         open_arr,
@@ -810,7 +819,8 @@ def quantile_backtest_multi(
     weight_method: str = "equal",
     long_top_n: int = 1,
     short_top_n: int = 1,
-    commission_rate: float = 0.0,
+    buy_commission: float = 0.0005,
+    sell_commission: float = 0.0015,
 ) -> BacktestResult:
     """
     Multi-factor equal-weight combination backtest.
@@ -829,8 +839,10 @@ def quantile_backtest_multi(
         Number of top groups to long
     short_top_n : int, default 1
         Number of bottom groups to short
-    commission_rate : float, default 0.0
-        One-way commission rate
+    buy_commission : float, default 0.0005
+        Buy-side commission rate
+    sell_commission : float, default 0.0015
+        Sell-side commission rate
 
     Returns
     -------
@@ -855,7 +867,8 @@ def quantile_backtest_multi(
         weight_method,
         long_top_n,
         short_top_n,
-        commission_rate,
+        buy_commission,
+        sell_commission,
     )
     rust_result = engine.run_multi(
         factors,

@@ -229,7 +229,8 @@ class BacktestRequest(BaseModel):
     short_top_n: int = Field(
         default=1, description="Number of bottom quantile groups to short"
     )
-    commission_rate: float = Field(default=0.0, description="One-way commission rate")
+    buy_commission: float = Field(default=0.0005, description="Buy-side commission rate")
+    sell_commission: float = Field(default=0.0015, description="Sell-side commission rate")
 
 
 class NavData(BaseModel):
@@ -295,7 +296,8 @@ def run_backtest(req: BacktestRequest):
             weight_method=req.weight_method,
             long_top_n=req.long_top_n,
             short_top_n=req.short_top_n,
-            commission_rate=req.commission_rate,
+            buy_commission=req.buy_commission,
+            sell_commission=req.sell_commission,
         )
 
         # Prepare NAV data

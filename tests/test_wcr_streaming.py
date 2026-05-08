@@ -36,7 +36,7 @@ def backtest_result(request):
     lab = al.AlfarsLab.from_env_with_config(config)
     lab.with_filter("symbols not like '%BJ'")
     lab.with_years(2010, 2025)
-    lab.with_backtest_config(10, "equal", 1, 1, 0.0003)
+    lab.with_backtest_config(10, "equal", 1, 1, 0.0005, 0.0015)
     lab.register("wcr", WCR_EXPR)
 
     results = lab.backtest_each()

@@ -25,7 +25,7 @@ def backtest_results(request):
     lab = al.AlfarsLab.from_env_with_config(config)
     lab.with_filter("symbols not like '%BJ'")
     lab.with_years(2010, 2025)
-    lab.with_backtest_config(10, "equal", 1, 1, 0.0003)
+    lab.with_backtest_config(10, "equal", 1, 1, 0.0005, 0.0015)
     for i, expr in enumerate(EXPRS):
         lab.register(f"alpha{i}", expr)
 
