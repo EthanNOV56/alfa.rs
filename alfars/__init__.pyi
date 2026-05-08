@@ -165,6 +165,10 @@ class Expr:
     def eq(self, other: Union[Expr, float, int]) -> Expr: ...
     def ne(self, other: Union[Expr, float, int]) -> Expr: ...
 
+    def to_af(self, name: str) -> AlFactor:
+        """Convert this expression to an AlFactor with the given name."""
+        ...
+
 # =============================================================================
 # Backtest Classes
 # =============================================================================
@@ -555,8 +559,10 @@ class DataPoolConfig:
 # ── Unified Lab Entry Point ──────────────────────────────────────────────
 
 class FactorPanel:
-    """Opaque handle returned by AlfarsLab.calc(). Pass to AlfarsLab.run()."""
-    pass
+    """Handle returned by AlfarsLab.calc()."""
+    def to_csv(self, path: str) -> None:
+        """Write all factor slices to CSV."""
+        ...
 
 class AlfarsLab:
     """Unified entry point for factor research workflows."""
@@ -580,13 +586,32 @@ class AlfarsLab:
         short_top_n: int,
         buy_commission: float,
         sell_commission: float,
+        rebalance_freq: int = 1,
     ) -> None: ...
-    def register(self, name: str, expression: str) -> None: ...
-    def calc(self, csv_path: str) -> FactorPanel: ...
+    def register(self, name: Union[str, Dict[str, str]], expression: Optional[str] = None) -> None: ...
+    def calc(self, csv_path: Optional[str] = None) -> FactorPanel: ...
     def run(self, panel: FactorPanel) -> BacktestResult: ...
+    def run_bt(self) -> BacktestResult:
+        """Run backtest on last computed panel (from calc()). No re-query."""
+        ...
     def evaluate(self) -> Tuple[Dict[str, Any], PriceMatrix]: ...
     def backtest_each(self) -> List[Tuple[str, BacktestResult]]: ...
     def run_multi(self, factor_mats: List[Any], prices: PriceMatrix) -> BacktestResult: ...
+    def run_gp(
+        self,
+        population_size: int = 100,
+        max_generations: int = 50,
+        tournament_size: int = 7,
+        crossover_prob: float = 0.8,
+        mutation_prob: float = 0.2,
+        max_depth: int = 6,
+        use_diverse_init: bool = True,
+        smart_mutation_ratio: float = 0.3,
+        num_factors: int = 3,
+        max_symbols: int = 0,
+    ) -> Dict[Expr, BacktestResult]:
+        """GP evolution → {expr: backtest_result} for winning factors."""
+        ...
     def mine_factors(
         self,
         population_size: int = 100,
@@ -837,6 +862,24 @@ class BacktestResult:
     def to_csv(self, path: str) -> None:
         """Write group NAV curves to CSV (date,nv,group)."""
         ...
+
+class AlFactor:
+    """Factor persisted as a .al TOML file."""
+
+    name: str
+    expression: str
+    description: str
+    dimension: str
+    tags: List[str]
+    readonly: bool
+
+    def save_to_al(self, filename: Optional[str] = None) -> str:
+        """Save to ~/.alfars/ directory."""
+        ...
+    def dump(self, filename: Optional[str] = None) -> str:
+        """Save to ~/.alfars/user/<filename>.al (alias for save_to_al)."""
+        ...
+    def __repr__(self) -> str: ...
 
 class FeeConfig:
     """Fee configuration for backtest."""
