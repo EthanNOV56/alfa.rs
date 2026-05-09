@@ -81,6 +81,43 @@ impl Default for LimitUpDownConfig {
     }
 }
 
+/// Execution configuration: commissions and slippage.
+///
+/// Separated from BacktestConfig so execution costs can be
+/// configured independently of alpha/strategy parameters.
+#[derive(Debug, Clone)]
+pub struct ExecConfig {
+    /// Buy-side commission rate
+    pub buy_commission: f64,
+    /// Sell-side commission rate
+    pub sell_commission: f64,
+    /// Buy-side slippage rate
+    pub buy_slippage: f64,
+    /// Sell-side slippage rate
+    pub sell_slippage: f64,
+}
+
+impl Default for ExecConfig {
+    fn default() -> Self {
+        Self {
+            buy_commission: 0.0005,
+            sell_commission: 0.0015,
+            buy_slippage: 0.001,
+            sell_slippage: 0.001,
+        }
+    }
+}
+
+impl ExecConfig {
+    /// Apply execution config to a FeeConfig.
+    pub fn apply_to_fee_config(&self, fee: &mut FeeConfig) {
+        fee.buy_commission = self.buy_commission;
+        fee.sell_commission = self.sell_commission;
+        fee.slippage.buy_slippage = self.buy_slippage;
+        fee.slippage.sell_slippage = self.sell_slippage;
+    }
+}
+
 /// Backtest configuration - follows dependency inversion principle
 /// Only contains configuration parameters, no data
 #[derive(Debug, Clone)]

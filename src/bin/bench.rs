@@ -1302,9 +1302,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|e| format!("rayon:{}", e))?;
     }
     eprintln!("rayon:{}", rayon::current_num_threads());
-    let mut lab = AlfarsLab::new(ClickHouseSource::from_env())
-        .with_filter("symbols not like '%BJ'")
-        .with_years(2024, 2024);
+    let mut lab = AlfarsLab::new(ClickHouseSource::from_env());
+    lab.set_pool("symbols not like '%BJ'");
+    lab.set_duration(2024, 2024);
     for (n, e) in ALPHAS {
         lab.register(n, e)?;
     }

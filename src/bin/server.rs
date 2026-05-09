@@ -2186,10 +2186,11 @@ fn build_lab_from_state(
         .parse()
         .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid end_date".to_string()))?;
 
-    Ok(AlfarsLab::new(source)
-        .with_filter(&filter)
-        .with_years(start_year, end_year)
-        .with_backtest_config(backtest_config))
+    let mut lab = AlfarsLab::new(source);
+    lab.set_pool(&filter);
+    lab.set_duration(start_year, end_year);
+    lab.set_backtest_config(backtest_config);
+    Ok(lab)
 }
 
 #[tokio::main]

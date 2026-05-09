@@ -170,9 +170,11 @@ def main():
     this_year = 2025
     lab = al.AlfarsLab.from_env()
     filter = "symbols not like '%BJ'"
-    lab.with_filter(filter)
-    lab.with_years(this_year - years, this_year)
-    lab.with_backtest_config(10, "equal", 1, 1, 0.0005, 0.0015)
+    lab.set_pool(filter)
+    lab.set_duration(this_year - years, this_year)
+    lab.set_backtest_config(10, "equal", 1, 1)
+
+    lab.set_exec_cfg({"buy_commission": 0.0005, "sell_commission": 0.0015})
 
     print(f"  Filter: {this_year - years}–{this_year}, {filter}, max_symbols={max_symbols or 'all'}")
 

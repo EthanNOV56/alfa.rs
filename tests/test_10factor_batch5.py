@@ -84,9 +84,11 @@ config = al.DataPoolConfig(
     memory_budget_bytes=0,
 )
 lab = al.AlfarsLab.from_env_with_config(config)
-lab.with_filter("symbols not like '%BJ'")
-lab.with_years(START_YEAR, END_YEAR)
-lab.with_backtest_config(10, "equal", 1, 1, 0.0005, 0.0015)
+lab.set_pool("symbols not like '%BJ'")
+lab.set_duration(START_YEAR, END_YEAR)
+lab.set_backtest_config(10, "equal", 1, 1)
+
+lab.set_exec_cfg({"buy_commission": 0.0005, "sell_commission": 0.0015})
 
 log_phase("lab_setup", t0)
 

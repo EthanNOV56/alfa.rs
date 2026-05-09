@@ -112,8 +112,8 @@ def main():
     print(f"Alphas defined: {len(alphas)}")
 
     lab = al.AlfarsLab.from_env()
-    lab.with_filter("symbols not like '%BJ'")
-    lab.with_years(2024, 2024)
+    lab.set_pool("symbols not like '%BJ'")
+    lab.set_duration(2024, 2024)
 
     for name, expr in alphas.items():
         if name in SKIPPED:

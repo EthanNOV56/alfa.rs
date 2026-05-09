@@ -12,7 +12,7 @@ pub mod persistence;
 pub mod risk;
 pub mod strategy;
 
-pub mod optimizer;
+pub mod opt;
 
 use ndarray::{Array1, Array2};
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyArrayMethods, PyUntypedArrayMethods};
@@ -42,7 +42,9 @@ fn set_num_threads(n_threads: usize) -> PyResult<()> {
 }
 
 // Re-exports for internal use
-use crate::backtest::{BacktestEngine, BacktestResult, FeeConfig, PositionConfig, SlippageConfig};
+use crate::backtest::{
+    BacktestEngine, BacktestResult, ExecConfig, FeeConfig, PositionConfig, SlippageConfig,
+};
 use crate::data::clickhouse::ClickHouseSource;
 use crate::data::layer::{DataLayer, PriceMatrix};
 use crate::expr::registry::config::FactorSlice;
@@ -692,6 +694,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySlippageConfig>()?;
     m.add_class::<PyFeeConfig>()?;
     m.add_class::<PyPositionConfig>()?;
+    m.add_class::<PyExecConfig>()?;
 
     // Backtest functionality
     m.add_class::<PyBacktestEngine>()?;
@@ -892,6 +895,46 @@ impl From<PyPositionConfig> for PositionConfig {
             short_ratio: py_config.short_ratio,
             market_neutral: py_config.market_neutral,
         }
+    }
+}
+
+/// Execution configuration (commissions + slippage).
+#[pyclass(name = "ExecConfig")]
+#[derive(Clone)]
+struct PyExecConfig {
+    #[pyo3(get, set)]
+    buy_commission: f64,
+    #[pyo3(get, set)]
+    sell_commission: f64,
+    #[pyo3(get, set)]
+    buy_slippage: f64,
+    #[pyo3(get, set)]
+    sell_slippage: f64,
+}
+
+#[pymethods]
+impl PyExecConfig {
+    #[new]
+    #[pyo3(signature = (buy_commission=0.0005, sell_commission=0.0015, buy_slippage=0.001, sell_slippage=0.001))]
+    fn new(
+        buy_commission: f64,
+        sell_commission: f64,
+        buy_slippage: f64,
+        sell_slippage: f64,
+    ) -> Self {
+        Self {
+            buy_commission,
+            sell_commission,
+            buy_slippage,
+            sell_slippage,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ExecConfig(buy_commission={}, sell_commission={}, buy_slippage={}, sell_slippage={})",
+            self.buy_commission, self.sell_commission, self.buy_slippage, self.sell_slippage,
+        )
     }
 }
 
@@ -3354,23 +3397,21 @@ impl PyAlfarsLab {
         }
     }
 
-    fn with_filter(&self, filter: &str) {
-        self.inner.lock().unwrap().set_filter(filter);
+    fn set_pool(&self, filter: &str) {
+        self.inner.lock().unwrap().set_pool(filter);
     }
 
-    fn with_years(&self, start: i32, end: i32) {
-        self.inner.lock().unwrap().set_years(start, end);
+    fn set_duration(&self, start: i32, end: i32) {
+        self.inner.lock().unwrap().set_duration(start, end);
     }
 
-    #[pyo3(signature = (quantiles, weight_method, long_top_n, short_top_n, buy_commission, sell_commission, rebalance_freq=1))]
-    fn with_backtest_config(
+    #[pyo3(signature = (quantiles, weight_method, long_top_n, short_top_n, rebalance_freq=1))]
+    fn set_backtest_config(
         &self,
         quantiles: usize,
         weight_method: &str,
         long_top_n: usize,
         short_top_n: usize,
-        buy_commission: f64,
-        sell_commission: f64,
         rebalance_freq: usize,
     ) -> PyResult<()> {
         let wm = match weight_method {
@@ -3388,14 +3429,67 @@ impl PyAlfarsLab {
             long_top_n,
             short_top_n,
             rebalance_freq,
-            fee_config: backtest::FeeConfig {
-                buy_commission,
-                sell_commission,
-                ..Default::default()
-            },
             ..Default::default()
         };
         self.inner.lock().unwrap().set_backtest_config(config);
+        Ok(())
+    }
+
+    /// Set execution configuration (commissions + slippage).
+    ///
+    /// Accepts an ExecConfig object or a dict with keys:
+    /// buy_commission, sell_commission, buy_slippage, sell_slippage.
+    #[pyo3(signature = (exec_cfg=None, *, buy_commission=None, sell_commission=None, buy_slippage=None, sell_slippage=None))]
+    fn set_exec_cfg(
+        &self,
+        exec_cfg: Option<&Bound<'_, PyAny>>,
+        buy_commission: Option<f64>,
+        sell_commission: Option<f64>,
+        buy_slippage: Option<f64>,
+        sell_slippage: Option<f64>,
+    ) -> PyResult<()> {
+        let config = if let Some(py_obj) = exec_cfg {
+            if let Ok(py_cfg) = py_obj.extract::<PyRef<'_, PyExecConfig>>() {
+                backtest::ExecConfig {
+                    buy_commission: py_cfg.buy_commission,
+                    sell_commission: py_cfg.sell_commission,
+                    buy_slippage: py_cfg.buy_slippage,
+                    sell_slippage: py_cfg.sell_slippage,
+                }
+            } else if let Ok(dict) = py_obj.downcast::<PyDict>() {
+                let defaults = backtest::ExecConfig::default();
+                backtest::ExecConfig {
+                    buy_commission: dict
+                        .get_item("buy_commission")?
+                        .and_then(|v| v.extract::<f64>().ok())
+                        .unwrap_or(defaults.buy_commission),
+                    sell_commission: dict
+                        .get_item("sell_commission")?
+                        .and_then(|v| v.extract::<f64>().ok())
+                        .unwrap_or(defaults.sell_commission),
+                    buy_slippage: dict
+                        .get_item("buy_slippage")?
+                        .and_then(|v| v.extract::<f64>().ok())
+                        .unwrap_or(defaults.buy_slippage),
+                    sell_slippage: dict
+                        .get_item("sell_slippage")?
+                        .and_then(|v| v.extract::<f64>().ok())
+                        .unwrap_or(defaults.sell_slippage),
+                }
+            } else {
+                return Err(PyValueError::new_err(
+                    "set_exec_cfg() expects ExecConfig or dict",
+                ));
+            }
+        } else {
+            backtest::ExecConfig {
+                buy_commission: buy_commission.unwrap_or(0.0005),
+                sell_commission: sell_commission.unwrap_or(0.0015),
+                buy_slippage: buy_slippage.unwrap_or(0.001),
+                sell_slippage: sell_slippage.unwrap_or(0.001),
+            }
+        };
+        self.inner.lock().unwrap().set_exec_cfg(config);
         Ok(())
     }
 

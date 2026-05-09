@@ -21,9 +21,11 @@ def test_avail_ops():
 
 def test_set_gp_config():
     lab = al.AlfarsLab.from_env()
-    lab.with_filter("symbols not like '%BJ'")
-    lab.with_years(2010, 2010)
-    lab.with_backtest_config(10, "equal", 1, 1, 0.0005, 0.0015)
+    lab.set_pool("symbols not like '%BJ'")
+    lab.set_duration(2010, 2010)
+    lab.set_backtest_config(10, "equal", 1, 1)
+
+    lab.set_exec_cfg({"buy_commission": 0.0005, "sell_commission": 0.0015})
 
     lab.set_fields(["close", "vol"])
     lab.set_ops(["add", "sub", "mul", "div", "rank"])
@@ -37,9 +39,11 @@ def test_set_gp_config():
 
 def test_set_gp_seed_list():
     lab = al.AlfarsLab.from_env()
-    lab.with_filter("symbols not like '%BJ'")
-    lab.with_years(2010, 2010)
-    lab.with_backtest_config(10, "equal", 1, 1, 0.0005, 0.0015)
+    lab.set_pool("symbols not like '%BJ'")
+    lab.set_duration(2010, 2010)
+    lab.set_backtest_config(10, "equal", 1, 1)
+
+    lab.set_exec_cfg({"buy_commission": 0.0005, "sell_commission": 0.0015})
 
     lab.set_fields(["close"])
     lab.set_ops(["add", "sub", "mul"])
@@ -52,9 +56,11 @@ def test_set_gp_seed_list():
 
 def test_set_gp_seed_parse_error():
     lab = al.AlfarsLab.from_env()
-    lab.with_filter("symbols not like '%BJ'")
-    lab.with_years(2010, 2010)
-    lab.with_backtest_config(10, "equal", 1, 1, 0.0005, 0.0015)
+    lab.set_pool("symbols not like '%BJ'")
+    lab.set_duration(2010, 2010)
+    lab.set_backtest_config(10, "equal", 1, 1)
+
+    lab.set_exec_cfg({"buy_commission": 0.0005, "sell_commission": 0.0015})
 
     try:
         lab.set_gp_seed("!@#INVALID!!")

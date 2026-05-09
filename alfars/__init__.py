@@ -62,6 +62,7 @@ try:
         PositionConfig,
         PriceMatrix,
         SlippageConfig,
+        ExecConfig,
         compute_ic,
         cumprod,
         cumsum,
@@ -112,7 +113,7 @@ except ImportError:
     FactorRegistry = FactorInfo = FactorResult = _Stub
     ClickHouseSource = DataLayer = PriceMatrix = FactorSlice = _Stub
     FactorCombiner = PositionBuilder = _Stub
-    BacktestEngine = FeeConfig = PositionConfig = SlippageConfig = BacktestResult = (
+    ExecConfig = BacktestEngine = FeeConfig = PositionConfig = SlippageConfig = BacktestResult = (
         _Stub
     )
 
@@ -167,6 +168,7 @@ __all__ = [
     "FeeConfig",
     "PositionConfig",
     "SlippageConfig",
+    "ExecConfig",
     # Expression system
     "Expr",
     "evaluate_expression",

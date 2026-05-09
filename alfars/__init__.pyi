@@ -576,17 +576,24 @@ class AlfarsLab:
     def from_env_with_config(config: DataPoolConfig) -> AlfarsLab:
         """Create from .env with custom DataPoolConfig."""
         ...
-    def with_filter(self, filter: str) -> AlfarsLab: ...
-    def with_years(self, start: int, end: int) -> AlfarsLab: ...
-    def with_backtest_config(
+    def set_pool(self, filter: str) -> None: ...
+    def set_duration(self, start: int, end: int) -> None: ...
+    def set_backtest_config(
         self,
         quantiles: int,
         weight_method: str,
         long_top_n: int,
         short_top_n: int,
-        buy_commission: float,
-        sell_commission: float,
         rebalance_freq: int = 1,
+    ) -> None: ...
+    def set_exec_cfg(
+        self,
+        exec_cfg: Optional[Union[ExecConfig, Dict[str, float]]] = None,
+        *,
+        buy_commission: Optional[float] = None,
+        sell_commission: Optional[float] = None,
+        buy_slippage: Optional[float] = None,
+        sell_slippage: Optional[float] = None,
     ) -> None: ...
     def register(self, name: Union[str, Dict[str, str]], expression: Optional[str] = None) -> None: ...
     def calc(self, csv_path: Optional[str] = None) -> FactorPanel: ...
@@ -904,6 +911,21 @@ class SlippageConfig:
     large_volume_threshold: float
     buy_slippage: float
     sell_slippage: float
+
+class ExecConfig:
+    """Execution configuration (commissions + slippage)."""
+
+    buy_commission: float
+    sell_commission: float
+    buy_slippage: float
+    sell_slippage: float
+    def __init__(
+        self,
+        buy_commission: float = 0.0005,
+        sell_commission: float = 0.0015,
+        buy_slippage: float = 0.001,
+        sell_slippage: float = 0.001,
+    ) -> None: ...
 
 
 # =============================================================================

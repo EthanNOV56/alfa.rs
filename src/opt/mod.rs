@@ -287,8 +287,8 @@ pub use equal::{EqualWeight, SignalProportional, VolatilityInverse};
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::optimizer::covariance::SampleCov;
-    use crate::optimizer::mvo::MaxSharpe;
+    use crate::opt::covariance::SampleCov;
+    use crate::opt::mvo::MaxSharpe;
 
     /// [SYNTHETIC] End-to-end: synthetic data → covariance → optimize → weights.
     #[test]

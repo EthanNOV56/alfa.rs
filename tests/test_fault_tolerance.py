@@ -9,9 +9,11 @@ def test_bad_column_year_skipped_others_ok():
     """
     config = al.DataPoolConfig(cache_policy=al.CachePolicy.drop_all(), backtest_batch_size=1)
     lab = al.AlfarsLab.from_env_with_config(config)
-    lab.with_filter("symbols not like '%BJ'")
-    lab.with_years(2010, 2010)
-    lab.with_backtest_config(10, "equal", 1, 1, 0.0005, 0.0015)
+    lab.set_pool("symbols not like '%BJ'")
+    lab.set_duration(2010, 2010)
+    lab.set_backtest_config(10, "equal", 1, 1)
+
+    lab.set_exec_cfg({"buy_commission": 0.0005, "sell_commission": 0.0015})
 
     lab.register("good_1", "close / delay(close, 1) - 1")
     lab.register("good_2", "rank(ts_mean(volume, 20))")
@@ -35,9 +37,11 @@ def test_pipeline_continues_after_year_skip():
     """
     config = al.DataPoolConfig(cache_policy=al.CachePolicy.drop_all(), backtest_batch_size=1)
     lab = al.AlfarsLab.from_env_with_config(config)
-    lab.with_filter("symbols not like '%BJ'")
-    lab.with_years(2010, 2025)
-    lab.with_backtest_config(10, "equal", 1, 1, 0.0005, 0.0015)
+    lab.set_pool("symbols not like '%BJ'")
+    lab.set_duration(2010, 2025)
+    lab.set_backtest_config(10, "equal", 1, 1)
+
+    lab.set_exec_cfg({"buy_commission": 0.0005, "sell_commission": 0.0015})
 
     lab.register("test_recovery", "rank(ts_mean(close, 20)) - rank(ts_mean(open, 20))")
 
@@ -55,9 +59,11 @@ def test_drop_all_and_keep_all_consistent():
               else al.CachePolicy.drop_all())
         config = al.DataPoolConfig(cache_policy=cp, backtest_batch_size=1)
         lab = al.AlfarsLab.from_env_with_config(config)
-        lab.with_filter("symbols not like '%BJ'")
-        lab.with_years(2010, 2025)
-        lab.with_backtest_config(10, "equal", 1, 1, 0.0005, 0.0015)
+        lab.set_pool("symbols not like '%BJ'")
+        lab.set_duration(2010, 2025)
+        lab.set_backtest_config(10, "equal", 1, 1)
+
+        lab.set_exec_cfg({"buy_commission": 0.0005, "sell_commission": 0.0015})
         lab.register("f", "rank(ts_mean(close, 20))")
         r = lab.backtest_each()
         return r[0][1]

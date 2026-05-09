@@ -8,6 +8,6 @@ pub mod metrics;
 pub mod portfolio;
 pub mod types;
 
-pub use config::{BacktestConfig, FeeConfig, PositionConfig, SlippageConfig};
+pub use config::{BacktestConfig, ExecConfig, FeeConfig, PositionConfig, SlippageConfig};
 pub use engine::BacktestEngine;
 pub use types::BacktestResult;

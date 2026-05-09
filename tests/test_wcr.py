@@ -18,9 +18,11 @@ def _int_to_date(d: int) -> str:
 @pytest.fixture(scope="module")
 def backtest_result():
     lab = al.AlfarsLab.from_env()
-    lab.with_filter("symbols not like '%BJ'")
-    lab.with_years(2010, 2025)
-    lab.with_backtest_config(10, "equal", 1, 1, 0.0005, 0.0015)
+    lab.set_pool("symbols not like '%BJ'")
+    lab.set_duration(2010, 2025)
+    lab.set_backtest_config(10, "equal", 1, 1)
+
+    lab.set_exec_cfg({"buy_commission": 0.0005, "sell_commission": 0.0015})
     lab.register("wcr", WCR_EXPR)
     panel = lab.calc()
     panel.to_csv("/tmp/wcr_panel.csv")
@@ -75,9 +77,11 @@ def test_statistics_smoke(backtest_result):
 
 def test_register_dict():
     lab = al.AlfarsLab.from_env()
-    lab.with_filter("symbols not like '%BJ'")
-    lab.with_years(2010, 2010)  # single year, fast
-    lab.with_backtest_config(10, "equal", 1, 1, 0.0005, 0.0015)
+    lab.set_pool("symbols not like '%BJ'")
+    lab.set_duration(2010, 2010)  # single year, fast
+    lab.set_backtest_config(10, "equal", 1, 1)
+
+    lab.set_exec_cfg({"buy_commission": 0.0005, "sell_commission": 0.0015})
     lab.register({"test_factor": WCR_EXPR})
     panel = lab.calc()
     assert panel is not None

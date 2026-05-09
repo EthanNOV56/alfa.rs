@@ -5,9 +5,9 @@
 //! for streaming multi-factor).
 //!
 //! ```ignore
-//! let mut lab = AlfarsLab::new(ClickHouseSource::from_env())
-//!     .with_filter("symbols not like '%BJ'")
-//!     .with_years(2010, 2025);
+//! let mut lab = AlfarsLab::new(ClickHouseSource::from_env());
+//! lab.set_pool("symbols not like '%BJ'");
+//! lab.set_duration(2010, 2025);
 //!
 //! lab.register("wcr", "1d:sum(5m:vol * 5m:close) / 1d:sum(5m:vol) / 1d:mean(5m:close)")?;
 //!
@@ -19,7 +19,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::backtest::{BacktestConfig, BacktestEngine, BacktestResult};
+use crate::backtest::{BacktestConfig, BacktestEngine, BacktestResult, ExecConfig};
 use crate::data::clickhouse::ClickHouseSource;
 use crate::data::layer::{DataLayer, PriceMatrix};
 use crate::data::pool::{DataPool, DataPoolConfig};
@@ -37,6 +37,7 @@ pub struct AlfarsLab {
     pool: DataPool,
     registry: FactorRegistry,
     backtest_config: BacktestConfig,
+    exec_config: Option<ExecConfig>,
     start_year: Option<i32>,
     end_year: Option<i32>,
     last_panel: Mutex<Option<FactorPanel>>,
@@ -52,6 +53,7 @@ impl AlfarsLab {
             pool: DataPool::new(source, String::new(), DataPoolConfig::default()),
             registry: FactorRegistry::new(),
             backtest_config: BacktestConfig::default(),
+            exec_config: None,
             start_year: None,
             end_year: None,
             last_panel: Mutex::new(None),
@@ -67,6 +69,7 @@ impl AlfarsLab {
             pool: DataPool::new(source, String::new(), pool_config),
             registry: FactorRegistry::new(),
             backtest_config: BacktestConfig::default(),
+            exec_config: None,
             start_year: None,
             end_year: None,
             last_panel: Mutex::new(None),
@@ -75,22 +78,6 @@ impl AlfarsLab {
             gp_ops: Mutex::new(None),
             gp_seeds: Mutex::new(None),
         }
-    }
-
-    pub fn with_filter(mut self, filter: &str) -> Self {
-        self.pool.set_pre_filter(filter);
-        self
-    }
-
-    pub fn with_years(mut self, start: i32, end: i32) -> Self {
-        self.start_year = Some(start);
-        self.end_year = Some(end);
-        self
-    }
-
-    pub fn with_backtest_config(mut self, config: BacktestConfig) -> Self {
-        self.backtest_config = config;
-        self
     }
 
     pub fn register(&mut self, name: &str, expression: &str) -> Result<&mut Self, String> {
@@ -334,23 +321,34 @@ impl AlfarsLab {
         BacktestEngine::with_config(self.backtest_config.clone()).run_multi(factor_mats, prices)
     }
 
-    pub fn set_filter(&mut self, filter: &str) {
+    pub fn set_pool(&mut self, filter: &str) {
         self.pool.set_pre_filter(filter);
     }
 
-    pub fn set_years(&mut self, start: i32, end: i32) {
+    pub fn set_duration(&mut self, start: i32, end: i32) {
         self.start_year = Some(start);
         self.end_year = Some(end);
     }
 
+    pub fn set_exec_cfg(&mut self, config: ExecConfig) {
+        config.apply_to_fee_config(&mut self.backtest_config.fee_config);
+        self.exec_config = Some(config);
+    }
+
     pub fn set_backtest_config(&mut self, config: BacktestConfig) {
-        self.backtest_config = config;
+        if let Some(ref ec) = self.exec_config {
+            let mut merged = config;
+            ec.apply_to_fee_config(&mut merged.fee_config);
+            self.backtest_config = merged;
+        } else {
+            self.backtest_config = config;
+        }
     }
 
     fn years(&self) -> Result<(i32, i32), String> {
         match (self.start_year, self.end_year) {
             (Some(s), Some(e)) if s <= e => Ok((s, e)),
-            _ => Err("call with_years(start, end) before calc/run".into()),
+            _ => Err("call set_duration(start, end) before calc/run".into()),
         }
     }
 
