@@ -4,7 +4,7 @@ use ndarray::{Array1, Array2};
 use rayon::prelude::*;
 use std::f64::NAN;
 
-pub(crate) fn compute_cumulative_returns(daily_returns: &Array2<f64>) -> Array2<f64> {
+pub fn compute_cumulative_returns(daily_returns: &Array2<f64>) -> Array2<f64> {
     let (n_days, n_groups) = daily_returns.dim();
     let mut cum_returns = Array2::<f64>::zeros((n_days, n_groups));
 
@@ -31,7 +31,7 @@ pub(crate) fn compute_cumulative_returns(daily_returns: &Array2<f64>) -> Array2<
     cum_returns
 }
 
-pub(crate) fn compute_ic_series(
+pub fn compute_ic_series(
     factor: &Array2<f64>,
     returns: &Array2<f64>,
 ) -> Result<(Array1<f64>, f64, f64), String> {
@@ -85,7 +85,7 @@ pub(crate) fn compute_ic_series(
     Ok((ic_series, ic_mean, ic_ir))
 }
 
-pub(crate) fn compute_annualized_return(total_return: f64, n_days: usize) -> f64 {
+pub fn compute_annualized_return(total_return: f64, n_days: usize) -> f64 {
     if n_days <= 1 {
         return 0.0;
     }
@@ -96,7 +96,7 @@ pub(crate) fn compute_annualized_return(total_return: f64, n_days: usize) -> f64
     (1.0 + total_return).powf(1.0 / years) - 1.0
 }
 
-pub(crate) fn compute_sharpe_ratio(returns: &Array1<f64>, _n_days: usize) -> f64 {
+pub fn compute_sharpe_ratio(returns: &Array1<f64>, _n_days: usize) -> f64 {
     let valid_n = returns.iter().filter(|&&r| !r.is_nan()).count();
     if valid_n < 2 {
         return 0.0;
@@ -119,7 +119,7 @@ pub(crate) fn compute_sharpe_ratio(returns: &Array1<f64>, _n_days: usize) -> f64
     mean / std * (252.0_f64).sqrt()
 }
 
-pub(crate) fn compute_max_drawdown(returns: &Array1<f64>) -> f64 {
+pub fn compute_max_drawdown(returns: &Array1<f64>) -> f64 {
     let mut cum = 1.0;
     let mut max_cum = 1.0;
     let mut max_drawdown = 0.0;
@@ -142,7 +142,7 @@ pub(crate) fn compute_max_drawdown(returns: &Array1<f64>) -> f64 {
 }
 
 /// Build cumulative NAV curve from daily returns.
-pub(crate) fn cumulative_nav_curve(returns: &Array1<f64>) -> Array1<f64> {
+pub fn cumulative_nav_curve(returns: &Array1<f64>) -> Array1<f64> {
     let n = returns.len();
     let mut curve = Array1::zeros(n);
     let mut cum = 1.0;
@@ -156,7 +156,7 @@ pub(crate) fn cumulative_nav_curve(returns: &Array1<f64>) -> Array1<f64> {
 }
 
 /// Compute total return using log returns for numerical stability
-pub(crate) fn compute_total_return_log(returns: &Array1<f64>) -> f64 {
+pub fn compute_total_return_log(returns: &Array1<f64>) -> f64 {
     let mut log_sum = 0.0;
     for &r in returns.iter() {
         if r.is_nan() {
@@ -170,7 +170,7 @@ pub(crate) fn compute_total_return_log(returns: &Array1<f64>) -> f64 {
     log_sum.exp() - 1.0
 }
 
-pub(crate) fn compute_turnover(group_labels: &Array2<usize>) -> f64 {
+pub fn compute_turnover(group_labels: &Array2<usize>) -> f64 {
     let (n_days, n_assets) = group_labels.dim();
     let mut total_turnover = 0.0;
     let mut count = 0;
@@ -198,7 +198,7 @@ pub(crate) fn compute_turnover(group_labels: &Array2<usize>) -> f64 {
 ///
 /// For each day, only assets whose `group_labels[day]` belongs to `target_groups`
 /// are included in the Pearson correlation between factor and forward returns.
-pub(crate) fn compute_group_ic_series(
+pub fn compute_group_ic_series(
     factor: &Array2<f64>,
     returns: &Array2<f64>,
     group_labels: &Array2<usize>,
@@ -266,7 +266,7 @@ pub(crate) fn compute_group_ic_series(
 
 /// Compute weight-based turnover: average daily sum of absolute weight changes.
 /// Normalized by 2: turnover=0 means no change, turnover=1 means complete rebalance.
-pub(crate) fn compute_weight_turnover(group_weights: &Array2<f64>) -> f64 {
+pub fn compute_weight_turnover(group_weights: &Array2<f64>) -> f64 {
     let (n_days, n_assets) = group_weights.dim();
     if n_days < 2 {
         return 0.0;
@@ -289,7 +289,7 @@ pub(crate) fn compute_weight_turnover(group_weights: &Array2<f64>) -> f64 {
 }
 
 /// Compute win rate: fraction of periods with positive return.
-pub(crate) fn compute_win_rate(returns: &Array1<f64>) -> f64 {
+pub fn compute_win_rate(returns: &Array1<f64>) -> f64 {
     let valid: Vec<f64> = returns
         .iter()
         .filter(|&&r| r.is_finite())
@@ -304,7 +304,7 @@ pub(crate) fn compute_win_rate(returns: &Array1<f64>) -> f64 {
 
 /// Compute Calmar ratio: annualized_return / max_drawdown.
 /// Returns NAN if max_drawdown is 0.
-pub(crate) fn compute_calmar_ratio(annualized_return: f64, max_drawdown: f64) -> f64 {
+pub fn compute_calmar_ratio(annualized_return: f64, max_drawdown: f64) -> f64 {
     if max_drawdown <= 0.0 || max_drawdown.is_nan() {
         return std::f64::NAN;
     }
