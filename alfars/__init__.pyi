@@ -991,6 +991,7 @@ class Factor:
     name: str
     expression: str
     perf: ExprPerf
+    def to_alfactor(self, name: Optional[str] = None) -> AlFactor: ...
 
 class Strat:
     """A strategy that combines factors into a signal."""

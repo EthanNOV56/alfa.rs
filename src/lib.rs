@@ -1148,6 +1148,24 @@ impl PyFactor {
             inner: self.inner.perf.clone(),
         }
     }
+
+    /// Convert to an AlFactor for persistence.
+    #[pyo3(signature = (name=None))]
+    fn to_alfactor(&self, name: Option<&str>) -> PyAlFactor {
+        let n = name.unwrap_or(&self.inner.name);
+        let expr_str = match crate::expr::parse_expression(&self.inner.expression) {
+            Ok(parsed) => crate::gp::types::to_parseable_string(&parsed),
+            Err(_) => self.inner.expression.clone(),
+        };
+        PyAlFactor::new(
+            n.to_string(),
+            expr_str,
+            String::new(),
+            "dimensionless".to_string(),
+            vec![],
+        )
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "Factor(name='{}', expression='{}')",
