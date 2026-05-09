@@ -1,7 +1,7 @@
 //! PCA dimensionality reduction (ndarray → nalgebra → ndarray).
 
-use ndarray::Array2;
 use crate::strategy::Result;
+use ndarray::Array2;
 
 pub(crate) fn covariance_matrix(x: &Array2<f64>) -> Array2<f64> {
     let (n, p) = x.dim();
@@ -56,15 +56,17 @@ pub(crate) fn pca_fit_transform(
     let components_flat: Vec<f64> = pairs.iter().take(k).flat_map(|(_, v)| v.clone()).collect();
     let components = Array2::from_shape_vec((p, k), components_flat).unwrap();
 
-    let explained_var_ratio: Vec<f64> = pairs
-        .iter()
-        .take(k)
-        .map(|(v, _)| v.abs())
-        .collect();
+    let explained_var_ratio: Vec<f64> = pairs.iter().take(k).map(|(v, _)| v.abs()).collect();
     let total_var: f64 = pairs.iter().map(|(v, _)| v.abs()).sum();
     let explained_var_ratio: Vec<f64> = explained_var_ratio
         .iter()
-        .map(|&v| if total_var > 1e-12 { v / total_var } else { 0.0 })
+        .map(|&v| {
+            if total_var > 1e-12 {
+                v / total_var
+            } else {
+                0.0
+            }
+        })
         .collect();
 
     let centered = x - &x.mean_axis(ndarray::Axis(0)).unwrap();
@@ -114,12 +116,7 @@ mod tests {
     #[test]
     fn syn_pca_variance_preserved() {
         // k = n_features → all variance preserved
-        let data = arr2(&[
-            [1.0, 2.0],
-            [2.0, 3.0],
-            [3.0, 1.0],
-            [4.0, 4.0],
-        ]);
+        let data = arr2(&[[1.0, 2.0], [2.0, 3.0], [3.0, 1.0], [4.0, 4.0]]);
         let (transformed, _, ratio) = pca_fit_transform(&data, 2).unwrap();
         assert_eq!(transformed.ncols(), 2);
         assert_eq!(ratio.len(), 2);

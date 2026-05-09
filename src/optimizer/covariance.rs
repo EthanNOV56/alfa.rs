@@ -128,14 +128,19 @@ impl CovEstimator for LedoitWolf {
     fn estimate(&self, returns: &Array2<f64>) -> Result<Array2<f64>, String> {
         let (t, n) = returns.dim();
         if t < 2 {
-            return Err(format!("LedoitWolf requires at least 2 observations, got {t}"));
+            return Err(format!(
+                "LedoitWolf requires at least 2 observations, got {t}"
+            ));
         }
         if n < 2 {
             return Err(format!("LedoitWolf requires at least 2 assets, got {n}"));
         }
 
         // 1. Sample covariance
-        let sample = SampleCov { min_obs: self.min_obs }.estimate(returns)?;
+        let sample = SampleCov {
+            min_obs: self.min_obs,
+        }
+        .estimate(returns)?;
 
         // 2. Build constant-correlation target F
         let vols: Vec<f64> = sample.diag().iter().map(|&v| v.sqrt()).collect();
@@ -151,7 +156,11 @@ impl CovEstimator for LedoitWolf {
             }
         }
 
-        let r_bar = if count > 0 { sum_corr / count as f64 } else { 0.0 };
+        let r_bar = if count > 0 {
+            sum_corr / count as f64
+        } else {
+            0.0
+        };
         let mut target = Array2::<f64>::eye(n);
         for i in 0..n {
             for j in (i + 1)..n {
@@ -175,7 +184,12 @@ impl CovEstimator for LedoitWolf {
                 // Asymptotic variance of √T · s_ij
                 let num = 0_usize;
                 // Compute using centred cross-products
-                let cross = pairwise_cross_products(returns.column(i), returns.column(j), means(returns.column(i), self.min_obs), means(returns.column(j), self.min_obs));
+                let cross = pairwise_cross_products(
+                    returns.column(i),
+                    returns.column(j),
+                    means(returns.column(i), self.min_obs),
+                    means(returns.column(j), self.min_obs),
+                );
                 let n_eff = cross.len().max(1) as f64;
                 let var_cp: f64 = cross.iter().map(|&x| x * x).sum::<f64>() / n_eff
                     - (cross.iter().sum::<f64>() / n_eff).powi(2);
@@ -336,9 +350,8 @@ impl CovEstimator for FactorModelCov {
             let sigma_nalg = solver::to_nalgebra_matrix(&sample_cov);
             let svd = nalgebra::linalg::SVD::new(sigma_nalg, true, true);
             let u = svd.u.unwrap();
-            let cols: Vec<nalgebra::DVector<f64>> = (0..k)
-                .map(|c| u.column(c).into_owned())
-                .collect();
+            let cols: Vec<nalgebra::DVector<f64>> =
+                (0..k).map(|c| u.column(c).into_owned()).collect();
             let v_nalg = nalgebra::DMatrix::from_columns(&cols);
             solver::to_ndarray_matrix(&v_nalg)
         };
@@ -398,9 +411,9 @@ impl CovEstimator for NeweyWest {
             ));
         }
 
-        let lag = self.max_lag.unwrap_or_else(|| {
-            (4.0 * (t as f64 / 100.0).powf(2.0 / 9.0)).floor() as usize
-        });
+        let lag = self
+            .max_lag
+            .unwrap_or_else(|| (4.0 * (t as f64 / 100.0).powf(2.0 / 9.0)).floor() as usize);
         let lag = lag.min(t - 1);
 
         // Centre returns
@@ -449,11 +462,7 @@ fn means(col: ndarray::ArrayView1<'_, f64>, _min_obs: usize) -> f64 {
     finite.iter().sum::<f64>() / finite.len() as f64
 }
 
-fn pairwise_variance(
-    col: ndarray::ArrayView1<'_, f64>,
-    mean: f64,
-    min_obs: usize,
-) -> f64 {
+fn pairwise_variance(col: ndarray::ArrayView1<'_, f64>, mean: f64, min_obs: usize) -> f64 {
     let vals: Vec<f64> = col.iter().copied().filter(|v| v.is_finite()).collect();
     if vals.len() < min_obs {
         return f64::NAN;
@@ -510,10 +519,7 @@ mod tests {
     use rand_distr::{Distribution, Normal};
 
     /// [SYNTHETIC] Helper: generate correlated returns from known covariance.
-    fn generate_synthetic_returns(
-        n_obs: usize,
-        cov: &Array2<f64>,
-    ) -> Array2<f64> {
+    fn generate_synthetic_returns(n_obs: usize, cov: &Array2<f64>) -> Array2<f64> {
         let n = cov.nrows();
         let mut rng = StdRng::seed_from_u64(42);
         let normal = Normal::new(0.0, 1.0).unwrap();
@@ -616,9 +622,7 @@ mod tests {
                 returns[[row, col]] = normal.sample(&mut rng);
             }
         }
-        let est = LedoitWolf { min_obs: 2 }
-            .estimate(&returns)
-            .unwrap();
+        let est = LedoitWolf { min_obs: 2 }.estimate(&returns).unwrap();
 
         // All diagonals should be finite and positive
         for i in 0..n {
@@ -650,9 +654,7 @@ mod tests {
         }
 
         let sample = SampleCov::default().estimate(&returns).unwrap();
-        let ewma = EWMACov::from_half_life(20.0)
-            .estimate(&returns)
-            .unwrap();
+        let ewma = EWMACov::from_half_life(20.0).estimate(&returns).unwrap();
 
         // EWMA should report higher variance than sample cov (more weight on
         // recent high-vol period).
@@ -690,7 +692,9 @@ mod tests {
         }
 
         // Specific risk
-        let idio_vol: Vec<f64> = (0..n).map(|_| 0.1 * normal.sample(&mut rng).abs()).collect();
+        let idio_vol: Vec<f64> = (0..n)
+            .map(|_| 0.1 * normal.sample(&mut rng).abs())
+            .collect();
 
         // Generate returns
         let mut returns = Array2::<f64>::zeros((t, n));
@@ -738,8 +742,7 @@ mod tests {
         for col in 0..n {
             returns[[0, col]] = innovations[[0, col]];
             for row in 1..t {
-                returns[[row, col]] = innovations[[row, col]]
-                    + theta * innovations[[row - 1, col]];
+                returns[[row, col]] = innovations[[row, col]] + theta * innovations[[row - 1, col]];
             }
         }
 
@@ -765,10 +768,18 @@ mod tests {
         let returns = Array2::from_shape_vec(
             (4, 3),
             vec![
-                1.0, 2.0, f64::NAN,
-                2.0, 3.0, 1.0,
-                3.0, 4.0, 2.0,
-                4.0, 5.0, 3.0,
+                1.0,
+                2.0,
+                f64::NAN,
+                2.0,
+                3.0,
+                1.0,
+                3.0,
+                4.0,
+                2.0,
+                4.0,
+                5.0,
+                3.0,
             ],
         )
         .unwrap();

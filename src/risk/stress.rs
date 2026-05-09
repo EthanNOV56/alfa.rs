@@ -38,10 +38,7 @@ impl StressScenario {
         Self {
             name: "2008 GFC".into(),
             description: "Global Financial Crisis: equity -3σ, vol ×3, correlation → 1".into(),
-            factor_shocks: HashMap::from([
-                ("Beta".into(), -3.0),
-                ("Momentum".into(), -2.0),
-            ]),
+            factor_shocks: HashMap::from([("Beta".into(), -3.0), ("Momentum".into(), -2.0)]),
             volatility_multiplier: Some(3.0),
             correlation_multiplier: Some(2.0),
         }
@@ -241,7 +238,12 @@ mod tests {
                 volatility_multiplier: None,
                 correlation_multiplier: None,
             },
-            &weights, &exposures, &factor_cov, &specific_vars, &factor_names, 1_000_000.0,
+            &weights,
+            &exposures,
+            &factor_cov,
+            &specific_vars,
+            &factor_names,
+            1_000_000.0,
         );
 
         // Vol ×2
@@ -253,7 +255,12 @@ mod tests {
                 volatility_multiplier: Some(2.0),
                 correlation_multiplier: None,
             },
-            &weights, &exposures, &factor_cov, &specific_vars, &factor_names, 1_000_000.0,
+            &weights,
+            &exposures,
+            &factor_cov,
+            &specific_vars,
+            &factor_names,
+            1_000_000.0,
         );
 
         assert!(stressed.loss_pct.abs() > base.loss_pct.abs());
@@ -265,15 +272,25 @@ mod tests {
         let k = 2;
         let n_assets = 3;
         let weights = Array1::from_vec(vec![1.0, 0.0, 0.0]);
-        let exposures = Array2::from_shape_vec((n_assets, k), vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0]).unwrap();
+        let exposures =
+            Array2::from_shape_vec((n_assets, k), vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0]).unwrap();
         let factor_cov = Array2::eye(k);
         let specific_vars = Array1::from_vec(vec![0.01, 0.01, 0.01]);
         let factor_names = vec!["Beta".into(), "Momentum".into()];
 
-        for scenario in [StressScenario::gfc_2008(), StressScenario::china_2015(), StressScenario::covid_2020()] {
+        for scenario in [
+            StressScenario::gfc_2008(),
+            StressScenario::china_2015(),
+            StressScenario::covid_2020(),
+        ] {
             let result = run_stress_test(
                 &scenario,
-                &weights, &exposures, &factor_cov, &specific_vars, &factor_names, 1_000_000.0,
+                &weights,
+                &exposures,
+                &factor_cov,
+                &specific_vars,
+                &factor_names,
+                1_000_000.0,
             );
             assert!(result.loss_pct.is_finite());
             assert!(!result.scenario_name.is_empty());

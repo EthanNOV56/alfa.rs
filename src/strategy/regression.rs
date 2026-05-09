@@ -1,7 +1,7 @@
 //! L2 RidgeCombine: supervised factor combination via ridge regression.
 
-use ndarray::{Array1, Array2};
 use crate::strategy::{Result, Strategy};
+use ndarray::{Array1, Array2};
 
 pub struct RidgeCombine {
     alpha: f64,
@@ -10,16 +10,15 @@ pub struct RidgeCombine {
 
 impl RidgeCombine {
     pub fn new(alpha: f64) -> Self {
-        Self { alpha, weights: None }
+        Self {
+            alpha,
+            weights: None,
+        }
     }
 }
 
 impl Strategy for RidgeCombine {
-    fn fit(
-        &mut self,
-        factors: &[Array2<f64>],
-        forward_returns: &Array2<f64>,
-    ) -> Result<()> {
+    fn fit(&mut self, factors: &[Array2<f64>], forward_returns: &Array2<f64>) -> Result<()> {
         crate::strategy::validate_fit_input(factors, forward_returns)?;
 
         let n_factors = factors.len();
@@ -46,11 +45,11 @@ impl Strategy for RidgeCombine {
 
         // Drop rows with NaN in X or y
         let mask: Vec<bool> = (0..n_samples)
-            .map(|i| {
-                x.row(i).iter().all(|v| v.is_finite()) && y[i].is_finite()
-            })
+            .map(|i| x.row(i).iter().all(|v| v.is_finite()) && y[i].is_finite())
             .collect();
-        let clean_idx: Vec<usize> = mask.iter().enumerate()
+        let clean_idx: Vec<usize> = mask
+            .iter()
+            .enumerate()
             .filter(|(_, ok)| **ok)
             .map(|(i, _)| i)
             .collect();

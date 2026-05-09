@@ -74,7 +74,13 @@ impl CostModel for LinearCost {
         _volumes: &Array1<f64>,
     ) -> Array1<f64> {
         let dw = target_weights - prev_weights;
-        dw.mapv(|x| if x > 0.0 { x * self.buy_rate } else { -x * self.sell_rate })
+        dw.mapv(|x| {
+            if x > 0.0 {
+                x * self.buy_rate
+            } else {
+                -x * self.sell_rate
+            }
+        })
     }
 
     fn compute_gradient(
@@ -214,8 +220,12 @@ impl CostModel for CompositeCost {
             sell_rate: self.sell_rate,
         }
         .compute_cost(target_weights, prev_weights, prices, volumes);
-        let impact = QuadraticImpact { eta: self.eta }
-            .compute_cost(target_weights, prev_weights, prices, volumes);
+        let impact = QuadraticImpact { eta: self.eta }.compute_cost(
+            target_weights,
+            prev_weights,
+            prices,
+            volumes,
+        );
         linear_cost + impact
     }
 
@@ -231,8 +241,12 @@ impl CostModel for CompositeCost {
             sell_rate: self.sell_rate,
         }
         .compute_gradient(target_weights, prev_weights, prices, volumes);
-        let impact_grad = QuadraticImpact { eta: self.eta }
-            .compute_gradient(target_weights, prev_weights, prices, volumes);
+        let impact_grad = QuadraticImpact { eta: self.eta }.compute_gradient(
+            target_weights,
+            prev_weights,
+            prices,
+            volumes,
+        );
         linear_grad + impact_grad
     }
 }

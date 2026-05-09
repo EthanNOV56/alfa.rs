@@ -4,8 +4,8 @@
 //! per-factor weights. IC is computed via `backtest::metrics::compute_ic_series`,
 //! which returns daily cross-sectional Pearson r values.
 
+use crate::strategy::{Result, Strategy, compute_factor_ic, zscore_rows};
 use ndarray::Array2;
-use crate::strategy::{compute_factor_ic, Result, Strategy, zscore_rows};
 
 // ═══════════════════════════════════════════════════════════════════
 //  ICWeighted
@@ -28,11 +28,7 @@ impl ICWeighted {
 }
 
 impl Strategy for ICWeighted {
-    fn fit(
-        &mut self,
-        factors: &[Array2<f64>],
-        forward_returns: &Array2<f64>,
-    ) -> Result<()> {
+    fn fit(&mut self, factors: &[Array2<f64>], forward_returns: &Array2<f64>) -> Result<()> {
         crate::strategy::validate_fit_input(factors, forward_returns)?;
         let n = factors.len();
 
@@ -44,8 +40,15 @@ impl Strategy for ICWeighted {
                 Some(w) => {
                     let start = _ic_series.len().saturating_sub(w);
                     let win: Vec<f64> = _ic_series.as_slice().unwrap()[start..]
-                        .iter().filter(|&&x| x.is_finite()).copied().collect();
-                    if win.is_empty() { ic_mean } else { win.iter().sum::<f64>() / win.len() as f64 }
+                        .iter()
+                        .filter(|&&x| x.is_finite())
+                        .copied()
+                        .collect();
+                    if win.is_empty() {
+                        ic_mean
+                    } else {
+                        win.iter().sum::<f64>() / win.len() as f64
+                    }
                 }
                 None => ic_mean,
             };
@@ -119,11 +122,7 @@ impl ICIRWeighted {
 }
 
 impl Strategy for ICIRWeighted {
-    fn fit(
-        &mut self,
-        factors: &[Array2<f64>],
-        forward_returns: &Array2<f64>,
-    ) -> Result<()> {
+    fn fit(&mut self, factors: &[Array2<f64>], forward_returns: &Array2<f64>) -> Result<()> {
         crate::strategy::validate_fit_input(factors, forward_returns)?;
         let n = factors.len();
 
@@ -134,12 +133,18 @@ impl Strategy for ICIRWeighted {
                 Some(w) => {
                     let start = _ic_series.len().saturating_sub(w);
                     let win: Vec<f64> = _ic_series.as_slice().unwrap()[start..]
-                        .iter().filter(|&&x| x.is_finite()).copied().collect();
+                        .iter()
+                        .filter(|&&x| x.is_finite())
+                        .copied()
+                        .collect();
                     if win.len() >= 2 {
                         let m = win.iter().sum::<f64>() / win.len() as f64;
-                        let v = win.iter().map(|&x| (x - m).powi(2)).sum::<f64>() / (win.len() - 1) as f64;
+                        let v = win.iter().map(|&x| (x - m).powi(2)).sum::<f64>()
+                            / (win.len() - 1) as f64;
                         if v > 1e-15 { m / v.sqrt() } else { 0.0 }
-                    } else { ic_ir }
+                    } else {
+                        ic_ir
+                    }
                 }
                 None => ic_ir,
             };
@@ -236,7 +241,7 @@ mod tests {
             [0.02, -0.02, 0.0],
             [0.03, -0.03, 0.0],
         ]);
-        let f_stable = &ret * 0.1;     // IC consistent
+        let f_stable = &ret * 0.1; // IC consistent
         let mut f_noisy = &ret * 0.1;
         f_noisy[[0, 0]] += 100.0; // inject huge outlier → IC noisy
         f_noisy[[3, 1]] -= 200.0;

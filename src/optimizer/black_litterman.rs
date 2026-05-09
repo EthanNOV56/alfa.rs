@@ -2,19 +2,15 @@
 
 use ndarray::{Array1, Array2};
 
-use super::solver;
 use super::BlackLittermanConfig;
+use super::solver;
 use super::{CostModel, Optimizer, OptimizerConstraints};
 
 pub struct BlackLitterman;
 
 impl BlackLitterman {
     /// Implied equilibrium returns: π = δ · Σ · w_eq.
-    pub fn implied_returns(
-        delta: f64,
-        cov: &Array2<f64>,
-        w_eq: &Array1<f64>,
-    ) -> Array1<f64> {
+    pub fn implied_returns(delta: f64, cov: &Array2<f64>, w_eq: &Array1<f64>) -> Array1<f64> {
         let sigma = solver::to_nalgebra_matrix(cov);
         let w = solver::to_nalgebra_vector(w_eq);
         let pi = delta * (&sigma * &w);
@@ -41,9 +37,9 @@ impl BlackLitterman {
             .inverse();
         let tau_sigma_inv = &sigma_inv / tau;
 
-        let p = solver::to_nalgebra_matrix(pick);  // (k × n)
-        let omega_inv_n = solver::to_nalgebra_matrix(omega_inv);  // (k × k)
-        let pt_omega_inv = p.transpose() * &omega_inv_n;  // (n × k)
+        let p = solver::to_nalgebra_matrix(pick); // (k × n)
+        let omega_inv_n = solver::to_nalgebra_matrix(omega_inv); // (k × k)
+        let pt_omega_inv = p.transpose() * &omega_inv_n; // (n × k)
         let posterior_precision = &tau_sigma_inv + &pt_omega_inv * &p;
 
         let pi_n = solver::to_nalgebra_vector(pi);
@@ -70,8 +66,13 @@ impl Optimizer for BlackLitterman {
     ) -> Result<Array1<f64>, String> {
         // When called as an Optimizer, delegate to MaxSharpe.
         // The BlackLitterman transformation should be applied upstream.
-        super::mvo::MaxSharpe::default()
-            .optimize_day(signal, covariance, prev_weights, constraints, cost_model)
+        super::mvo::MaxSharpe::default().optimize_day(
+            signal,
+            covariance,
+            prev_weights,
+            constraints,
+            cost_model,
+        )
     }
 }
 
@@ -113,10 +114,8 @@ mod tests {
         let views = Array1::<f64>::zeros(1);
         let omega_inv = Array2::<f64>::zeros((1, 1));
 
-        let posterior = BlackLitterman::posterior_returns(
-            &pi, 0.05, &cov, &pick, &views, &omega_inv,
-        )
-        .unwrap();
+        let posterior =
+            BlackLitterman::posterior_returns(&pi, 0.05, &cov, &pick, &views, &omega_inv).unwrap();
 
         // With no views, posterior should approximately equal prior
         for (a, b) in pi.iter().zip(posterior.iter()) {

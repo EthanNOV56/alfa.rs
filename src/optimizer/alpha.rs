@@ -105,13 +105,7 @@ impl AlphaMapping {
             return Array1::from_elem(signal.len(), 0.0);
         }
 
-        let mut result = signal.mapv(|x| {
-            if x.is_finite() {
-                (x - mean) / std
-            } else {
-                0.0
-            }
-        });
+        let mut result = signal.mapv(|x| if x.is_finite() { (x - mean) / std } else { 0.0 });
 
         if let Some(sigma) = winsorize_sigma {
             result.mapv_inplace(|x| x.clamp(-sigma, sigma));
@@ -262,8 +256,11 @@ mod tests {
         let a = mapping.apply(&s);
         // With n_groups=4, ranks range across [0, 1], ceil gives up to n_groups+1=5
         // unique scaled values (0, 1, 2, 3, 4 when multiplied by n_groups).
-        let unique: std::collections::BTreeSet<usize> =
-            a.iter().filter(|x| x.is_finite()).map(|x| (x * 4.0).round() as usize).collect();
+        let unique: std::collections::BTreeSet<usize> = a
+            .iter()
+            .filter(|x| x.is_finite())
+            .map(|x| (x * 4.0).round() as usize)
+            .collect();
         assert!(unique.len() <= 5);
         assert!(a.iter().all(|&x| x.is_nan() || (x >= 0.0 && x <= 1.0)));
     }

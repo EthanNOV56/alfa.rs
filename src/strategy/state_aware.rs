@@ -2,9 +2,9 @@
 //!
 //! Uses linfa-clustering for K-means market state identification.
 
+use crate::strategy::{Result, Strategy, zscore_rows};
 use ndarray::Array2;
 use rand::Rng;
-use crate::strategy::{Result, Strategy, zscore_rows};
 
 pub struct StateAware {
     n_states: usize,
@@ -25,11 +25,7 @@ impl StateAware {
 }
 
 impl Strategy for StateAware {
-    fn fit(
-        &mut self,
-        factors: &[Array2<f64>],
-        forward_returns: &Array2<f64>,
-    ) -> Result<()> {
+    fn fit(&mut self, factors: &[Array2<f64>], forward_returns: &Array2<f64>) -> Result<()> {
         crate::strategy::validate_fit_input(factors, forward_returns)?;
 
         let n_factors = factors.len();
@@ -126,9 +122,7 @@ impl Strategy for StateAware {
 
         for t in 0..n_days {
             let s = day_states[t];
-            let mut weights: Vec<f64> = (0..n_factors)
-                .map(|f| state_ic[[f, s]].max(0.0))
-                .collect();
+            let mut weights: Vec<f64> = (0..n_factors).map(|f| state_ic[[f, s]].max(0.0)).collect();
             let sum: f64 = weights.iter().sum();
             if sum < 1e-12 {
                 for w in &mut weights {
@@ -183,11 +177,7 @@ impl FactorComfortZone {
 }
 
 impl Strategy for FactorComfortZone {
-    fn fit(
-        &mut self,
-        factors: &[Array2<f64>],
-        forward_returns: &Array2<f64>,
-    ) -> Result<()> {
+    fn fit(&mut self, factors: &[Array2<f64>], forward_returns: &Array2<f64>) -> Result<()> {
         crate::strategy::validate_fit_input(factors, forward_returns)?;
 
         let n_factors = factors.len();
@@ -250,9 +240,7 @@ impl Strategy for FactorComfortZone {
         // Per-factor activation thresholds
         let mut thresholds = Vec::with_capacity(n_factors);
         for f in 0..n_factors {
-            let mut ics: Vec<f64> = (0..self.n_states)
-                .map(|s| state_ic[[f, s]])
-                .collect();
+            let mut ics: Vec<f64> = (0..self.n_states).map(|s| state_ic[[f, s]]).collect();
             ics.sort_by(|a, b| a.total_cmp(b));
             let idx = ((self.activity_pctile * (ics.len() - 1) as f64).floor() as usize)
                 .min(ics.len() - 1);
@@ -267,9 +255,18 @@ impl Strategy for FactorComfortZone {
 
     fn combine(&self, factors: &[Array2<f64>]) -> Result<Array2<f64>> {
         crate::strategy::validate_combine_input(factors)?;
-        let centroids = self.centroids.as_ref().ok_or("FactorComfortZone not fitted")?;
-        let state_ic = self.state_ic.as_ref().ok_or("FactorComfortZone not fitted")?;
-        let thresholds = self.thresholds.as_ref().ok_or("FactorComfortZone not fitted")?;
+        let centroids = self
+            .centroids
+            .as_ref()
+            .ok_or("FactorComfortZone not fitted")?;
+        let state_ic = self
+            .state_ic
+            .as_ref()
+            .ok_or("FactorComfortZone not fitted")?;
+        let thresholds = self
+            .thresholds
+            .as_ref()
+            .ok_or("FactorComfortZone not fitted")?;
 
         let n_factors = factors.len();
         let (n_days, n_assets) = factors[0].dim();
@@ -345,8 +342,12 @@ fn build_market_features(returns: &Array2<f64>) -> Array2<f64> {
         let prev = t - 1;
 
         // 1. Market return
-        let fin: Vec<f64> = returns.row(prev).iter()
-            .filter(|&&x| x.is_finite()).copied().collect();
+        let fin: Vec<f64> = returns
+            .row(prev)
+            .iter()
+            .filter(|&&x| x.is_finite())
+            .copied()
+            .collect();
         if !fin.is_empty() {
             features[[t, 0]] = fin.iter().sum::<f64>() / fin.len() as f64;
         }
@@ -354,8 +355,8 @@ fn build_market_features(returns: &Array2<f64>) -> Array2<f64> {
         // 2. CS dispersion
         if fin.len() >= 2 {
             let mean = features[[t, 0]];
-            let var: f64 = fin.iter().map(|&x| (x - mean).powi(2)).sum::<f64>()
-                / (fin.len() - 1) as f64;
+            let var: f64 =
+                fin.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / (fin.len() - 1) as f64;
             features[[t, 1]] = var.sqrt();
         }
 
@@ -363,16 +364,23 @@ fn build_market_features(returns: &Array2<f64>) -> Array2<f64> {
         let start = t.saturating_sub(vol_window);
         let hist: Vec<f64> = (start..t)
             .filter_map(|d| {
-                let row_fin: Vec<f64> = returns.row(d).iter()
-                    .filter(|&&x| x.is_finite()).copied().collect();
-                if row_fin.is_empty() { None }
-                else { Some(row_fin.iter().sum::<f64>() / row_fin.len() as f64) }
+                let row_fin: Vec<f64> = returns
+                    .row(d)
+                    .iter()
+                    .filter(|&&x| x.is_finite())
+                    .copied()
+                    .collect();
+                if row_fin.is_empty() {
+                    None
+                } else {
+                    Some(row_fin.iter().sum::<f64>() / row_fin.len() as f64)
+                }
             })
             .collect();
         if hist.len() >= 2 {
             let h_mean = hist.iter().sum::<f64>() / hist.len() as f64;
-            let h_var: f64 = hist.iter().map(|&x| (x - h_mean).powi(2)).sum::<f64>()
-                / (hist.len() - 1) as f64;
+            let h_var: f64 =
+                hist.iter().map(|&x| (x - h_mean).powi(2)).sum::<f64>() / (hist.len() - 1) as f64;
             features[[t, 2]] = h_var.sqrt();
         }
 
@@ -406,8 +414,12 @@ fn build_market_features(returns: &Array2<f64>) -> Array2<f64> {
     let (n, d) = features.dim();
     let mut normed = Array2::zeros((n, d));
     for j in 0..d {
-        let col_fin: Vec<f64> = features.column(j).iter()
-            .filter(|&&x| x.is_finite()).copied().collect();
+        let col_fin: Vec<f64> = features
+            .column(j)
+            .iter()
+            .filter(|&&x| x.is_finite())
+            .copied()
+            .collect();
         if col_fin.len() >= 2 {
             let mean = col_fin.iter().sum::<f64>() / col_fin.len() as f64;
             let var: f64 = col_fin.iter().map(|&x| (x - mean).powi(2)).sum::<f64>()
@@ -437,15 +449,19 @@ fn build_market_features_from_factors(factors: &[Array2<f64>]) -> Result<Array2<
 
     for t in 1..n_days {
         let prev = t - 1;
-        let fin: Vec<f64> = f0.row(prev).iter()
-            .filter(|&&x| x.is_finite()).copied().collect();
+        let fin: Vec<f64> = f0
+            .row(prev)
+            .iter()
+            .filter(|&&x| x.is_finite())
+            .copied()
+            .collect();
         if !fin.is_empty() {
             features[[t, 0]] = fin.iter().sum::<f64>() / fin.len() as f64;
         }
         if fin.len() >= 2 {
             let mean = features[[t, 0]];
-            let var: f64 = fin.iter().map(|&x| (x - mean).powi(2)).sum::<f64>()
-                / (fin.len() - 1) as f64;
+            let var: f64 =
+                fin.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / (fin.len() - 1) as f64;
             features[[t, 1]] = var.sqrt();
         }
     }
@@ -453,9 +469,15 @@ fn build_market_features_from_factors(factors: &[Array2<f64>]) -> Result<Array2<
 }
 
 fn median_of_row(mat: &Array2<f64>, row: usize) -> f64 {
-    let mut vals: Vec<f64> = mat.row(row).iter()
-        .filter(|&&x| x.is_finite()).copied().collect();
-    if vals.is_empty() { return 0.0; }
+    let mut vals: Vec<f64> = mat
+        .row(row)
+        .iter()
+        .filter(|&&x| x.is_finite())
+        .copied()
+        .collect();
+    if vals.is_empty() {
+        return 0.0;
+    }
     vals.sort_by(|a, b| a.total_cmp(b));
     let mid = vals.len() / 2;
     if vals.len() % 2 == 0 {
@@ -466,9 +488,7 @@ fn median_of_row(mat: &Array2<f64>, row: usize) -> f64 {
 }
 
 fn euclidean_dist_sq(a: &ndarray::ArrayView1<f64>, b: &ndarray::ArrayView1<f64>) -> f64 {
-    a.iter().zip(b.iter())
-        .map(|(&x, &y)| (x - y).powi(2))
-        .sum()
+    a.iter().zip(b.iter()).map(|(&x, &y)| (x - y).powi(2)).sum()
 }
 
 fn assign_nearest(row: &ndarray::ArrayView1<f64>, centroids: &Array2<f64>) -> usize {
@@ -499,7 +519,9 @@ fn kmeans_cluster(data: &Array2<f64>, k: usize) -> Result<(Vec<usize>, Array2<f6
     let mask: Vec<bool> = (0..data.nrows())
         .map(|i| data.row(i).iter().all(|v| v.is_finite()))
         .collect();
-    let clean_idx: Vec<usize> = mask.iter().enumerate()
+    let clean_idx: Vec<usize> = mask
+        .iter()
+        .enumerate()
         .filter(|(_, ok)| **ok)
         .map(|(i, _)| i)
         .collect();
@@ -507,7 +529,9 @@ fn kmeans_cluster(data: &Array2<f64>, k: usize) -> Result<(Vec<usize>, Array2<f6
     if clean_idx.len() < k {
         return Err(format!(
             "only {} clean feature rows, need at least {} for {} states",
-            clean_idx.len(), k, k
+            clean_idx.len(),
+            k,
+            k
         ));
     }
 
@@ -528,8 +552,7 @@ fn kmeans_cluster(data: &Array2<f64>, k: usize) -> Result<(Vec<usize>, Array2<f6
 
     for _ in 0..n_restarts {
         let centroids = kmeans_plus_plus(&x, k, &mut rng);
-        let (labels, final_centroids, inertia) =
-            lloyd(&x, &centroids, max_iter, tol);
+        let (labels, final_centroids, inertia) = lloyd(&x, &centroids, max_iter, tol);
         if inertia < best_inertia {
             best_inertia = inertia;
             best_labels = labels;
@@ -581,8 +604,7 @@ fn lloyd(
     init_centroids: &Array2<f64>,
     max_iter: usize,
     _tol: f64,
-) -> (Vec<usize>, Array2<f64>, f64)
-{
+) -> (Vec<usize>, Array2<f64>, f64) {
     let (n, d) = x.dim();
     let k = init_centroids.nrows();
     let mut centroids = init_centroids.clone();
@@ -750,7 +772,8 @@ mod tests {
     fn syn_comfort_zone_fallback() {
         // More data to get valid IC values
         let n = 30;
-        let ret = Array2::from_shape_vec((n, 2), (0..60).map(|i| (i as f64) * 0.001).collect()).unwrap();
+        let ret =
+            Array2::from_shape_vec((n, 2), (0..60).map(|i| (i as f64) * 0.001).collect()).unwrap();
         let f = &ret * 0.5;
         let mut c = FactorComfortZone::new(2, 0.9);
         c.fit(&[f.clone()], &ret).unwrap();
@@ -777,7 +800,8 @@ mod tests {
     #[test]
     fn syn_state_aware_single_factor() {
         let n = 40;
-        let ret = Array2::from_shape_vec((n, 3), (0..n*3).map(|i| (i as f64) * 0.001).collect()).unwrap();
+        let ret = Array2::from_shape_vec((n, 3), (0..n * 3).map(|i| (i as f64) * 0.001).collect())
+            .unwrap();
         let f = &ret * 0.5;
         let mut s = StateAware::new(2, 252);
         s.fit(&[f.clone()], &ret).unwrap();
@@ -790,7 +814,8 @@ mod tests {
     fn syn_state_aware_large_lookback() {
         // ic_lookback larger than n_days → use all days (no truncation)
         let n = 30;
-        let ret = Array2::from_shape_vec((n, 2), (0..60).map(|i| (i as f64) * 0.001).collect()).unwrap();
+        let ret =
+            Array2::from_shape_vec((n, 2), (0..60).map(|i| (i as f64) * 0.001).collect()).unwrap();
         let f = &ret * 0.5;
         let mut s = StateAware::new(2, 500); // lookback > n_days
         s.fit(&[f.clone()], &ret).unwrap();

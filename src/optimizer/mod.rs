@@ -24,13 +24,13 @@
 
 pub mod alpha;
 pub mod attribution;
+pub mod black_litterman;
 pub mod constraints;
 pub mod cost_model;
 pub mod covariance;
 pub mod equal;
 pub mod mvo;
 pub mod risk_parity;
-pub mod black_litterman;
 pub mod solver;
 
 use ndarray::{Array1, Array2};
@@ -200,11 +200,8 @@ pub fn optimize(
     }
 
     let mut weights = Array2::<f64>::zeros((n_days, n_assets));
-    let cost_model: Option<Box<dyn CostModel>> = config
-        .cost_model
-        .as_ref()
-        .map(|c| c.build())
-        .transpose()?;
+    let cost_model: Option<Box<dyn CostModel>> =
+        config.cost_model.as_ref().map(|c| c.build()).transpose()?;
 
     // Sequential loop — each day depends on the previous day's weights.
     // Per-day optimization is self-contained; the rolling covariance
@@ -229,7 +226,9 @@ pub fn optimize(
             Err(e) => return Err(e),
         };
 
-        let alpha = config.alpha_pipeline.transform(&signals.row(day).to_owned());
+        let alpha = config
+            .alpha_pipeline
+            .transform(&signals.row(day).to_owned());
 
         let prev = if day > 0 {
             Some(weights.row(day - 1).to_owned())
@@ -276,7 +275,9 @@ pub fn optimize_from_config(
 // to avoid circular references. The actual `use` statements are at the end
 // to allow all types to be defined first.
 pub use alpha::{AlphaMapping, AlphaPipeline};
-pub use constraints::{check_feasibility, GroupConstraint, FactorExposureConstraint, OptimizerConstraints};
+pub use constraints::{
+    FactorExposureConstraint, GroupConstraint, OptimizerConstraints, check_feasibility,
+};
 pub use cost_model::{CostModel, CostModelConfig, LinearCost, NoCost, QuadraticImpact};
 pub use covariance::{CovEstimator, CovEstimatorType};
 pub use equal::{EqualWeight, SignalProportional, VolatilityInverse};
@@ -365,7 +366,10 @@ mod tests {
 
         assert_eq!(restored.cov_lookback, config.cov_lookback);
         assert_eq!(restored.constraints.long_only, config.constraints.long_only);
-        assert_eq!(restored.constraints.max_position, config.constraints.max_position);
+        assert_eq!(
+            restored.constraints.max_position,
+            config.constraints.max_position
+        );
         assert_eq!(restored.turnover_penalty, config.turnover_penalty);
     }
 }

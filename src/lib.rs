@@ -9,10 +9,9 @@ pub mod expr;
 pub mod gp;
 pub mod lab;
 pub mod persistence;
-pub mod strategy;
 pub mod risk;
+pub mod strategy;
 
-#[cfg(feature = "optimizer")]
 pub mod optimizer;
 
 use ndarray::{Array1, Array2};

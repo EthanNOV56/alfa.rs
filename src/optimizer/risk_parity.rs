@@ -95,8 +95,8 @@ impl Optimizer for MaxDiversification {
 
             // Gradient: ∂DR/∂w_i = σ_i / port_vol - DR · (Σw)_i / port_vol²
             let dr = vol_sum / port_vol;
-            let grad_w = &vols / port_vol
-                - &to_ndarray_vector(&sigma_w) * (dr / (port_vol * port_vol));
+            let grad_w =
+                &vols / port_vol - &to_ndarray_vector(&sigma_w) * (dr / (port_vol * port_vol));
 
             w = &w + lr * &grad_w;
 
@@ -138,13 +138,7 @@ mod tests {
             ..Default::default()
         };
         let w = opt
-            .optimize_day(
-                &Array1::zeros(3),
-                &cov,
-                None,
-                &constraints,
-                None,
-            )
+            .optimize_day(&Array1::zeros(3), &cov, None, &constraints, None)
             .unwrap();
         assert!(w[0] > w[1] && w[1] > w[2]);
         assert!((w.sum() - 1.0).abs() < 1e-10);
@@ -165,13 +159,7 @@ mod tests {
             ..Default::default()
         };
         let w = opt
-            .optimize_day(
-                &Array1::zeros(3),
-                &cov,
-                None,
-                &constraints,
-                None,
-            )
+            .optimize_day(&Array1::zeros(3), &cov, None, &constraints, None)
             .unwrap();
         assert!(w.iter().all(|&x| x >= -1e-12));
         assert!((w.sum() - 1.0).abs() < 1e-10);

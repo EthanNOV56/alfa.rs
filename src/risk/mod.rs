@@ -135,8 +135,9 @@ pub trait RiskModel: Send + Sync {
         }
 
         let n_windows = (n_days - window_size) / step + 1;
-        let windows: Vec<(usize, usize)> =
-            (0..n_windows).map(|w| (w * step, w * step + window_size)).collect();
+        let windows: Vec<(usize, usize)> = (0..n_windows)
+            .map(|w| (w * step, w * step + window_size))
+            .collect();
 
         let results: Result<Vec<RiskReport>, RiskError> = windows
             .into_par_iter()

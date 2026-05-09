@@ -332,9 +332,9 @@ pub fn solve_mv_alm(
     let alpha_n = to_nalgebra_vector(alpha);
     let prev_w = prev_weights.map(|w| to_nalgebra_vector(w));
 
-    let mut w = prev_w.clone().unwrap_or_else(|| {
-        nalgebra::DVector::from_element(n, 1.0 / n as f64)
-    });
+    let mut w = prev_w
+        .clone()
+        .unwrap_or_else(|| nalgebra::DVector::from_element(n, 1.0 / n as f64));
 
     // Feasibility: max_position must accommodate sum-to-1 with at most n assets.
     let ub_global = if let Some(mp) = max_position {
@@ -348,7 +348,11 @@ pub fn solve_mv_alm(
     } else {
         f64::INFINITY
     };
-    let lb = if long_only { 0.0_f64 } else { f64::NEG_INFINITY };
+    let lb = if long_only {
+        0.0_f64
+    } else {
+        f64::NEG_INFINITY
+    };
 
     let mut rho = 10.0_f64;
     let rho_max = 1e6_f64;
@@ -373,7 +377,9 @@ pub fn solve_mv_alm(
             // Penalty: (λ_f/2) * max(0, |w·β - target| - tolerance)²
             let lambda_f = 100.0_f64; // exposure penalty coefficient
             for fc in factor_exposure_constraints {
-                let exposure: f64 = fc.exposures.iter()
+                let exposure: f64 = fc
+                    .exposures
+                    .iter()
                     .zip(w.iter())
                     .map(|(&beta_i, &w_i)| beta_i * w_i)
                     .sum();
@@ -483,11 +489,8 @@ pub fn solve_mv_alm(
     if let Some(max_k) = max_assets {
         let mut indexed: Vec<(usize, f64)> = w.iter().copied().enumerate().collect();
         indexed.sort_unstable_by(|a, b| b.1.abs().partial_cmp(&a.1.abs()).unwrap());
-        let keep: std::collections::HashSet<usize> = indexed
-            .iter()
-            .take(max_k)
-            .map(|(i, _)| *i)
-            .collect();
+        let keep: std::collections::HashSet<usize> =
+            indexed.iter().take(max_k).map(|(i, _)| *i).collect();
         for (i, val) in w.iter_mut().enumerate() {
             if !keep.contains(&i) {
                 *val = 0.0;
@@ -609,9 +612,7 @@ mod tests {
         let w_nalg = to_nalgebra_vector(&w);
         let sigma_w = &sigma * &w_nalg;
         let portfolio_var = w_nalg.dot(&sigma_w);
-        let rc: Vec<f64> = (0..3)
-            .map(|i| w[i] * sigma_w[i] / portfolio_var)
-            .collect();
+        let rc: Vec<f64> = (0..3).map(|i| w[i] * sigma_w[i] / portfolio_var).collect();
         // RC of highest-weight asset (lowest vol) should not be too extreme
         // For 3 assets with vols [0.1, 0.2, 0.3], equal-weight would give
         // RC ≈ [0.07, 0.27, 0.66]. Optimised should be closer to equal.
@@ -624,8 +625,22 @@ mod tests {
     fn test_alm_long_only() {
         let cov = Array2::from_diag(&Array1::from_vec(vec![0.04, 0.09, 0.16]));
         let alpha = Array1::from_vec(vec![0.1, 0.2, 0.05]);
-        let w = solve_mv_alm(&cov, &alpha, 3.0, true, true, false, None, None, None, &[], &[], None, None)
-            .unwrap();
+        let w = solve_mv_alm(
+            &cov,
+            &alpha,
+            3.0,
+            true,
+            true,
+            false,
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
         assert!(w.iter().all(|&x| x >= -1e-10));
         assert!((w.sum() - 1.0).abs() < 1e-8);
     }
@@ -635,8 +650,22 @@ mod tests {
     fn test_alm_market_neutral() {
         let cov = Array2::from_diag(&Array1::from_vec(vec![0.04, 0.09, 0.16]));
         let alpha = Array1::from_vec(vec![0.1, -0.2, 0.05]);
-        let w = solve_mv_alm(&cov, &alpha, 3.0, false, true, true, None, None, None, &[], &[], None, None)
-            .unwrap();
+        let w = solve_mv_alm(
+            &cov,
+            &alpha,
+            3.0,
+            false,
+            true,
+            true,
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
         assert!(w.sum().abs() < 1e-4);
     }
 
@@ -647,8 +676,19 @@ mod tests {
         let cov = Array2::from_diag(&Array1::from_vec(vec![0.01, 0.04, 0.09]));
         let alpha = Array1::from_vec(vec![0.3, 0.1, 0.05]);
         let w = solve_mv_alm(
-            &cov, &alpha, 3.0, true, true, false,
-            Some(0.5), None, None, &[], &[], None, None,
+            &cov,
+            &alpha,
+            3.0,
+            true,
+            true,
+            false,
+            Some(0.5),
+            None,
+            None,
+            &[],
+            &[],
+            None,
+            None,
         )
         .unwrap();
         assert!(w.iter().all(|&x| x >= -1e-10));
@@ -662,8 +702,19 @@ mod tests {
         let cov = Array2::from_diag(&Array1::from_vec(vec![0.01, 0.04, 0.09, 0.16]));
         let alpha = Array1::from_vec(vec![0.2, 0.1, 0.05, 0.01]);
         let w = solve_mv_alm(
-            &cov, &alpha, 3.0, true, true, false,
-            None, None, Some(2), &[], &[], None, None,
+            &cov,
+            &alpha,
+            3.0,
+            true,
+            true,
+            false,
+            None,
+            None,
+            Some(2),
+            &[],
+            &[],
+            None,
+            None,
         )
         .unwrap();
         let nonzero = w.iter().filter(|&&x| x.abs() > 1e-8).count();
@@ -683,8 +734,19 @@ mod tests {
             max_weight: Some(0.3),
         };
         let w = solve_mv_alm(
-            &cov, &alpha, 3.0, true, true, false,
-            None, None, None, &[gc], &[], None, None,
+            &cov,
+            &alpha,
+            3.0,
+            true,
+            true,
+            false,
+            None,
+            None,
+            None,
+            &[gc],
+            &[],
+            None,
+            None,
         )
         .unwrap();
         let sector_sum = w[0] + w[1];
@@ -700,8 +762,19 @@ mod tests {
         // max_position=0.30 with n=3 is infeasible (3*0.30=0.90<1.0)
         // Should auto-relax to 1/3 ≈ 0.333
         let w = solve_mv_alm(
-            &cov, &alpha, 3.0, true, true, false,
-            Some(0.30), None, None, &[], &[], None, None,
+            &cov,
+            &alpha,
+            3.0,
+            true,
+            true,
+            false,
+            Some(0.30),
+            None,
+            None,
+            &[],
+            &[],
+            None,
+            None,
         )
         .unwrap();
         assert!((w.sum() - 1.0).abs() < 1e-8);
@@ -722,14 +795,29 @@ mod tests {
             tolerance: 0.05, // budget: up to ±5% deviation allowed
         };
         let w = solve_mv_alm(
-            &cov, &alpha, 3.0, true, true, false,
-            None, None, None, &[], &[fc], None, None,
+            &cov,
+            &alpha,
+            3.0,
+            true,
+            true,
+            false,
+            None,
+            None,
+            None,
+            &[],
+            &[fc],
+            None,
+            None,
         )
         .unwrap();
         // Exposure = w[0] (since beta=[1,0,0])
         // With tolerance=0.05, exposure should be ≤ some reasonable value
         // (without penalty it would be ~0.5)
-        assert!(w[0] < 0.4, "exposure {} should be limited by budget penalty", w[0]);
+        assert!(
+            w[0] < 0.4,
+            "exposure {} should be limited by budget penalty",
+            w[0]
+        );
         assert!((w.sum() - 1.0).abs() < 1e-8);
     }
 }

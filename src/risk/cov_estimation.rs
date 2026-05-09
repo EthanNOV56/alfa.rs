@@ -401,11 +401,7 @@ fn single_factor_target(s: &Array2<f64>) -> Array2<f64> {
 }
 
 /// Estimate Ledoit-Wolf shrinkage intensity δ for Identity target.
-fn estimate_delta_identity(
-    returns: &Array2<f64>,
-    s: &Array2<f64>,
-    mu: f64,
-) -> f64 {
+fn estimate_delta_identity(returns: &Array2<f64>, s: &Array2<f64>, mu: f64) -> f64 {
     let (t, k) = returns.dim();
     let demeaned = demean_columns(returns);
     let target = scaled_identity(k, mu);
@@ -444,11 +440,7 @@ fn estimate_delta_identity(
 }
 
 /// Estimate Ledoit-Wolf shrinkage intensity δ for ConstantCorrelation target.
-fn estimate_delta_cc(
-    returns: &Array2<f64>,
-    s: &Array2<f64>,
-    target: &Array2<f64>,
-) -> f64 {
+fn estimate_delta_cc(returns: &Array2<f64>, s: &Array2<f64>, target: &Array2<f64>) -> f64 {
     // Reuse the same π estimator (asymptotic variance of S)
     let (t, k) = returns.dim();
     let demeaned = demean_columns(returns);
@@ -513,13 +505,8 @@ mod tests {
     #[test]
     fn sample_cov_known_output() {
         // Synthetic: 2 factors, 4 obs
-        let r = Array2::from_shape_vec((4, 2), vec![
-            1.0, 2.0,
-            3.0, 4.0,
-            5.0, 6.0,
-            7.0, 8.0,
-        ])
-        .unwrap();
+        let r =
+            Array2::from_shape_vec((4, 2), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]).unwrap();
         let cov = sample_covariance(&r);
         // After de-meaning: each col gets mean subtracted, cov = (XᵀX)/(n-1)
         // col0 demeaned: [-3, -1, 1, 3], col1: [-3, -1, 1, 3]
@@ -736,7 +723,10 @@ mod tests {
         let vals: Vec<f64> = (0..t * k).map(|_| rng.r#gen::<f64>()).collect();
         let r = Array2::from_shape_vec((t, k), vals).unwrap();
 
-        for target in [LedoitWolfTarget::Identity, LedoitWolfTarget::ConstantCorrelation] {
+        for target in [
+            LedoitWolfTarget::Identity,
+            LedoitWolfTarget::ConstantCorrelation,
+        ] {
             let lw = LedoitWolfEstimator { target };
             let cov = lw.estimate(&r).unwrap();
             assert_psd(&cov, &format!("LW-{:?}", target));

@@ -20,7 +20,7 @@ pub mod regression;
 pub mod ridge;
 pub mod state_aware;
 
-use ndarray::{Array2};
+use ndarray::Array2;
 use serde::{Deserialize, Serialize};
 
 /// Unified error type matching the rest of the codebase.
@@ -44,11 +44,7 @@ pub trait Strategy: Send + Sync {
     /// * `factors` — slice of factor matrices, each (n_days × n_assets).
     /// * `forward_returns` — forward returns (n_days × n_assets), where
     ///   `returns[t][a]` is the return from t to t+1 for asset a.
-    fn fit(
-        &mut self,
-        factors: &[Array2<f64>],
-        forward_returns: &Array2<f64>,
-    ) -> Result<()>;
+    fn fit(&mut self, factors: &[Array2<f64>], forward_returns: &Array2<f64>) -> Result<()>;
 
     /// Combine factors into a signal matrix (n_days × n_assets).
     ///
@@ -204,7 +200,8 @@ pub(crate) fn zscore_rows(mat: &Array2<f64>) -> Array2<f64> {
             continue;
         }
         let mean = finite.iter().sum::<f64>() / finite.len() as f64;
-        let var = finite.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / (finite.len() - 1) as f64;
+        let var =
+            finite.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / (finite.len() - 1) as f64;
         let std = var.sqrt();
         if std < 1e-15 {
             out.row_mut(t).fill(0.0);
@@ -212,7 +209,11 @@ pub(crate) fn zscore_rows(mat: &Array2<f64>) -> Array2<f64> {
         }
         for a in 0..n_cols {
             let v = mat[[t, a]];
-            out[[t, a]] = if v.is_finite() { (v - mean) / std } else { f64::NAN };
+            out[[t, a]] = if v.is_finite() {
+                (v - mean) / std
+            } else {
+                f64::NAN
+            };
         }
     }
     out
@@ -230,7 +231,8 @@ pub(crate) fn zscore_cols(mat: &Array2<f64>) -> Array2<f64> {
             continue;
         }
         let mean = finite.iter().sum::<f64>() / finite.len() as f64;
-        let var = finite.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / (finite.len() - 1) as f64;
+        let var =
+            finite.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / (finite.len() - 1) as f64;
         let std = var.sqrt();
         if std < 1e-15 {
             out.column_mut(a).fill(0.0);
@@ -238,7 +240,11 @@ pub(crate) fn zscore_cols(mat: &Array2<f64>) -> Array2<f64> {
         }
         for t in 0..n_rows {
             let v = mat[[t, a]];
-            out[[t, a]] = if v.is_finite() { (v - mean) / std } else { f64::NAN };
+            out[[t, a]] = if v.is_finite() {
+                (v - mean) / std
+            } else {
+                f64::NAN
+            };
         }
     }
     out
@@ -301,7 +307,9 @@ pub(crate) fn validate_fit_input(
         if f.dim() != shape {
             return Err(format!(
                 "factor shape mismatch: factor[0]={:?}, factor[{}]={:?}",
-                shape, i, f.dim()
+                shape,
+                i,
+                f.dim()
             ));
         }
     }
@@ -328,7 +336,9 @@ pub(crate) fn validate_combine_input(factors: &[Array2<f64>]) -> Result<()> {
         if f.dim() != shape {
             return Err(format!(
                 "factor shape mismatch: factor[0]={:?}, factor[{}]={:?}",
-                shape, i, f.dim()
+                shape,
+                i,
+                f.dim()
             ));
         }
     }

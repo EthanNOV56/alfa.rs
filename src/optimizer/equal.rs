@@ -169,9 +169,7 @@ mod tests {
         let signal = Array1::from_vec(vec![0.5, 0.3, 0.2]);
         let cov = Array2::eye(3);
         let c = OptimizerConstraints::default();
-        let w = opt
-            .optimize_day(&signal, &cov, None, &c, None)
-            .unwrap();
+        let w = opt.optimize_day(&signal, &cov, None, &c, None).unwrap();
         assert!(((w.sum()) - (1.0)).abs() < 1e-10);
         assert!(w[0] > 0.9);
     }
@@ -183,9 +181,7 @@ mod tests {
         let signal = Array1::from_vec(vec![0.6, 0.4, -0.1]);
         let cov = Array2::eye(3);
         let c = OptimizerConstraints::default();
-        let w = opt
-            .optimize_day(&signal, &cov, None, &c, None)
-            .unwrap();
+        let w = opt.optimize_day(&signal, &cov, None, &c, None).unwrap();
         assert!(((w.sum()) - (1.0)).abs() < 1e-10);
         assert!(w[2] < 1e-10);
         assert!(w[0] > w[1]);
@@ -198,9 +194,7 @@ mod tests {
         let signal = Array1::from_vec(vec![0.0, 0.0, 0.0]);
         let cov = Array2::from_diag(&Array1::from_vec(vec![0.01, 0.04, 0.09]));
         let c = OptimizerConstraints::default();
-        let w = opt
-            .optimize_day(&signal, &cov, None, &c, None)
-            .unwrap();
+        let w = opt.optimize_day(&signal, &cov, None, &c, None).unwrap();
         assert!(((w.sum()) - (1.0)).abs() < 1e-10);
         // Asset 0 has lowest vol (0.1), should get highest weight
         assert!(w[0] > w[1]);

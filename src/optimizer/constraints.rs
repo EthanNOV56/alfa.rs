@@ -136,10 +136,16 @@ impl std::fmt::Display for FeasibilityError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::LongOnlyMarketNeutralConflict => {
-                write!(f, "long_only=true + market_neutral=true: only solution is w=0")
+                write!(
+                    f,
+                    "long_only=true + market_neutral=true: only solution is w=0"
+                )
             }
             Self::MaxAssetsTooSmall => {
-                write!(f, "max_assets < 2 combined with market_neutral=true is infeasible")
+                write!(
+                    f,
+                    "max_assets < 2 combined with market_neutral=true is infeasible"
+                )
             }
             Self::GroupConstraintOverflow => {
                 write!(f, "sum of group min_weights exceeds 1.0")
@@ -210,11 +216,14 @@ pub fn check_feasibility(constraints: &OptimizerConstraints) -> Result<(), Feasi
 // ── Constraint application helpers ──────────────────────────────────────────
 
 /// Clamp weights to [lower, upper] bounds.
-pub(crate) fn apply_bounds(
-    weights: &mut Array1<f64>,
-    constraints: &OptimizerConstraints,
-) {
-    let lb = constraints.min_position.unwrap_or(if constraints.long_only { 0.0 } else { f64::NEG_INFINITY });
+pub(crate) fn apply_bounds(weights: &mut Array1<f64>, constraints: &OptimizerConstraints) {
+    let lb = constraints
+        .min_position
+        .unwrap_or(if constraints.long_only {
+            0.0
+        } else {
+            f64::NEG_INFINITY
+        });
     let ub = constraints.max_position.unwrap_or(f64::INFINITY);
     for w in weights.iter_mut() {
         *w = w.clamp(lb, ub);

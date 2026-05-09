@@ -246,22 +246,25 @@ mod tests {
         // active = 0.024
         let active = attr.total_active_return;
         let expected_active = 0.084 - 0.06;
-        assert!((active - expected_active).abs() < 1e-12,
-            "Active return should be {:.6}, got {:.6}", expected_active, active);
+        assert!(
+            (active - expected_active).abs() < 1e-12,
+            "Active return should be {:.6}, got {:.6}",
+            expected_active,
+            active
+        );
 
         // Allocation effect should be positive (overweighted winning sector)
-        assert!(attr.allocation_effect > 0.0,
+        assert!(
+            attr.allocation_effect > 0.0,
             "Allocation effect should be positive when overweighting winning sector, got {:.6}",
-            attr.allocation_effect);
+            attr.allocation_effect
+        );
     }
 
     #[test]
     fn brinson_equal_weights_zero_attribution() {
         // Synthetic: when portfolio = benchmark, all effects should be zero.
-        let attributor = BrinsonAttributor::new(vec![
-            ("a".into(), vec![0]),
-            ("b".into(), vec![1]),
-        ]);
+        let attributor = BrinsonAttributor::new(vec![("a".into(), vec![0]), ("b".into(), vec![1])]);
 
         let w = Array1::from_vec(vec![0.5, 0.5]);
         let ret = Array1::from_vec(vec![0.05, 0.03]);
@@ -292,9 +295,12 @@ mod tests {
         let active = port_ret - bench_ret;
 
         let sum_effects = attr.allocation_effect + attr.selection_effect + attr.interaction_effect;
-        assert!((sum_effects - active).abs() < 1e-12,
+        assert!(
+            (sum_effects - active).abs() < 1e-12,
             "Sum of effects ({:.12}) should equal active return ({:.12})",
-            sum_effects, active);
+            sum_effects,
+            active
+        );
     }
 
     // ---------- Factor attribution ----------

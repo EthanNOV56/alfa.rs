@@ -3,8 +3,8 @@
 //! All L0 strategies have an empty `fit()` — they are pure mathematical
 //! combiners that require no training data.
 
-use ndarray::Array2;
 use crate::strategy::{Result, Strategy, to_percentiles, zscore_rows};
+use ndarray::Array2;
 
 // ═══════════════════════════════════════════════════════════════════
 //  EqualWeight
@@ -33,7 +33,11 @@ impl Strategy for EqualWeight {
                         count += 1;
                     }
                 }
-                signal[[t, a]] = if count > 0 { sum / count as f64 } else { f64::NAN };
+                signal[[t, a]] = if count > 0 {
+                    sum / count as f64
+                } else {
+                    f64::NAN
+                };
             }
         }
         Ok(signal)
@@ -257,7 +261,7 @@ mod tests {
         // percentiles: 1→0, 3→0.5, 5→1; minus 0.5 → −0.5, 0, 0.5
         assert!((signal[[0, 0]] - 0.5).abs() < 1e-10); // 5.0
         assert!((signal[[0, 1]] + 0.5).abs() < 1e-10); // 1.0
-        assert!(signal[[0, 2]].abs() < 1e-10);          // 3.0
+        assert!(signal[[0, 2]].abs() < 1e-10); // 3.0
     }
 
     #[test]

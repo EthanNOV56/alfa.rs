@@ -5,12 +5,12 @@
 // Every test function is prefixed with `syn_` to signal synthetic data.
 
 use alfars::strategy::{
-    equal::{EqualWeight, RankAverage, SignalWeighted},
-    ic_based::{ICWeighted, ICIRWeighted},
-    compression::FactorZooCompress,
-    regression::RidgeCombine,
-    state_aware::{StateAware, FactorComfortZone},
     Strategy,
+    compression::FactorZooCompress,
+    equal::{EqualWeight, RankAverage, SignalWeighted},
+    ic_based::{ICIRWeighted, ICWeighted},
+    regression::RidgeCombine,
+    state_aware::{FactorComfortZone, StateAware},
 };
 use ndarray::Array2;
 
@@ -269,10 +269,16 @@ fn syn_e2e_all_strategies_pipeline() {
     let strategies: Vec<(&str, Box<dyn Strategy>)> = vec![
         ("EqualWeight", Box::new(EqualWeight)),
         ("ICWeighted", Box::new(ICWeighted::new(None))),
-        ("FactorZooCompress(2)", Box::new(FactorZooCompress::new(2, false))),
+        (
+            "FactorZooCompress(2)",
+            Box::new(FactorZooCompress::new(2, false)),
+        ),
         ("RidgeCombine(1.0)", Box::new(RidgeCombine::new(1.0))),
         ("StateAware(2)", Box::new(StateAware::new(2, 252))),
-        ("FactorComfortZone(2)", Box::new(FactorComfortZone::new(2, 0.5))),
+        (
+            "FactorComfortZone(2)",
+            Box::new(FactorComfortZone::new(2, 0.5)),
+        ),
     ];
 
     let expected_shape = (ret.nrows() - train_days, ret.ncols());
@@ -305,7 +311,13 @@ fn syn_e2e_all_strategies_pipeline() {
             let diff_sum: f64 = sa
                 .iter()
                 .zip(sb.iter())
-                .map(|(a, b)| if a.is_finite() && b.is_finite() { (a - b).abs() } else { 0.0 })
+                .map(|(a, b)| {
+                    if a.is_finite() && b.is_finite() {
+                        (a - b).abs()
+                    } else {
+                        0.0
+                    }
+                })
                 .sum();
             let n = (expected_shape.0 * expected_shape.1) as f64;
             if diff_sum / n > 1e-8 {
@@ -313,5 +325,8 @@ fn syn_e2e_all_strategies_pipeline() {
             }
         }
     }
-    assert!(found_diff, "All strategies produced identical signals — expected at least some variation");
+    assert!(
+        found_diff,
+        "All strategies produced identical signals — expected at least some variation"
+    );
 }

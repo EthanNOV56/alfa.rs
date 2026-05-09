@@ -344,7 +344,12 @@ fn compute_covariance_matrix(returns: &Array2<f64>) -> Array2<f64> {
     // De-mean
     let mut demeaned = returns.clone();
     for a in 0..n_assets {
-        let valid: Vec<f64> = returns.column(a).iter().filter(|&&v| v.is_finite()).copied().collect();
+        let valid: Vec<f64> = returns
+            .column(a)
+            .iter()
+            .filter(|&&v| v.is_finite())
+            .copied()
+            .collect();
         if valid.len() < 2 {
             continue;
         }
@@ -393,13 +398,14 @@ mod tests {
         // Synthetic: 4 assets, 5 days, equal weights → portfolio return = mean return per day
         let (n_days, n_assets) = (5, 4);
         let weights = Array2::from_elem((n_days, n_assets), 1.0 / n_assets as f64);
-        let returns = Array2::from_shape_vec((n_days, n_assets), vec![
-            0.01, 0.02, 0.03, 0.04,
-            0.01, 0.01, 0.01, 0.01,
-            -0.01, 0.00, 0.01, 0.02,
-            0.02, -0.01, 0.03, 0.00,
-            0.00, 0.00, 0.00, 0.00,
-        ]).unwrap();
+        let returns = Array2::from_shape_vec(
+            (n_days, n_assets),
+            vec![
+                0.01, 0.02, 0.03, 0.04, 0.01, 0.01, 0.01, 0.01, -0.01, 0.00, 0.01, 0.02, 0.02,
+                -0.01, 0.03, 0.00, 0.00, 0.00, 0.00, 0.00,
+            ],
+        )
+        .unwrap();
 
         let pr = compute_portfolio_returns(&weights, &returns);
         assert_eq!(pr.len(), n_days);
@@ -423,11 +429,11 @@ mod tests {
         weights[[0, 0]] = 1.0;
         weights[[1, 0]] = 1.0;
         weights[[2, 0]] = 1.0;
-        let returns = Array2::from_shape_vec((n_days, n_assets), vec![
-            0.05, 0.99,
-            -0.02, -0.99,
-            0.03, 0.50,
-        ]).unwrap();
+        let returns = Array2::from_shape_vec(
+            (n_days, n_assets),
+            vec![0.05, 0.99, -0.02, -0.99, 0.03, 0.50],
+        )
+        .unwrap();
 
         let pr = compute_portfolio_returns(&weights, &returns);
         assert!((pr[0] - 0.05).abs() < 1e-12);
@@ -447,7 +453,12 @@ mod tests {
         let daily = Array1::from_vec(vec![s, -s, s, -s]);
         let vol = annualized_volatility(&daily);
         let expected = 0.01 * (252.0_f64).sqrt();
-        assert!((vol - expected).abs() < 1e-4, "vol={:.6} expected={:.6}", vol, expected);
+        assert!(
+            (vol - expected).abs() < 1e-4,
+            "vol={:.6} expected={:.6}",
+            vol,
+            expected
+        );
     }
 
     #[test]
@@ -467,7 +478,11 @@ mod tests {
         let daily = Array1::from_vec(vals);
         let var = historical_var(&daily, 0.95);
         // Should be in reasonable range for N(0, 0.01)
-        assert!(var > 0.005 && var < 0.04, "Historical VaR={:.6} out of expected range", var);
+        assert!(
+            var > 0.005 && var < 0.04,
+            "Historical VaR={:.6} out of expected range",
+            var
+        );
     }
 
     #[test]
@@ -479,7 +494,11 @@ mod tests {
         // VaR = -sorted[0] = -(-10) = 10
         let daily = Array1::from_vec(vec![-10.0, -5.0, -2.0, -1.0, 0.0, 1.0, 2.0, 5.0, 10.0]);
         let var = historical_var(&daily, 0.95);
-        assert!((var - 10.0).abs() < 1e-10, "95% Historical VaR should be 10, got {}", var);
+        assert!(
+            (var - 10.0).abs() < 1e-10,
+            "95% Historical VaR should be 10, got {}",
+            var
+        );
     }
 
     #[test]
@@ -489,7 +508,11 @@ mod tests {
         let daily = Array1::from_vec(vec![0.01, -0.01, 0.01, -0.01, 0.01, -0.01, 0.01, -0.01]);
         let var = parametric_var(&daily, 0.95);
         // σ ≈ 0.0110 (sample std), so VaR ≈ 0.0110 × 1.6449 ≈ 0.0181
-        assert!(var > 0.01 && var < 0.03, "Parametric VaR={:.6} out of expected range", var);
+        assert!(
+            var > 0.01 && var < 0.03,
+            "Parametric VaR={:.6} out of expected range",
+            var
+        );
     }
 
     #[test]
@@ -499,9 +522,12 @@ mod tests {
         let daily = Array1::from_vec(vec![0.01, -0.02, 0.015, -0.01, 0.02]);
         let var_normal = parametric_var(&daily, 0.95);
         let var_t = parametric_t_var(&daily, 0.95);
-        assert!(var_t > var_normal * 1.1,
+        assert!(
+            var_t > var_normal * 1.1,
             "t-VaR ({:.6}) should be > normal-VaR ({:.6}) due to thicker tails",
-            var_t, var_normal);
+            var_t,
+            var_normal
+        );
     }
 
     // ---------- Monte Carlo VaR ----------
@@ -515,7 +541,11 @@ mod tests {
         let vals: Vec<f64> = (0..500).map(|_| rng.r#gen::<f64>() * 0.02 - 0.01).collect();
         let daily = Array1::from_vec(vals);
         let mc = monte_carlo_var(&daily, 0.95, 10000);
-        assert!(mc > 0.008 && mc < 0.03, "MC VaR={:.6} should be near 0.0165", mc);
+        assert!(
+            mc > 0.008 && mc < 0.03,
+            "MC VaR={:.6} should be near 0.0165",
+            mc
+        );
     }
 
     // ---------- CVaR ----------
@@ -523,14 +553,16 @@ mod tests {
     #[test]
     fn parametric_cvar_larger_than_var() {
         // Synthetic: known-mean returns. Parametric CVaR must be ≥ Parametric VaR.
-        let vals: Vec<f64> = (0..100)
-            .map(|i| (i as f64 - 50.0) * 0.001)
-            .collect();
+        let vals: Vec<f64> = (0..100).map(|i| (i as f64 - 50.0) * 0.001).collect();
         let daily = Array1::from_vec(vals);
         let var = parametric_var(&daily, 0.95);
         let cvar = parametric_cvar(&daily, 0.95);
-        assert!(cvar >= var - 1e-12,
-            "Parametric CVaR ({:.6}) should be ≥ VaR ({:.6})", cvar, var);
+        assert!(
+            cvar >= var - 1e-12,
+            "Parametric CVaR ({:.6}) should be ≥ VaR ({:.6})",
+            cvar,
+            var
+        );
     }
 
     #[test]
@@ -542,8 +574,12 @@ mod tests {
         let daily = Array1::from_vec(vals);
         let var = historical_var(&daily, 0.95);
         let cvar = historical_cvar(&daily, 0.95);
-        assert!(cvar >= var - 1e-12,
-            "CVaR ({:.6}) should be ≥ VaR ({:.6})", cvar, var);
+        assert!(
+            cvar >= var - 1e-12,
+            "CVaR ({:.6}) should be ≥ VaR ({:.6})",
+            cvar,
+            var
+        );
     }
 
     // ---------- Drawdown analysis ----------
@@ -589,7 +625,9 @@ mod tests {
         let (n_days, n_assets) = (50, 4);
         let mut rng = rand::thread_rng();
         use rand::Rng;
-        let vals: Vec<f64> = (0..n_days * n_assets).map(|_| rng.r#gen::<f64>() * 0.02).collect();
+        let vals: Vec<f64> = (0..n_days * n_assets)
+            .map(|_| rng.r#gen::<f64>() * 0.02)
+            .collect();
         let returns = Array2::from_shape_vec((n_days, n_assets), vals).unwrap();
         let weights = Array2::from_elem((n_days, n_assets), 1.0 / n_assets as f64);
 
@@ -620,7 +658,9 @@ mod tests {
         use rand::Rng;
         let n_days = 200;
         let n_assets = 3;
-        let vals: Vec<f64> = (0..n_days * n_assets).map(|_| rng.r#gen::<f64>() * 0.04 - 0.02).collect();
+        let vals: Vec<f64> = (0..n_days * n_assets)
+            .map(|_| rng.r#gen::<f64>() * 0.04 - 0.02)
+            .collect();
         let returns = Array2::from_shape_vec((n_days, n_assets), vals).unwrap();
         let weights = Array1::from_vec(vec![0.5, 0.3, 0.2]);
 

@@ -1,17 +1,13 @@
 //! Ridge regression solver (ndarray → nalgebra → ndarray).
 
-use ndarray::{Array1, Array2};
 use crate::strategy::Result;
+use ndarray::{Array1, Array2};
 
 /// Solve ridge regression: minimize ||Xw - y||² + α||w||².
 ///
 /// Uses normal equations with Cholesky decomposition:
 ///   w = (XᵀX + αI)⁻¹ Xᵀy
-pub(crate) fn ridge_solve(
-    x: &Array2<f64>,
-    y: &Array1<f64>,
-    alpha: f64,
-) -> Result<Array1<f64>> {
+pub(crate) fn ridge_solve(x: &Array2<f64>, y: &Array1<f64>, alpha: f64) -> Result<Array1<f64>> {
     let (n, p) = x.dim();
     if y.len() != n {
         return Err(format!("dim mismatch: X={:?}, y={}", x.dim(), y.len()));
@@ -55,8 +51,8 @@ pub(crate) fn ridge_solve(
     let a_na = nalgebra::DMatrix::from_vec(p, p, xtx_slice);
     let b_na = nalgebra::DVector::from_vec(xty.to_vec());
 
-    let cholesky = nalgebra::linalg::Cholesky::new(a_na)
-        .ok_or("Cholesky: matrix is not positive definite")?;
+    let cholesky =
+        nalgebra::linalg::Cholesky::new(a_na).ok_or("Cholesky: matrix is not positive definite")?;
     let w_na = cholesky.solve(&b_na);
 
     Ok(Array1::from_vec(w_na.as_slice().to_vec()))

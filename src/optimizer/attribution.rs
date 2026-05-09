@@ -105,10 +105,7 @@ pub fn compute_ic_statistics(
     let mut autocorr = [f64::NAN; 4];
     for lag in 1..=4 {
         if t as usize > lag {
-            autocorr[lag - 1] = pearson_corr(
-                &valid_ic[..t as usize - lag],
-                &valid_ic[lag..],
-            );
+            autocorr[lag - 1] = pearson_corr(&valid_ic[..t as usize - lag], &valid_ic[lag..]);
         }
     }
 
@@ -194,8 +191,7 @@ pub fn brinson_attribution(
         interaction[s] = (pw_sector[s] - bw_sector[s]) * (pr_sector[s] - br_sector[s]);
     }
 
-    let total =
-        allocation.sum() + selection.sum() + interaction.sum();
+    let total = allocation.sum() + selection.sum() + interaction.sum();
 
     BrinsonAttribution {
         sector_names: sector_names.to_vec(),
@@ -240,7 +236,8 @@ pub fn factor_attribution(
     let r_nalg = solver::to_nalgebra_vector(portfolio_returns);
 
     let svd = nalgebra::linalg::SVD::new(f_nalg, true, true);
-    let beta_nalg = svd.solve(&r_nalg, 1e-10)
+    let beta_nalg = svd
+        .solve(&r_nalg, 1e-10)
         .unwrap_or(nalgebra::DVector::from_element(k, 0.0));
     let betas = solver::to_ndarray_vector(&beta_nalg);
 
@@ -248,7 +245,10 @@ pub fn factor_attribution(
     let factor_means: Array1<f64> = factor_returns.mean_axis(Axis(0)).unwrap();
     let contributions: Vec<(String, f64)> = (0..k)
         .map(|i| {
-            let name = factor_names.get(i).cloned().unwrap_or_else(|| format!("F{i}"));
+            let name = factor_names
+                .get(i)
+                .cloned()
+                .unwrap_or_else(|| format!("F{i}"));
             (name, betas[i] * factor_means[i])
         })
         .collect();
@@ -402,17 +402,9 @@ mod tests {
     #[test]
     fn test_ic_perfect_correlation() {
         let n = 100;
-        let signal = Array2::from_shape_vec(
-            (1, n),
-            (0..n).map(|i| i as f64).collect(),
-        )
-        .unwrap();
+        let signal = Array2::from_shape_vec((1, n), (0..n).map(|i| i as f64).collect()).unwrap();
         // Same ranking → IC = 1.0
-        let ret = Array2::from_shape_vec(
-            (1, n),
-            (0..n).map(|i| i as f64).collect(),
-        )
-        .unwrap();
+        let ret = Array2::from_shape_vec((1, n), (0..n).map(|i| i as f64).collect()).unwrap();
 
         let ic = compute_ic_statistics(&signal, &ret);
         assert!((ic.rank_ic_mean - 1.0).abs() < 1e-10);
@@ -422,16 +414,8 @@ mod tests {
     #[test]
     fn test_ic_anti_correlation() {
         let n = 100;
-        let signal = Array2::from_shape_vec(
-            (1, n),
-            (0..n).map(|i| i as f64).collect(),
-        )
-        .unwrap();
-        let ret = Array2::from_shape_vec(
-            (1, n),
-            (0..n).map(|i| -(i as f64)).collect(),
-        )
-        .unwrap();
+        let signal = Array2::from_shape_vec((1, n), (0..n).map(|i| i as f64).collect()).unwrap();
+        let ret = Array2::from_shape_vec((1, n), (0..n).map(|i| -(i as f64)).collect()).unwrap();
 
         let ic = compute_ic_statistics(&signal, &ret);
         assert!((ic.rank_ic_mean + 1.0).abs() < 1e-10);

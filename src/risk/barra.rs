@@ -94,8 +94,13 @@ impl RiskModel for BarraRiskModel {
         };
 
         // ---- Step 1: Cross-sectional regression per day ----
-        let (factor_returns, specific_returns) =
-            estimate_factor_returns(returns, style_exposures, &self.regression_method, reg_weights.as_ref(), self.orthogonalize)?;
+        let (factor_returns, specific_returns) = estimate_factor_returns(
+            returns,
+            style_exposures,
+            &self.regression_method,
+            reg_weights.as_ref(),
+            self.orthogonalize,
+        )?;
 
         // ---- Step 2: Factor covariance estimation ----
         let factor_cov = self.cov_estimator.estimate(&factor_returns)?;
@@ -161,9 +166,7 @@ fn estimate_factor_returns(
             let y = Array1::from_vec(y_data);
 
             match method {
-                BarraRegressionMethod::OLS => {
-                    ols_regression(&x, &y)
-                }
+                BarraRegressionMethod::OLS => ols_regression(&x, &y),
                 BarraRegressionMethod::WLS => {
                     let sqrt_w: Array1<f64> = match reg_weights {
                         Some(w) => w.row(d).mapv(|v| v.sqrt()),
@@ -171,9 +174,7 @@ fn estimate_factor_returns(
                     };
                     wls_regression(&x, &y, &sqrt_w)
                 }
-                BarraRegressionMethod::Huber => {
-                    huber_regression(&x, &y)
-                }
+                BarraRegressionMethod::Huber => huber_regression(&x, &y),
             }
             .map(|(f, eps)| (f.to_vec(), eps.to_vec()))
         })
@@ -311,7 +312,7 @@ fn huber_regression(
     y: &Array1<f64>,
 ) -> Result<(Array1<f64>, Array1<f64>), RiskError> {
     let (n, k) = x.dim();
-    const C: f64 = 1.345;       // Huber tuning constant (95% efficiency)
+    const C: f64 = 1.345; // Huber tuning constant (95% efficiency)
     const MAX_ITER: usize = 20;
     const TOL: f64 = 1e-6;
 
@@ -330,7 +331,11 @@ fn huber_regression(
         }
 
         // Robust scale: σ̂ = 1.4826 × MAD
-        let valid_res: Vec<f64> = residuals.iter().filter(|&&r| r.is_finite()).copied().collect();
+        let valid_res: Vec<f64> = residuals
+            .iter()
+            .filter(|&&r| r.is_finite())
+            .copied()
+            .collect();
         if valid_res.len() < 2 {
             break;
         }
@@ -580,9 +585,7 @@ fn decompose_risk(
 
     let total_var = sys_var + spec_var;
     if total_var <= 0.0 {
-        return Err(RiskError::ComputationFailed(
-            "Total variance ≤ 0".into(),
-        ));
+        return Err(RiskError::ComputationFailed("Total variance ≤ 0".into()));
     }
 
     let annualize = |var: f64| var.sqrt() * (252.0_f64).sqrt();
@@ -751,7 +754,11 @@ mod tests {
 
         let (f, _eps) = wls_regression(&x, &y, &sqrt_w).unwrap();
         // Asset 0 has 10^6× the weight of others, so f ≈ 2.0
-        assert!((f[0] - 2.0).abs() < 0.01, "WLS should match high-weight obs, got {}", f[0]);
+        assert!(
+            (f[0] - 2.0).abs() < 0.01,
+            "WLS should match high-weight obs, got {}",
+            f[0]
+        );
     }
 
     // ---------- Huber robust regression ----------
@@ -768,7 +775,11 @@ mod tests {
         let mut y_vec = Vec::with_capacity(n);
         for i in 0..n {
             let base = 2.0 * x[[i, 0]];
-            y_vec.push(if i == 0 { 20.0 } else { base + 0.01 * (i as f64 - 5.0) });
+            y_vec.push(if i == 0 {
+                20.0
+            } else {
+                base + 0.01 * (i as f64 - 5.0)
+            });
         }
         let y = Array1::from_vec(y_vec);
 
@@ -876,9 +887,7 @@ mod tests {
             vec!["size".to_string(), "momentum".to_string()],
         );
 
-        let report = model
-            .analyze(&weights, &returns, &[exp0, exp1])
-            .unwrap();
+        let report = model.analyze(&weights, &returns, &[exp0, exp1]).unwrap();
 
         assert!(report.total_risk > 0.0);
         assert!(report.total_risk.is_finite());
@@ -981,17 +990,29 @@ mod tests {
             vec!["f0".to_string(), "f1".to_string()],
         );
         let weights = Array2::from_elem((n_days, n_assets), 1.0 / n_assets as f64);
-        let report = model.analyze(&weights, &returns, &[exp0.clone(), exp1.clone()]).unwrap();
+        let report = model
+            .analyze(&weights, &returns, &[exp0.clone(), exp1.clone()])
+            .unwrap();
         assert!(report.total_risk.is_finite());
 
         // Now decompose. We need to re-run the regression to get factor_returns + specific_returns.
-        let (factor_ret, specific_ret) =
-            estimate_factor_returns(&returns, &[exp0.clone(), exp1.clone()], &BarraRegressionMethod::OLS, None, false)
-            .unwrap();
+        let (factor_ret, specific_ret) = estimate_factor_returns(
+            &returns,
+            &[exp0.clone(), exp1.clone()],
+            &BarraRegressionMethod::OLS,
+            None,
+            false,
+        )
+        .unwrap();
 
         let avg_w = average_weights(&weights);
-        let (r_factor, r_specific) =
-            decompose_portfolio_return(&avg_w, &factor_ret, &specific_ret, &[exp0.clone(), exp1.clone()]).unwrap();
+        let (r_factor, r_specific) = decompose_portfolio_return(
+            &avg_w,
+            &factor_ret,
+            &specific_ret,
+            &[exp0.clone(), exp1.clone()],
+        )
+        .unwrap();
 
         // Reconstruct: r_port = r_factor + r_specific
         let r_port = crate::risk::simple::compute_portfolio_returns(&weights, &returns);
@@ -1053,7 +1074,9 @@ mod tests {
 
         let mut rng = rand::thread_rng();
         use rand::Rng;
-        let vals: Vec<f64> = (0..n_days * n_assets).map(|_| rng.r#gen::<f64>() * 0.02).collect();
+        let vals: Vec<f64> = (0..n_days * n_assets)
+            .map(|_| rng.r#gen::<f64>() * 0.02)
+            .collect();
         let returns = Array2::from_shape_vec((n_days, n_assets), vals).unwrap();
         let weights = Array2::from_elem((n_days, n_assets), 1.0 / n_assets as f64);
         let exp0 = Array2::from_elem((n_days, n_assets), 1.0);
@@ -1068,7 +1091,12 @@ mod tests {
             .analyze_rolling(&weights, &returns, &[exp0, exp1], 30, 10)
             .unwrap();
         // windows: 0-29, 10-39, 20-49, 30-59 = 4
-        assert_eq!(reports.len(), 4, "Expected 4 rolling windows, got {}", reports.len());
+        assert_eq!(
+            reports.len(),
+            4,
+            "Expected 4 rolling windows, got {}",
+            reports.len()
+        );
         for r in &reports {
             assert!(r.total_risk.is_finite());
             assert!(r.total_risk > 0.0);
@@ -1082,22 +1110,22 @@ mod tests {
         let returns = Array2::from_elem((n_days, n_assets), 0.01);
         let weights = Array2::from_elem((n_days, n_assets), 1.0 / n_assets as f64);
 
-        let model = BarraRiskModel::new(
-            Box::new(SampleCovEstimator),
-            vec!["f0".to_string()],
-        );
+        let model = BarraRiskModel::new(Box::new(SampleCovEstimator), vec!["f0".to_string()]);
         let reports = model
-            .analyze_rolling(&weights, &returns, &[Array2::from_elem((n_days, n_assets), 1.0)], 20, 5)
+            .analyze_rolling(
+                &weights,
+                &returns,
+                &[Array2::from_elem((n_days, n_assets), 1.0)],
+                20,
+                5,
+            )
             .unwrap();
         assert!(reports.is_empty());
     }
 
     #[test]
     fn barra_empty_exposures_is_error() {
-        let model = BarraRiskModel::new(
-            Box::new(SampleCovEstimator),
-            vec![],
-        );
+        let model = BarraRiskModel::new(Box::new(SampleCovEstimator), vec![]);
         let data = Array2::from_elem((10, 3), 0.01);
         assert!(model.analyze(&data, &data, &[]).is_err());
     }

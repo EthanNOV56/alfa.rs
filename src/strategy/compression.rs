@@ -1,7 +1,7 @@
 //! FactorZooCompress: PCA-based factor de-correlation.
 
-use ndarray::Array2;
 use crate::strategy::{Result, Strategy};
+use ndarray::Array2;
 
 pub struct FactorZooCompress {
     n_components: usize,
@@ -22,11 +22,7 @@ impl FactorZooCompress {
 }
 
 impl Strategy for FactorZooCompress {
-    fn fit(
-        &mut self,
-        factors: &[Array2<f64>],
-        _forward_returns: &Array2<f64>,
-    ) -> Result<()> {
+    fn fit(&mut self, factors: &[Array2<f64>], _forward_returns: &Array2<f64>) -> Result<()> {
         crate::strategy::validate_fit_input(factors, _forward_returns)?;
 
         let n_assets = factors[0].ncols();
@@ -49,7 +45,9 @@ impl Strategy for FactorZooCompress {
         let mask: Vec<bool> = (0..n_samples)
             .map(|i| x.row(i).iter().all(|v| v.is_finite()))
             .collect();
-        let clean_rows: Vec<usize> = mask.iter().enumerate()
+        let clean_rows: Vec<usize> = mask
+            .iter()
+            .enumerate()
             .filter(|(_, ok)| **ok)
             .map(|(i, _)| i)
             .collect();
@@ -79,8 +77,14 @@ impl Strategy for FactorZooCompress {
 
     fn combine(&self, factors: &[Array2<f64>]) -> Result<Array2<f64>> {
         crate::strategy::validate_combine_input(factors)?;
-        let proj = self.projection.as_ref().ok_or("FactorZooCompress not fitted")?;
-        let cw = self.component_weights.as_ref().ok_or("FactorZooCompress not fitted")?;
+        let proj = self
+            .projection
+            .as_ref()
+            .ok_or("FactorZooCompress not fitted")?;
+        let cw = self
+            .component_weights
+            .as_ref()
+            .ok_or("FactorZooCompress not fitted")?;
 
         let n_assets = factors[0].ncols();
         let n_factors = factors.len();
@@ -142,7 +146,11 @@ impl Strategy for FactorZooCompress {
 /// * `tol` — convergence tolerance on the maximum rotation angle.
 ///
 /// Returns the rotated loadings matrix.
-fn varimax_rotate(loadings: &ndarray::Array2<f64>, max_iter: usize, tol: f64) -> ndarray::Array2<f64> {
+fn varimax_rotate(
+    loadings: &ndarray::Array2<f64>,
+    max_iter: usize,
+    tol: f64,
+) -> ndarray::Array2<f64> {
     let (p, k) = loadings.dim();
     if k < 2 {
         return loadings.clone();
@@ -229,12 +237,7 @@ mod tests {
     #[test]
     fn syn_varimax_preserves_orthogonality() {
         // SYNTHETIC DATA: loadings from a known 2-component PCA
-        let loadings = arr2(&[
-            [0.8, 0.0],
-            [0.6, 0.4],
-            [0.0, 0.9],
-            [0.3, 0.7],
-        ]);
+        let loadings = arr2(&[[0.8, 0.0], [0.6, 0.4], [0.0, 0.9], [0.3, 0.7]]);
         let rotated = varimax_rotate(&loadings, 50, 1e-6);
         assert_eq!(rotated.dim(), loadings.dim());
         // Columns should still be approximately orthogonal after rotation
@@ -244,8 +247,11 @@ mod tests {
             dot += rotated[[i, 0]] * rotated[[i, 1]];
         }
         // The dot product of orthogonal columns should be near 0 (scaled by n)
-        assert!((dot / n_rows).abs() < 0.3,
-            "columns should be roughly orthogonal after varimax, got dot/n={}", dot / n_rows);
+        assert!(
+            (dot / n_rows).abs() < 0.3,
+            "columns should be roughly orthogonal after varimax, got dot/n={}",
+            dot / n_rows
+        );
     }
 
     #[test]
