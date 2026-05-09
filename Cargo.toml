@@ -22,14 +22,15 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 numpy = "0.28"
 rand = "0.8"
+
+# Linear algebra (PCA, Ridge, Barra, MVO) for strategy/risk/optimizer
+nalgebra = "0.34"
+statrs = "0.17"
 ahash = "0.8"
 parking_lot = "0.12"
 bincode = "2.0"
 lru = "0.12"
 itertools = "0.13"
-
-# Linear algebra (PCA, Ridge) — mature Rust ecosystem
-nalgebra = "0.33"
 
 sha2 = "0.10"
 tempfile = "3.10"
