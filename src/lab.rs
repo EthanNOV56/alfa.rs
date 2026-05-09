@@ -351,7 +351,7 @@ impl AlfarsLab {
     /// `state_aware`, `factor_comfort_zone`.
     pub fn gen_strat(name: &str) -> Result<Strat, String> {
         let json = format!("{{\"type\": \"{}\"}}", name);
-        let config: crate::strategy::StrategyConfig = serde_json::from_str(&json)
+        let config: crate::strat::StrategyConfig = serde_json::from_str(&json)
             .map_err(|e| format!("unknown strategy '{}': {}", name, e))?;
         Ok(Strat {
             strategy: config.build(),
@@ -847,7 +847,7 @@ pub struct Factor {
 
 /// A strategy that combines factors into a signal.
 pub struct Strat {
-    pub strategy: Box<dyn crate::strategy::Strategy>,
+    pub strategy: Box<dyn crate::strat::Strategy>,
 }
 
 /// Strategy backtest performance.

@@ -4,7 +4,7 @@
 //! per-factor weights. IC is computed via `backtest::metrics::compute_ic_series`,
 //! which returns daily cross-sectional Pearson r values.
 
-use crate::strategy::{Result, Strategy, compute_factor_ic, zscore_rows};
+use crate::strat::{Result, Strategy, compute_factor_ic, zscore_rows};
 use ndarray::Array2;
 
 // ═══════════════════════════════════════════════════════════════════
@@ -29,7 +29,7 @@ impl ICWeighted {
 
 impl Strategy for ICWeighted {
     fn fit(&mut self, factors: &[Array2<f64>], forward_returns: &Array2<f64>) -> Result<()> {
-        crate::strategy::validate_fit_input(factors, forward_returns)?;
+        crate::strat::validate_fit_input(factors, forward_returns)?;
         let n = factors.len();
 
         let mut ic_means = Vec::with_capacity(n);
@@ -68,7 +68,7 @@ impl Strategy for ICWeighted {
     }
 
     fn combine(&self, factors: &[Array2<f64>]) -> Result<Array2<f64>> {
-        crate::strategy::validate_combine_input(factors)?;
+        crate::strat::validate_combine_input(factors)?;
         let (n_days, n_assets) = factors[0].dim();
         let n_factors = factors.len();
 
@@ -123,7 +123,7 @@ impl ICIRWeighted {
 
 impl Strategy for ICIRWeighted {
     fn fit(&mut self, factors: &[Array2<f64>], forward_returns: &Array2<f64>) -> Result<()> {
-        crate::strategy::validate_fit_input(factors, forward_returns)?;
+        crate::strat::validate_fit_input(factors, forward_returns)?;
         let n = factors.len();
 
         let mut ic_irs = Vec::with_capacity(n);
@@ -163,7 +163,7 @@ impl Strategy for ICIRWeighted {
     }
 
     fn combine(&self, factors: &[Array2<f64>]) -> Result<Array2<f64>> {
-        crate::strategy::validate_combine_input(factors)?;
+        crate::strat::validate_combine_input(factors)?;
         let (n_days, n_assets) = factors[0].dim();
         let n_factors = factors.len();
 

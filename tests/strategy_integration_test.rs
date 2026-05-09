@@ -4,7 +4,7 @@
 // No external data sources (ClickHouse, PriceMatrix, etc.) are used.
 // Every test function is prefixed with `syn_` to signal synthetic data.
 
-use alfars::strategy::{
+use alfars::strat::{
     Strategy,
     compression::FactorZooCompress,
     equal::{EqualWeight, RankAverage, SignalWeighted},

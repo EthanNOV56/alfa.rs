@@ -1,6 +1,6 @@
 //! Ridge regression solver (ndarray → nalgebra → ndarray).
 
-use crate::strategy::Result;
+use crate::strat::Result;
 use ndarray::{Array1, Array2};
 
 /// Solve ridge regression: minimize ||Xw - y||² + α||w||².

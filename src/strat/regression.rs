@@ -1,6 +1,6 @@
 //! L2 RidgeCombine: supervised factor combination via ridge regression.
 
-use crate::strategy::{Result, Strategy};
+use crate::strat::{Result, Strategy};
 use ndarray::{Array1, Array2};
 
 pub struct RidgeCombine {
@@ -19,7 +19,7 @@ impl RidgeCombine {
 
 impl Strategy for RidgeCombine {
     fn fit(&mut self, factors: &[Array2<f64>], forward_returns: &Array2<f64>) -> Result<()> {
-        crate::strategy::validate_fit_input(factors, forward_returns)?;
+        crate::strat::validate_fit_input(factors, forward_returns)?;
 
         let n_factors = factors.len();
         let (n_days, n_assets) = factors[0].dim();
@@ -71,7 +71,7 @@ impl Strategy for RidgeCombine {
     }
 
     fn combine(&self, factors: &[Array2<f64>]) -> Result<Array2<f64>> {
-        crate::strategy::validate_combine_input(factors)?;
+        crate::strat::validate_combine_input(factors)?;
         let w = self.weights.as_ref().ok_or("RidgeCombine not fitted")?;
 
         let n_factors = factors.len();

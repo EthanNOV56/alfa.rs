@@ -2,7 +2,7 @@
 //!
 //! Uses linfa-clustering for K-means market state identification.
 
-use crate::strategy::{Result, Strategy, zscore_rows};
+use crate::strat::{Result, Strategy, zscore_rows};
 use ndarray::Array2;
 use rand::Rng;
 
@@ -26,7 +26,7 @@ impl StateAware {
 
 impl Strategy for StateAware {
     fn fit(&mut self, factors: &[Array2<f64>], forward_returns: &Array2<f64>) -> Result<()> {
-        crate::strategy::validate_fit_input(factors, forward_returns)?;
+        crate::strat::validate_fit_input(factors, forward_returns)?;
 
         let n_factors = factors.len();
         let n_days = forward_returns.nrows();
@@ -104,7 +104,7 @@ impl Strategy for StateAware {
     }
 
     fn combine(&self, factors: &[Array2<f64>]) -> Result<Array2<f64>> {
-        crate::strategy::validate_combine_input(factors)?;
+        crate::strat::validate_combine_input(factors)?;
         let centroids = self.centroids.as_ref().ok_or("StateAware not fitted")?;
         let state_ic = self.state_ic.as_ref().ok_or("StateAware not fitted")?;
 
@@ -178,7 +178,7 @@ impl FactorComfortZone {
 
 impl Strategy for FactorComfortZone {
     fn fit(&mut self, factors: &[Array2<f64>], forward_returns: &Array2<f64>) -> Result<()> {
-        crate::strategy::validate_fit_input(factors, forward_returns)?;
+        crate::strat::validate_fit_input(factors, forward_returns)?;
 
         let n_factors = factors.len();
         let n_days = forward_returns.nrows();
@@ -254,7 +254,7 @@ impl Strategy for FactorComfortZone {
     }
 
     fn combine(&self, factors: &[Array2<f64>]) -> Result<Array2<f64>> {
-        crate::strategy::validate_combine_input(factors)?;
+        crate::strat::validate_combine_input(factors)?;
         let centroids = self
             .centroids
             .as_ref()

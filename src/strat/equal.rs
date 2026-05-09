@@ -3,7 +3,7 @@
 //! All L0 strategies have an empty `fit()` — they are pure mathematical
 //! combiners that require no training data.
 
-use crate::strategy::{Result, Strategy, to_percentiles, zscore_rows};
+use crate::strat::{Result, Strategy, to_percentiles, zscore_rows};
 use ndarray::Array2;
 
 // ═══════════════════════════════════════════════════════════════════
@@ -19,7 +19,7 @@ impl Strategy for EqualWeight {
     }
 
     fn combine(&self, factors: &[Array2<f64>]) -> Result<Array2<f64>> {
-        crate::strategy::validate_combine_input(factors)?;
+        crate::strat::validate_combine_input(factors)?;
         let (n_days, n_assets) = factors[0].dim();
         let mut signal = Array2::zeros((n_days, n_assets));
         for t in 0..n_days {
@@ -61,7 +61,7 @@ impl Strategy for RankAverage {
     }
 
     fn combine(&self, factors: &[Array2<f64>]) -> Result<Array2<f64>> {
-        crate::strategy::validate_combine_input(factors)?;
+        crate::strat::validate_combine_input(factors)?;
         let (n_days, n_assets) = factors[0].dim();
         let n_factors = factors.len();
 
@@ -109,7 +109,7 @@ impl Strategy for SignalWeighted {
     }
 
     fn combine(&self, factors: &[Array2<f64>]) -> Result<Array2<f64>> {
-        crate::strategy::validate_combine_input(factors)?;
+        crate::strat::validate_combine_input(factors)?;
         let (n_days, n_assets) = factors[0].dim();
 
         // Z-score each factor cross-sectionally

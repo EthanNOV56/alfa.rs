@@ -1,6 +1,6 @@
 //! PCA dimensionality reduction (ndarray → nalgebra → ndarray).
 
-use crate::strategy::Result;
+use crate::strat::Result;
 use ndarray::Array2;
 
 pub(crate) fn covariance_matrix(x: &Array2<f64>) -> Array2<f64> {

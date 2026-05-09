@@ -1,6 +1,6 @@
 //! FactorZooCompress: PCA-based factor de-correlation.
 
-use crate::strategy::{Result, Strategy};
+use crate::strat::{Result, Strategy};
 use ndarray::Array2;
 
 pub struct FactorZooCompress {
@@ -23,7 +23,7 @@ impl FactorZooCompress {
 
 impl Strategy for FactorZooCompress {
     fn fit(&mut self, factors: &[Array2<f64>], _forward_returns: &Array2<f64>) -> Result<()> {
-        crate::strategy::validate_fit_input(factors, _forward_returns)?;
+        crate::strat::validate_fit_input(factors, _forward_returns)?;
 
         let n_assets = factors[0].ncols();
         let n_factors = factors.len();
@@ -76,7 +76,7 @@ impl Strategy for FactorZooCompress {
     }
 
     fn combine(&self, factors: &[Array2<f64>]) -> Result<Array2<f64>> {
-        crate::strategy::validate_combine_input(factors)?;
+        crate::strat::validate_combine_input(factors)?;
         let proj = self
             .projection
             .as_ref()
