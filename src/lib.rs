@@ -9,6 +9,7 @@ pub mod expr;
 pub mod gp;
 pub mod lab;
 pub mod persistence;
+pub mod strategy;
 
 use ndarray::{Array1, Array2};
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyArrayMethods, PyUntypedArrayMethods};
