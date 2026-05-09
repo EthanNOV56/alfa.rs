@@ -19,6 +19,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use serde_json;
+
 use crate::backtest::{BacktestConfig, BacktestEngine, BacktestResult, ExecConfig};
 use crate::data::clickhouse::ClickHouseSource;
 use crate::data::layer::{DataLayer, PriceMatrix};
@@ -339,6 +341,51 @@ impl AlfarsLab {
                 name,
             })
             .collect())
+    }
+
+    /// Build a strategy from a configuration name.
+    ///
+    /// Accepts any strategy tag supported by `StrategyConfig`:
+    /// `equal_weight`, `rank_average`, `signal_weighted`, `ic_weighted`,
+    /// `ic_ir_weighted`, `factor_zoo_compress`, `ridge_combine`,
+    /// `state_aware`, `factor_comfort_zone`.
+    pub fn gen_strat(name: &str) -> Result<Strat, String> {
+        let json = format!("{{\"type\": \"{}\"}}", name);
+        let config: crate::strategy::StrategyConfig = serde_json::from_str(&json)
+            .map_err(|e| format!("unknown strategy '{}': {}", name, e))?;
+        Ok(Strat {
+            strategy: config.build(),
+        })
+    }
+
+    /// Backtest a strategy against all registered factors.
+    ///
+    /// Evaluates factors via the full CS pipeline (winsor→zscore→cap_neu),
+    /// combines them using the strategy, then runs a standard quantile
+    /// backtest on the resulting signal.
+    pub fn run_strat(&self, strat: &Strat) -> Result<StratPerf, String> {
+        let (factor_mats, _prices) = self.evaluate()?;
+        let (start_year, end_year) = self.years()?;
+        let start_full = format!("{}-01-01", start_year);
+        let end_full = format!("{}-01-01", end_year + 1);
+        let prices = self
+            .pool
+            .get_prices(&start_full, &end_full)
+            .map_err(|e| format!("Price query: {:?}", e))?;
+
+        let names = self.registry.list();
+        let factors: Vec<ndarray::Array2<f64>> = names
+            .iter()
+            .filter_map(|n| factor_mats.get(n).cloned())
+            .collect();
+        if factors.is_empty() {
+            return Err("No factors computed".to_string());
+        }
+
+        let signal = strat.strategy.combine(&factors)?;
+        let result =
+            BacktestEngine::with_config(self.backtest_config.clone()).run(signal, &prices)?;
+        Ok(StratPerf { result })
     }
 
     /// Multi-factor equal-weight combination backtest.
@@ -796,6 +843,16 @@ pub struct Factor {
     pub name: String,
     pub expression: String,
     pub perf: ExprPerf,
+}
+
+/// A strategy that combines factors into a signal.
+pub struct Strat {
+    pub strategy: Box<dyn crate::strategy::Strategy>,
+}
+
+/// Strategy backtest performance.
+pub struct StratPerf {
+    pub result: BacktestResult,
 }
 
 fn slice_columns(data: &Array2<f64>, col_indices: &[usize]) -> Array2<f64> {

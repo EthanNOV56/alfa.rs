@@ -698,6 +698,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyFactorConfig>()?;
     m.add_class::<PyExprPerf>()?;
     m.add_class::<PyFactor>()?;
+    m.add_class::<PyStrat>()?;
+    m.add_class::<PyStratPerf>()?;
 
     // Backtest functionality
     m.add_class::<PyBacktestEngine>()?;
@@ -1090,6 +1092,81 @@ impl PyFactor {
             "Factor(name='{}', expression='{}')",
             self.inner.name, self.inner.expression
         )
+    }
+}
+
+/// A strategy that combines factors into a signal.
+#[pyclass(name = "Strat")]
+struct PyStrat {
+    inner: crate::lab::Strat,
+}
+
+#[pymethods]
+impl PyStrat {
+    fn __repr__(&self) -> String {
+        "Strat(...)".into()
+    }
+}
+
+/// Strategy backtest performance.
+#[pyclass(name = "StratPerf")]
+struct PyStratPerf {
+    inner: crate::lab::StratPerf,
+}
+
+#[pymethods]
+impl PyStratPerf {
+    #[getter]
+    fn ic_mean(&self) -> f64 {
+        self.inner.result.ic_mean
+    }
+    #[getter]
+    fn ic_ir(&self) -> f64 {
+        self.inner.result.ic_ir
+    }
+    #[getter]
+    fn sharpe_ratio(&self) -> f64 {
+        self.inner.result.sharpe_ratio
+    }
+    #[getter]
+    fn total_return(&self) -> f64 {
+        self.inner.result.total_return
+    }
+    #[getter]
+    fn annualized_return(&self) -> f64 {
+        self.inner.result.annualized_return
+    }
+    #[getter]
+    fn max_drawdown(&self) -> f64 {
+        self.inner.result.max_drawdown
+    }
+    #[getter]
+    fn turnover(&self) -> f64 {
+        self.inner.result.turnover
+    }
+    #[getter]
+    fn win_rate(&self) -> f64 {
+        self.inner.result.win_rate
+    }
+    #[getter]
+    fn calmar_ratio(&self) -> f64 {
+        self.inner.result.calmar_ratio
+    }
+    #[getter]
+    fn long_short_cum_return(&self) -> f64 {
+        self.inner.result.long_short_cum_return
+    }
+    #[getter]
+    fn group_cum_returns<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        self.inner.result.group_cum_returns.clone().into_pyarray(py)
+    }
+    #[getter]
+    fn long_short_cum_returns<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        self.inner
+            .result
+            .long_short_cum_returns
+            .clone()
+            .into_pyarray(py)
     }
 }
 
@@ -3373,7 +3450,7 @@ impl PyFactorCombiner {
 
 use crate::data::pool::{CachePolicy, DataPoolConfig};
 use crate::expr::registry::config::FactorPanel;
-use crate::lab::{AlfarsLab, ExprPerf, Factor, FactorConfig};
+use crate::lab::{AlfarsLab, ExprPerf, Factor, FactorConfig, Strat, StratPerf};
 
 // ── DataPoolConfig (Python-exposed config) ────────────────────────────
 
@@ -3770,6 +3847,27 @@ impl PyAlfarsLab {
             .run_factors(fc.as_ref())
             .map_err(|e| PyRuntimeError::new_err(e))?;
         Ok(factors.into_iter().map(|f| PyFactor { inner: f }).collect())
+    }
+
+    /// Create a strategy from a name.
+    ///
+    /// Supported names: `equal_weight`, `rank_average`, `signal_weighted`,
+    /// `ic_weighted`, `ic_ir_weighted`, `factor_zoo_compress`,
+    /// `ridge_combine`, `state_aware`, `factor_comfort_zone`.
+    fn gen_strat(&self, name: &str) -> PyResult<PyStrat> {
+        let strat = AlfarsLab::gen_strat(name).map_err(|e| PyRuntimeError::new_err(e))?;
+        Ok(PyStrat { inner: strat })
+    }
+
+    /// Backtest a strategy against all registered factors.
+    fn run_strat(&self, strat: &PyStrat) -> PyResult<PyStratPerf> {
+        let perf = self
+            .inner
+            .lock()
+            .unwrap()
+            .run_strat(&strat.inner)
+            .map_err(|e| PyRuntimeError::new_err(e))?;
+        Ok(PyStratPerf { inner: perf })
     }
 
     fn run_multi(

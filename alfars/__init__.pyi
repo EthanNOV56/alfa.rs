@@ -607,6 +607,8 @@ class AlfarsLab:
         self,
         factor_config: Optional[Union[FactorConfig, Dict[str, Any]]] = None,
     ) -> List[Factor]: ...
+    def gen_strat(self, name: str) -> Strat: ...
+    def run_strat(self, strat: Strat) -> StratPerf: ...
     def run_multi(self, factor_mats: List[Any], prices: PriceMatrix) -> BacktestResult: ...
     def run_gp(
         self,
@@ -967,6 +969,24 @@ class Factor:
     name: str
     expression: str
     perf: ExprPerf
+
+class Strat:
+    """A strategy that combines factors into a signal."""
+
+class StratPerf:
+    """Strategy backtest performance."""
+    ic_mean: float
+    ic_ir: float
+    sharpe_ratio: float
+    total_return: float
+    annualized_return: float
+    max_drawdown: float
+    turnover: float
+    win_rate: float
+    calmar_ratio: float
+    long_short_cum_return: float
+    group_cum_returns: Any
+    long_short_cum_returns: Any
 
 
 # =============================================================================
