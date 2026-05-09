@@ -10,6 +10,9 @@ pub mod gp;
 pub mod lab;
 pub mod persistence;
 
+#[cfg(feature = "optimizer")]
+pub mod optimizer;
+
 use ndarray::{Array1, Array2};
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyArrayMethods, PyUntypedArrayMethods};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
