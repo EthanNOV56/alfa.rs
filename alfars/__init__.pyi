@@ -609,6 +609,10 @@ class AlfarsLab:
     ) -> List[Factor]: ...
     def gen_strat(self, name: str) -> Strat: ...
     def run_strat(self, strat: Strat) -> StratPerf: ...
+    def run_opt(
+        self,
+        opt_config: Optional[Union[OptConfig, Dict[str, Any]]] = None,
+    ) -> Strat: ...
     def run_multi(self, factor_mats: List[Any], prices: PriceMatrix) -> BacktestResult: ...
     def run_gp(
         self,
@@ -931,6 +935,24 @@ class ExecConfig:
         sell_commission: float = 0.0015,
         buy_slippage: float = 0.001,
         sell_slippage: float = 0.001,
+    ) -> None: ...
+
+class OptConfig:
+    """Optimizer configuration for run_opt."""
+    method: str
+    long_only: bool
+    max_position: Optional[float]
+    turnover_limit: Optional[float]
+    cov_estimator: str
+    cov_lookback: int
+    def __init__(
+        self,
+        method: str = "max_sharpe",
+        long_only: bool = True,
+        max_position: Optional[float] = None,
+        turnover_limit: Optional[float] = None,
+        cov_estimator: str = "sample",
+        cov_lookback: int = 60,
     ) -> None: ...
 
 class FactorConfig:

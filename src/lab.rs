@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json;
 
-use crate::backtest::{BacktestConfig, BacktestEngine, BacktestResult, ExecConfig};
+use crate::backtest::{self, BacktestConfig, BacktestEngine, BacktestResult, ExecConfig};
 use crate::data::clickhouse::ClickHouseSource;
 use crate::data::layer::{DataLayer, PriceMatrix};
 use crate::data::pool::{DataPool, DataPoolConfig};
@@ -31,6 +31,7 @@ use crate::expr::registry::config::{FactorPanel, FactorSlice};
 use crate::gp::evolution::run_gp as gp_evolve;
 use crate::gp::fitness::RealBacktestFitnessEvaluator;
 use crate::gp::types::{Function, GPConfig, Terminal, to_parseable_string};
+use crate::opt::{self, CovEstimatorType, OptimizerConfig, OptimizerConstraints};
 use ndarray::Array2;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -354,25 +355,116 @@ impl AlfarsLab {
         let config: crate::strat::StrategyConfig = serde_json::from_str(&json)
             .map_err(|e| format!("unknown strategy '{}': {}", name, e))?;
         Ok(Strat {
-            strategy: config.build(),
+            kind: StratKind::Strategy(config.build()),
         })
     }
 
-    /// Backtest a strategy against all registered factors.
-    ///
-    /// Evaluates factors via the full CS pipeline (winsor→zscore→cap_neu),
-    /// combines them using the strategy, then runs a standard quantile
-    /// backtest on the resulting signal.
+    /// Backtest a strategy or pre-computed weight plan against registered factors.
     pub fn run_strat(&self, strat: &Strat) -> Result<StratPerf, String> {
-        let (factor_mats, _prices) = self.evaluate()?;
-        let (start_year, end_year) = self.years()?;
-        let start_full = format!("{}-01-01", start_year);
-        let end_full = format!("{}-01-01", end_year + 1);
-        let prices = self
-            .pool
-            .get_prices(&start_full, &end_full)
-            .map_err(|e| format!("Price query: {:?}", e))?;
+        match &strat.kind {
+            StratKind::Strategy(s) => {
+                let (factor_mats, _prices) = self.evaluate()?;
+                let (start_year, end_year) = self.years()?;
+                let start_full = format!("{}-01-01", start_year);
+                let end_full = format!("{}-01-01", end_year + 1);
+                let prices = self
+                    .pool
+                    .get_prices(&start_full, &end_full)
+                    .map_err(|e| format!("Price query: {:?}", e))?;
 
+                let names = self.registry.list();
+                let factors: Vec<ndarray::Array2<f64>> = names
+                    .iter()
+                    .filter_map(|n| factor_mats.get(n).cloned())
+                    .collect();
+                if factors.is_empty() {
+                    return Err("No factors computed".to_string());
+                }
+
+                let signal = s.combine(&factors)?;
+                let result = BacktestEngine::with_config(self.backtest_config.clone())
+                    .run(signal, &prices)?;
+                Ok(StratPerf { result })
+            }
+            StratKind::Weights(w) => {
+                let (start_year, end_year) = self.years()?;
+                let start_full = format!("{}-01-01", start_year);
+                let end_full = format!("{}-01-01", end_year + 1);
+                let prices = self
+                    .pool
+                    .get_prices(&start_full, &end_full)
+                    .map_err(|e| format!("Price query: {:?}", e))?;
+
+                let (n_days, n_assets) = w.dim();
+                let mut daily_returns = Vec::with_capacity(n_days);
+                for d in 0..n_days {
+                    let pr = (0..n_assets)
+                        .filter_map(|a| {
+                            let weight = w[[d, a]];
+                            let ret = prices.returns[[d, a]];
+                            if weight.is_finite() && ret.is_finite() {
+                                Some(weight * ret)
+                            } else {
+                                None
+                            }
+                        })
+                        .sum::<f64>();
+                    daily_returns.push(pr);
+                }
+                let rets = ndarray::Array1::from_vec(daily_returns);
+
+                let sharpe = crate::backtest::metrics::compute_sharpe_ratio(&rets, n_days);
+                let max_dd = crate::backtest::metrics::compute_max_drawdown(&rets);
+                let total_return = crate::backtest::metrics::compute_total_return_log(&rets);
+                let ann_return =
+                    crate::backtest::metrics::compute_annualized_return(total_return, n_days);
+                let win_rate = crate::backtest::metrics::compute_win_rate(&rets);
+                let calmar = crate::backtest::metrics::compute_calmar_ratio(ann_return, max_dd);
+
+                // Weight turnover
+                let mut turnover = 0.0;
+                if n_days > 1 {
+                    for d in 1..n_days {
+                        turnover += (0..n_assets)
+                            .map(|a| (w[[d, a]] - w[[d - 1, a]]).abs())
+                            .sum::<f64>();
+                    }
+                    turnover /= (n_days - 1) as f64;
+                    turnover /= 2.0;
+                }
+
+                let cum = crate::backtest::metrics::cumulative_nav_curve(&rets);
+                let dates = prices.dates.clone();
+                let long_short_cum_return = total_return;
+
+                let result = BacktestResult {
+                    dates,
+                    long_short_returns: rets.clone(),
+                    long_short_cum_returns: cum,
+                    long_short_cum_return,
+                    sharpe_ratio: sharpe,
+                    max_drawdown: max_dd,
+                    total_return,
+                    annualized_return: ann_return,
+                    turnover,
+                    weight_turnover: turnover,
+                    win_rate,
+                    calmar_ratio: calmar,
+                    ..Default::default()
+                };
+                Ok(StratPerf { result })
+            }
+        }
+    }
+
+    /// Optimize a strategy from registered factors and return a weight plan.
+    ///
+    /// Uses default equal-weight combination for the signal, then applies the
+    /// configured optimizer method to produce daily weights.
+    pub fn run_opt(&self, opt_config: Option<&OptConfig>) -> Result<Strat, String> {
+        let cfg = opt_config.cloned().unwrap_or_default();
+
+        let (factor_mats, _prices) = self.evaluate()?;
         let names = self.registry.list();
         let factors: Vec<ndarray::Array2<f64>> = names
             .iter()
@@ -382,10 +474,71 @@ impl AlfarsLab {
             return Err("No factors computed".to_string());
         }
 
-        let signal = strat.strategy.combine(&factors)?;
-        let result =
-            BacktestEngine::with_config(self.backtest_config.clone()).run(signal, &prices)?;
-        Ok(StratPerf { result })
+        // Equal-weight strategy for signal generation
+        let strategy = crate::strat::StrategyConfig::EqualWeight.build();
+        let signal = strategy.combine(&factors)?;
+
+        let (start_year, end_year) = self.years()?;
+        let start_full = format!("{}-01-01", start_year);
+        let end_full = format!("{}-01-01", end_year + 1);
+        let prices = self
+            .pool
+            .get_prices(&start_full, &end_full)
+            .map_err(|e| format!("Price query: {:?}", e))?;
+
+        // Build optimizer from config
+        let optimizer: Box<dyn opt::Optimizer> = match cfg.method.as_str() {
+            "equal_weight" => Box::new(opt::EqualWeight::new(100)),
+            "signal_proportional" => Box::new(opt::SignalProportional),
+            "volatility_inverse" => Box::new(opt::VolatilityInverse),
+            "max_sharpe" => Box::new(opt::mvo::MaxSharpe::default()),
+            "min_variance" => Box::new(opt::mvo::MinVariance),
+            "max_ir" => Box::new(opt::mvo::MaxIR::default()),
+            "risk_parity" => Box::new(opt::risk_parity::RiskParity::default()),
+            "max_diversification" => Box::new(opt::risk_parity::MaxDiversification::default()),
+            other => return Err(format!("unknown optimizer method '{}'", other)),
+        };
+
+        let method: opt::OptimizerMethod = match cfg.method.as_str() {
+            "equal_weight" => opt::OptimizerMethod::EqualWeight,
+            "signal_proportional" => opt::OptimizerMethod::SignalProportional,
+            "volatility_inverse" => opt::OptimizerMethod::VolatilityInverse,
+            "max_sharpe" => opt::OptimizerMethod::MaxSharpe,
+            "min_variance" => opt::OptimizerMethod::MinVariance,
+            "max_ir" => opt::OptimizerMethod::MaxIR,
+            "risk_parity" => opt::OptimizerMethod::RiskParity,
+            "max_diversification" => opt::OptimizerMethod::MaxDiversification,
+            other => return Err(format!("unknown optimizer method '{}'", other)),
+        };
+
+        let cov_estimator = match cfg.cov_estimator.as_str() {
+            "sample" => CovEstimatorType::Sample,
+            "ledoit_wolf" => CovEstimatorType::LedoitWolf,
+            "ewma" => CovEstimatorType::EWMA { decay: 0.94 },
+            other => return Err(format!("unknown cov_estimator '{}'", other)),
+        };
+
+        let constraints = OptimizerConstraints {
+            long_only: cfg.long_only,
+            max_position: cfg.max_position,
+            turnover_limit: cfg.turnover_limit,
+            ..Default::default()
+        };
+
+        let opt_config = OptimizerConfig {
+            method,
+            constraints,
+            cov_estimator,
+            cov_lookback: cfg.cov_lookback,
+            ..Default::default()
+        };
+
+        let weights =
+            opt::optimize_from_config(optimizer.as_ref(), &signal, &prices.returns, &opt_config)?;
+
+        Ok(Strat {
+            kind: StratKind::Weights(weights),
+        })
     }
 
     /// Multi-factor equal-weight combination backtest.
@@ -845,14 +998,44 @@ pub struct Factor {
     pub perf: ExprPerf,
 }
 
-/// A strategy that combines factors into a signal.
+/// What a Strat holds — either a factor-combining strategy or pre-computed weights.
+pub enum StratKind {
+    Strategy(Box<dyn crate::strat::Strategy>),
+    Weights(ndarray::Array2<f64>),
+}
+
+/// A strategy or optimized weight plan.
 pub struct Strat {
-    pub strategy: Box<dyn crate::strat::Strategy>,
+    pub kind: StratKind,
 }
 
 /// Strategy backtest performance.
 pub struct StratPerf {
     pub result: BacktestResult,
+}
+
+/// Optimizer configuration for `run_opt`.
+#[derive(Debug, Clone)]
+pub struct OptConfig {
+    pub method: String,
+    pub long_only: bool,
+    pub max_position: Option<f64>,
+    pub turnover_limit: Option<f64>,
+    pub cov_estimator: String,
+    pub cov_lookback: usize,
+}
+
+impl Default for OptConfig {
+    fn default() -> Self {
+        Self {
+            method: "max_sharpe".into(),
+            long_only: true,
+            max_position: None,
+            turnover_limit: None,
+            cov_estimator: "sample".into(),
+            cov_lookback: 60,
+        }
+    }
 }
 
 fn slice_columns(data: &Array2<f64>, col_indices: &[usize]) -> Array2<f64> {

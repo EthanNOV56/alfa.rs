@@ -64,6 +64,7 @@ try:
         SlippageConfig,
         ExecConfig,
         FactorConfig,
+        OptConfig,
         ExprPerf,
         Factor,
         Strat,
@@ -118,7 +119,7 @@ except ImportError:
     FactorRegistry = FactorInfo = FactorResult = _Stub
     ClickHouseSource = DataLayer = PriceMatrix = FactorSlice = _Stub
     FactorCombiner = PositionBuilder = _Stub
-    Strat = StratPerf = FactorConfig = ExprPerf = Factor = ExecConfig = BacktestEngine = FeeConfig = PositionConfig = SlippageConfig = BacktestResult = (
+    OptConfig = Strat = StratPerf = FactorConfig = ExprPerf = Factor = ExecConfig = BacktestEngine = FeeConfig = PositionConfig = SlippageConfig = BacktestResult = (
         _Stub
     )
 
@@ -175,6 +176,7 @@ __all__ = [
     "SlippageConfig",
     "ExecConfig",
     "FactorConfig",
+    "OptConfig",
     "ExprPerf",
     "Factor",
     "Strat",

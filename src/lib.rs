@@ -695,6 +695,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPositionConfig>()?;
     m.add_class::<PyExecConfig>()?;
     m.add_class::<PyFactorConfig>()?;
+    m.add_class::<PyOptConfig>()?;
     m.add_class::<PyExprPerf>()?;
     m.add_class::<PyFactor>()?;
     m.add_class::<PyStrat>()?;
@@ -998,6 +999,67 @@ impl From<PyFactorConfig> for FactorConfig {
             long_top_n: py.long_top_n,
             short_top_n: py.short_top_n,
             rebalance_freq: py.rebalance_freq,
+        }
+    }
+}
+
+/// Optimizer configuration for `run_opt`.
+#[pyclass(name = "OptConfig")]
+#[derive(Clone)]
+struct PyOptConfig {
+    #[pyo3(get, set)]
+    method: String,
+    #[pyo3(get, set)]
+    long_only: bool,
+    #[pyo3(get, set)]
+    max_position: Option<f64>,
+    #[pyo3(get, set)]
+    turnover_limit: Option<f64>,
+    #[pyo3(get, set)]
+    cov_estimator: String,
+    #[pyo3(get, set)]
+    cov_lookback: usize,
+}
+
+#[pymethods]
+impl PyOptConfig {
+    #[new]
+    #[pyo3(signature = (method="max_sharpe".into(), long_only=true, max_position=None, turnover_limit=None, cov_estimator="sample".into(), cov_lookback=60))]
+    fn new(
+        method: String,
+        long_only: bool,
+        max_position: Option<f64>,
+        turnover_limit: Option<f64>,
+        cov_estimator: String,
+        cov_lookback: usize,
+    ) -> Self {
+        Self {
+            method,
+            long_only,
+            max_position,
+            turnover_limit,
+            cov_estimator,
+            cov_lookback,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "OptConfig(method='{}', long_only={})",
+            self.method, self.long_only
+        )
+    }
+}
+
+impl From<PyOptConfig> for OptConfig {
+    fn from(py: PyOptConfig) -> Self {
+        OptConfig {
+            method: py.method,
+            long_only: py.long_only,
+            max_position: py.max_position,
+            turnover_limit: py.turnover_limit,
+            cov_estimator: py.cov_estimator,
+            cov_lookback: py.cov_lookback,
         }
     }
 }
@@ -3449,7 +3511,7 @@ impl PyFactorCombiner {
 
 use crate::data::pool::{CachePolicy, DataPoolConfig};
 use crate::expr::registry::config::FactorPanel;
-use crate::lab::{AlfarsLab, ExprPerf, Factor, FactorConfig, Strat, StratPerf};
+use crate::lab::{AlfarsLab, ExprPerf, Factor, FactorConfig, OptConfig, Strat, StratPerf};
 
 // ── DataPoolConfig (Python-exposed config) ────────────────────────────
 
@@ -3867,6 +3929,55 @@ impl PyAlfarsLab {
             .run_strat(&strat.inner)
             .map_err(|e| PyRuntimeError::new_err(e))?;
         Ok(PyStratPerf { inner: perf })
+    }
+
+    /// Optimize a strategy from registered factors.
+    ///
+    /// Accepts optional OptConfig object or dict to configure the optimizer.
+    #[pyo3(signature = (opt_config=None))]
+    fn run_opt(&self, opt_config: Option<&Bound<'_, PyAny>>) -> PyResult<PyStrat> {
+        let oc = if let Some(py_obj) = opt_config {
+            if let Ok(py_cfg) = py_obj.extract::<PyRef<'_, PyOptConfig>>() {
+                Some(OptConfig::from(py_cfg.clone()))
+            } else if let Ok(dict) = py_obj.downcast::<PyDict>() {
+                let defaults = OptConfig::default();
+                Some(OptConfig {
+                    method: dict
+                        .get_item("method")?
+                        .and_then(|v| v.extract::<String>().ok())
+                        .unwrap_or(defaults.method),
+                    long_only: dict
+                        .get_item("long_only")?
+                        .and_then(|v| v.extract::<bool>().ok())
+                        .unwrap_or(defaults.long_only),
+                    max_position: dict
+                        .get_item("max_position")?
+                        .and_then(|v| v.extract::<f64>().ok()),
+                    turnover_limit: dict
+                        .get_item("turnover_limit")?
+                        .and_then(|v| v.extract::<f64>().ok()),
+                    cov_estimator: dict
+                        .get_item("cov_estimator")?
+                        .and_then(|v| v.extract::<String>().ok())
+                        .unwrap_or(defaults.cov_estimator),
+                    cov_lookback: dict
+                        .get_item("cov_lookback")?
+                        .and_then(|v| v.extract::<usize>().ok())
+                        .unwrap_or(defaults.cov_lookback),
+                })
+            } else {
+                return Err(PyValueError::new_err("run_opt() expects OptConfig or dict"));
+            }
+        } else {
+            None
+        };
+        let strat = self
+            .inner
+            .lock()
+            .unwrap()
+            .run_opt(oc.as_ref())
+            .map_err(|e| PyRuntimeError::new_err(e))?;
+        Ok(PyStrat { inner: strat })
     }
 
     fn run_multi(
