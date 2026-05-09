@@ -695,6 +695,9 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyFeeConfig>()?;
     m.add_class::<PyPositionConfig>()?;
     m.add_class::<PyExecConfig>()?;
+    m.add_class::<PyFactorConfig>()?;
+    m.add_class::<PyExprPerf>()?;
+    m.add_class::<PyFactor>()?;
 
     // Backtest functionality
     m.add_class::<PyBacktestEngine>()?;
@@ -934,6 +937,158 @@ impl PyExecConfig {
         format!(
             "ExecConfig(buy_commission={}, sell_commission={}, buy_slippage={}, sell_slippage={})",
             self.buy_commission, self.sell_commission, self.buy_slippage, self.sell_slippage,
+        )
+    }
+}
+
+/// Factor evaluation config (quantiles, weighting).
+#[pyclass(name = "FactorConfig")]
+#[derive(Clone)]
+struct PyFactorConfig {
+    #[pyo3(get, set)]
+    quantiles: usize,
+    #[pyo3(get, set)]
+    weight_method: String,
+    #[pyo3(get, set)]
+    long_top_n: usize,
+    #[pyo3(get, set)]
+    short_top_n: usize,
+    #[pyo3(get, set)]
+    rebalance_freq: usize,
+}
+
+#[pymethods]
+impl PyFactorConfig {
+    #[new]
+    #[pyo3(signature = (quantiles=10, weight_method="equal".into(), long_top_n=1, short_top_n=1, rebalance_freq=1))]
+    fn new(
+        quantiles: usize,
+        weight_method: String,
+        long_top_n: usize,
+        short_top_n: usize,
+        rebalance_freq: usize,
+    ) -> Self {
+        Self {
+            quantiles,
+            weight_method,
+            long_top_n,
+            short_top_n,
+            rebalance_freq,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "FactorConfig(quantiles={}, weight_method='{}', long_top_n={}, short_top_n={}, rebalance_freq={})",
+            self.quantiles,
+            self.weight_method,
+            self.long_top_n,
+            self.short_top_n,
+            self.rebalance_freq,
+        )
+    }
+}
+
+impl From<PyFactorConfig> for FactorConfig {
+    fn from(py: PyFactorConfig) -> Self {
+        FactorConfig {
+            quantiles: py.quantiles,
+            weight_method: py.weight_method,
+            long_top_n: py.long_top_n,
+            short_top_n: py.short_top_n,
+            rebalance_freq: py.rebalance_freq,
+        }
+    }
+}
+
+/// Per-factor backtest performance.
+#[pyclass(name = "ExprPerf")]
+struct PyExprPerf {
+    inner: ExprPerf,
+}
+
+#[pymethods]
+impl PyExprPerf {
+    #[getter]
+    fn ic_mean(&self) -> f64 {
+        self.inner.result.ic_mean
+    }
+    #[getter]
+    fn ic_ir(&self) -> f64 {
+        self.inner.result.ic_ir
+    }
+    #[getter]
+    fn sharpe_ratio(&self) -> f64 {
+        self.inner.result.sharpe_ratio
+    }
+    #[getter]
+    fn total_return(&self) -> f64 {
+        self.inner.result.total_return
+    }
+    #[getter]
+    fn annualized_return(&self) -> f64 {
+        self.inner.result.annualized_return
+    }
+    #[getter]
+    fn max_drawdown(&self) -> f64 {
+        self.inner.result.max_drawdown
+    }
+    #[getter]
+    fn turnover(&self) -> f64 {
+        self.inner.result.turnover
+    }
+    #[getter]
+    fn win_rate(&self) -> f64 {
+        self.inner.result.win_rate
+    }
+    #[getter]
+    fn calmar_ratio(&self) -> f64 {
+        self.inner.result.calmar_ratio
+    }
+    #[getter]
+    fn long_short_cum_return(&self) -> f64 {
+        self.inner.result.long_short_cum_return
+    }
+    #[getter]
+    fn group_cum_returns<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        self.inner.result.group_cum_returns.clone().into_pyarray(py)
+    }
+    #[getter]
+    fn long_short_cum_returns<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        self.inner
+            .result
+            .long_short_cum_returns
+            .clone()
+            .into_pyarray(py)
+    }
+}
+
+/// A factor with its expression and backtest performance.
+#[pyclass(name = "Factor")]
+struct PyFactor {
+    inner: Factor,
+}
+
+#[pymethods]
+impl PyFactor {
+    #[getter]
+    fn name(&self) -> &str {
+        &self.inner.name
+    }
+    #[getter]
+    fn expression(&self) -> &str {
+        &self.inner.expression
+    }
+    #[getter]
+    fn perf(&self) -> PyExprPerf {
+        PyExprPerf {
+            inner: self.inner.perf.clone(),
+        }
+    }
+    fn __repr__(&self) -> String {
+        format!(
+            "Factor(name='{}', expression='{}')",
+            self.inner.name, self.inner.expression
         )
     }
 }
@@ -3218,7 +3373,7 @@ impl PyFactorCombiner {
 
 use crate::data::pool::{CachePolicy, DataPoolConfig};
 use crate::expr::registry::config::FactorPanel;
-use crate::lab::AlfarsLab;
+use crate::lab::{AlfarsLab, ExprPerf, Factor, FactorConfig};
 
 // ── DataPoolConfig (Python-exposed config) ────────────────────────────
 
@@ -3564,6 +3719,57 @@ impl PyAlfarsLab {
             .into_iter()
             .map(|(name, r)| (name, PyBacktestResult::from(r)))
             .collect())
+    }
+
+    /// Compute all registered factors and backtest each one.
+    ///
+    /// Accepts optional `FactorConfig` or dict to override quantile/weighting
+    /// params for this call only. Returns `list[Factor]` sorted by name.
+    #[pyo3(signature = (factor_config=None))]
+    fn run_factors(&self, factor_config: Option<&Bound<'_, PyAny>>) -> PyResult<Vec<PyFactor>> {
+        let fc = if let Some(py_obj) = factor_config {
+            if let Ok(py_cfg) = py_obj.extract::<PyRef<'_, PyFactorConfig>>() {
+                Some(FactorConfig::from(py_cfg.clone()))
+            } else if let Ok(dict) = py_obj.downcast::<PyDict>() {
+                let defaults = FactorConfig::default();
+                Some(FactorConfig {
+                    quantiles: dict
+                        .get_item("quantiles")?
+                        .and_then(|v| v.extract::<usize>().ok())
+                        .unwrap_or(defaults.quantiles),
+                    weight_method: dict
+                        .get_item("weight_method")?
+                        .and_then(|v| v.extract::<String>().ok())
+                        .unwrap_or(defaults.weight_method),
+                    long_top_n: dict
+                        .get_item("long_top_n")?
+                        .and_then(|v| v.extract::<usize>().ok())
+                        .unwrap_or(defaults.long_top_n),
+                    short_top_n: dict
+                        .get_item("short_top_n")?
+                        .and_then(|v| v.extract::<usize>().ok())
+                        .unwrap_or(defaults.short_top_n),
+                    rebalance_freq: dict
+                        .get_item("rebalance_freq")?
+                        .and_then(|v| v.extract::<usize>().ok())
+                        .unwrap_or(defaults.rebalance_freq),
+                })
+            } else {
+                return Err(PyValueError::new_err(
+                    "run_factors() expects FactorConfig or dict",
+                ));
+            }
+        } else {
+            None
+        };
+
+        let factors = self
+            .inner
+            .lock()
+            .unwrap()
+            .run_factors(fc.as_ref())
+            .map_err(|e| PyRuntimeError::new_err(e))?;
+        Ok(factors.into_iter().map(|f| PyFactor { inner: f }).collect())
     }
 
     fn run_multi(

@@ -603,6 +603,10 @@ class AlfarsLab:
         ...
     def evaluate(self) -> Tuple[Dict[str, Any], PriceMatrix]: ...
     def backtest_each(self) -> List[Tuple[str, BacktestResult]]: ...
+    def run_factors(
+        self,
+        factor_config: Optional[Union[FactorConfig, Dict[str, Any]]] = None,
+    ) -> List[Factor]: ...
     def run_multi(self, factor_mats: List[Any], prices: PriceMatrix) -> BacktestResult: ...
     def run_gp(
         self,
@@ -926,6 +930,43 @@ class ExecConfig:
         buy_slippage: float = 0.001,
         sell_slippage: float = 0.001,
     ) -> None: ...
+
+class FactorConfig:
+    """Factor evaluation config (quantiles, weighting)."""
+    quantiles: int
+    weight_method: str
+    long_top_n: int
+    short_top_n: int
+    rebalance_freq: int
+    def __init__(
+        self,
+        quantiles: int = 10,
+        weight_method: str = "equal",
+        long_top_n: int = 1,
+        short_top_n: int = 1,
+        rebalance_freq: int = 1,
+    ) -> None: ...
+
+class ExprPerf:
+    """Per-factor backtest performance."""
+    ic_mean: float
+    ic_ir: float
+    sharpe_ratio: float
+    total_return: float
+    annualized_return: float
+    max_drawdown: float
+    turnover: float
+    win_rate: float
+    calmar_ratio: float
+    long_short_cum_return: float
+    group_cum_returns: Any
+    long_short_cum_returns: Any
+
+class Factor:
+    """A factor with its expression and backtest performance."""
+    name: str
+    expression: str
+    perf: ExprPerf
 
 
 # =============================================================================

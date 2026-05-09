@@ -203,11 +203,18 @@ impl AlfarsLab {
     ///
     /// Returns per-factor results ordered by factor name.
     pub fn evaluate_and_backtest_each(&self) -> Result<Vec<(String, BacktestResult)>, String> {
+        self.evaluate_and_backtest_with_config(&self.backtest_config.clone())
+    }
+
+    /// Internal helper: evaluate and backtest each factor, using the given config.
+    fn evaluate_and_backtest_with_config(
+        &self,
+        config: &BacktestConfig,
+    ) -> Result<Vec<(String, BacktestResult)>, String> {
         let (start_year, end_year) = self.years()?;
         let pool_config = self.pool.config();
         let batch_size = pool_config.backtest_batch_size;
 
-        // Query full PriceMatrix once — shared Arc across all factors
         let start_full = format!("{}-01-01", start_year);
         let end_full = format!("{}-01-01", end_year + 1);
         let prices = self
@@ -220,7 +227,6 @@ impl AlfarsLab {
             return Err("No factors registered".to_string());
         }
 
-        // Collect expressions from the main registry
         let expr_map: HashMap<String, String> = factor_names
             .iter()
             .filter_map(|name| {
@@ -243,7 +249,6 @@ impl AlfarsLab {
                 batch.len(),
                 batch
             );
-            // Accumulate per-factor slices across years
             let mut batch_slices: HashMap<String, Vec<FactorSlice>> = batch
                 .iter()
                 .map(|n| {
@@ -259,7 +264,6 @@ impl AlfarsLab {
                 let start = format!("{}-01-01", year);
                 let end = format!("{}-01-01", year + 1);
 
-                // Temp registry with just this batch's factors
                 let mut batch_reg = FactorRegistry::new();
                 for name in batch {
                     if let Some(expr) = expr_map.get(name) {
@@ -277,7 +281,7 @@ impl AlfarsLab {
                             "[warn] batch {}/{} year {} failed: {}, skipping",
                             batch_no, n_batches, year, e
                         );
-                        drop(year_dl); // don't cache potentially bad state
+                        drop(year_dl);
                         continue;
                     }
                 };
@@ -290,11 +294,7 @@ impl AlfarsLab {
                 self.pool.return_year(year, year_dl);
             }
 
-            // All years collected for this batch — backtest each factor
-            // Use run_with_qcut to match the calc()+run() path: reuses pre-computed
-            // qcut from FactorSlice (via build_qcut_matrix) instead of recomputing
-            // quantile groups (which uses a different tie-breaking algorithm).
-            let engine = BacktestEngine::with_config(self.backtest_config.clone());
+            let engine = BacktestEngine::with_config(config.clone());
             for name in batch {
                 if let Some(slices) = batch_slices.remove(name) {
                     let mat = prices.build_factor_matrix(&slices);
@@ -303,13 +303,42 @@ impl AlfarsLab {
                         Ok(result) => results.push((name.clone(), result)),
                         Err(e) => eprintln!("  [warn] backtest {}: {}", name, e),
                     }
-                    // mat and slices dropped here
                 }
             }
         }
 
         results.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(results)
+    }
+
+    /// Compute all registered factors and backtest each one.
+    ///
+    /// Returns `Vec<Factor>` with expression and performance per factor.
+    /// If `factor_config` is provided, its parameters override the current
+    /// backtest config for this call only (not persisted).
+    pub fn run_factors(&self, factor_config: Option<&FactorConfig>) -> Result<Vec<Factor>, String> {
+        let config = if let Some(fc) = factor_config {
+            let mut c = self.backtest_config.clone();
+            fc.apply_to(&mut c);
+            c
+        } else {
+            self.backtest_config.clone()
+        };
+
+        let results = self.evaluate_and_backtest_with_config(&config)?;
+
+        Ok(results
+            .into_iter()
+            .map(|(name, result)| Factor {
+                expression: self
+                    .registry
+                    .get(&name)
+                    .map(|info| info.expression.clone())
+                    .unwrap_or_default(),
+                perf: ExprPerf { result },
+                name,
+            })
+            .collect())
     }
 
     /// Multi-factor equal-weight combination backtest.
@@ -714,6 +743,59 @@ fn build_gp_functions(ops: &Option<Vec<String>>) -> Vec<Function> {
         }
         None => all,
     }
+}
+
+/// Factor evaluation config — parameters for factor construction and backtest.
+#[derive(Debug, Clone)]
+pub struct FactorConfig {
+    pub quantiles: usize,
+    pub weight_method: String,
+    pub long_top_n: usize,
+    pub short_top_n: usize,
+    pub rebalance_freq: usize,
+}
+
+impl Default for FactorConfig {
+    fn default() -> Self {
+        Self {
+            quantiles: 10,
+            weight_method: "equal".into(),
+            long_top_n: 1,
+            short_top_n: 1,
+            rebalance_freq: 1,
+        }
+    }
+}
+
+impl FactorConfig {
+    pub fn apply_to(&self, config: &mut BacktestConfig) {
+        config.quantiles = self.quantiles;
+        config.long_top_n = self.long_top_n;
+        config.short_top_n = self.short_top_n;
+        config.rebalance_freq = self.rebalance_freq;
+        config.weight_method = match self.weight_method.as_str() {
+            "equal" => crate::WeightMethod::Equal,
+            "weighted" => crate::WeightMethod::Weighted,
+            other => {
+                eprintln!("[warn] unknown weight_method '{}', using Equal", other);
+                crate::WeightMethod::Equal
+            }
+        };
+    }
+}
+
+/// Per-factor backtest performance.
+#[derive(Debug, Clone)]
+pub struct ExprPerf {
+    pub result: BacktestResult,
+}
+
+/// A factor with its expression and performance.
+#[derive(Debug, Clone)]
+pub struct Factor {
+    pub name: String,
+    pub expression: String,
+    pub perf: ExprPerf,
 }
 
 fn slice_columns(data: &Array2<f64>, col_indices: &[usize]) -> Array2<f64> {
